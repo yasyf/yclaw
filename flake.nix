@@ -158,6 +158,19 @@
         ];
       };
 
+      # The metal macOS guest VM. Applies IN-GUEST with `darwin-rebuild switch --flake .#metal`.
+      # One locked-down node holding all credentials (omlx, mlx-audio STT, CLIProxyAPI,
+      # agent-vault); sops-nix provides the credential decryption. See darwin/metal.nix.
+      darwinConfigurations.metal = nix-darwin.lib.darwinSystem {
+        system = darwinSystem;
+        specialArgs = { inherit inputs; };
+        modules = [
+          overlayModuleDarwin
+          sops-nix.darwinModules.sops
+          ./darwin/metal.nix
+        ];
+      };
+
       # --- Buildable artifacts ---------------------------------------------------
       packages.${linuxSystem} = {
         agent-vault = pkgsLinux.agent-vault;

@@ -1,0 +1,30 @@
+# CLIProxyAPI config for the metal VM (OAuth -> static-key proxy: Codex + Gemini-personal).
+# A template: the cliproxy wrapper (darwin/metal.nix) renders @@APERTURE_STATIC_KEY@@ from the
+# sops `aperture/static-key` secret at launch and writes the resolved file to a runtime path
+# (the real key never lands in the world-readable Nix store). Schema: cliproxyapi.md §1.
+
+# "0.0.0.0" so the `ai` (Aperture) tailnet node reaches metal's :8317. Tailscale ACLs + the
+# pf anchor (metal.nix) gate access to the tailnet.
+host: "0.0.0.0"
+port: 8317
+
+# OAuth tokens persist on the virtiofs state mount (survives VM rebuilds; launchd does NOT
+# expand ~, so the path is absolute). BACK THIS UP — the refresh tokens are rotating/single-use
+# and CLIProxyAPI must be their only holder (cliproxyapi.md §2).
+auth-dir: "/Volumes/My Shared Files/state/cli-proxy-api/auth"
+
+# The static key clients present. Aperture injects `Authorization: Bearer @@APERTURE_STATIC_KEY@@`.
+# At least one real key is REQUIRED: an empty list unregisters the key-gate, and the
+# "your-api-key-1" example trips the safe-mode guard and refuses to serve (cliproxyapi.md §1).
+api-keys:
+  - "@@APERTURE_STATIC_KEY@@"
+
+# Management API disabled entirely (empty secret-key -> no /v0/management routes).
+remote-management:
+  allow-remote: false
+  secret-key: ""
+
+# Model -> Codex-vs-Gemini routing is automatic by registry ownership; no manual table needed.
+# Resolve the real upstream ids after `--codex-login` + `--login` via
+#   GET http://metal.<tailnet>:8317/v1/models
+# then either request those ids from Aperture directly or add an oauth-model-alias block.
