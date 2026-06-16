@@ -10,6 +10,7 @@
 # Claude Code
 .context/
 .claude/settings.local.json
+.claude/jj-config.toml
 
 # Python bytecode (guard hooks are Python even in non-Python repos)
 __pycache__/
@@ -29,6 +30,7 @@ build/
 .packer.d/
 packer_cache/
 
-# Runtime secret material (only placeholders + encrypted blobs are tracked)
+# Runtime secret material (only PLACEHOLDERS.md + secrets.sops.yaml.example are tracked)
 secrets/*.decrypted
 secrets/runtime/
+secrets/secrets.sops.yaml

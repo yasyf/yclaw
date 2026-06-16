@@ -4,37 +4,35 @@
 
 Reproducible, always-on home server for the Nous [`hermes-agent`](https://github.com/NousResearch/hermes-agent) on Apple Silicon.
 
-Every machine and every credential plane rebuilds from this repo. The agent runs sandboxed in a Linux VM that holds none of your API keys — a separate `vault` VM brokers credentials and injects them on the wire, and the LLM-subscription OAuth lives on the host, out of the agent's reach. `just bootstrap` rebuilds the whole stack from a wiped machine; that destroy-and-rebuild is the acceptance test.
+Every machine and every credential plane rebuilds from this repo. The agent runs sandboxed in a Linux VM that holds none of your API keys — a locked-down macOS guest brokers every credential and injects it on the wire, and the LLM-subscription OAuth lives there too, out of the agent's reach. The setup flow rebuilds the whole stack from a wiped machine; that destroy-and-rebuild is the acceptance test.
 
 ## What's here
 
-The stack is five tailnet nodes plus host-side services, all defined as code:
+The stack is a bare macOS host, two tart guests on one tailnet, and a hosted gateway node — all defined as code:
 
-- **host** (macOS, nix-darwin) — `tart`, Tailscale, the local Qwen MLX server, Parakeet STT, and CLIProxyAPI (the Codex/Gemini OAuth-to-static-key proxy).
-- **hermes** VM (NixOS) — the `hermes gateway`, with a Docker sandbox; reaches the internet only through the vault proxy.
-- **vault** VM (NixOS) — Infisical `agent-vault`: static API keys + tool OAuth, injected via a TLS-terminating proxy so secrets never enter the hermes VM.
-- **ai** — Tailscale Aperture, routing `http://ai/v1` to the three model upstreams.
-- **bluebubbles** VM (macOS) — BlueBubbles for the iMessage channel.
+- **host** — bare macOS, no Nix. Homebrew `tart`, Tailscale, and `launchd` boot and supervise the guests; all state and secrets live in `~/.yclaw/state`.
+- **metal** guest (macOS, nix-darwin) — the single credential custodian: local Qwen MLX (`omlx`), Parakeet STT, CLIProxyAPI (the Codex/Gemini OAuth-to-static-key proxy), the `agent-vault` broker, and BlueBubbles for the iMessage channel.
+- **hermes** guest (NixOS) — the `hermes gateway` in a Docker sandbox; holds no credentials and reaches the internet only through the agent-vault proxy.
+- **ai** — hosted Tailscale Aperture, routing `http://ai/v1` to the metal model upstreams.
 
 The architecture is decided and documented; this repo is the implementation. The model fallback chain (`gpt-5.5`, then `gemini-3.5`, then local `qwen`), the credential custody model, and every config choice are spelled out in the docs below.
 
 ## Layout
 
 ```
-flake.nix              # every NixOS host + the nix-darwin host; pins all inputs
-justfile               # bootstrap | build-images | deploy <node> | smoke | destroy | rebuild
-nixos/                 # hermes.nix, vault.nix, ai.nix (Aperture config artifact), common.nix
-darwin/host.nix        # nix-darwin: tart, Tailscale, MLX, CLIProxyAPI, launchd, pf anchor
+flake.nix              # the metal (nix-darwin) and hermes (NixOS) configs; pins all inputs
+justfile               # the setup flow + per-node recipes
+nixos/                 # the hermes gateway VM
+darwin/                # the metal guest: services + credential custody
 pkgs/                  # agent-vault + cli-proxy-api Go derivations
-packer/                # tart macOS base image for the bluebubbles VM
-scripts/               # bootstrap.sh, deploy-vm.sh, bluebubbles-setup.sh, gws-bridge.patch, sip-disable.md
-secrets/               # PLACEHOLDERS.md (the human-input manifest) + sops-encrypted material
-docs/                  # architecture, config catalog, build notes
+scripts/               # idempotent glue for the imperative macOS steps
+secrets/               # PLACEHOLDERS.md + secrets.sops.yaml.example (real secrets live in ~/.yclaw/state)
+docs/                  # ARCHITECTURE.md, DEPLOY.md
 ```
 
 ## Bootstrap
 
-You need an Apple Silicon Mac on macOS Sequoia 15+, a Tailscale tailnet, and [Nix](https://nixos.org/download) installed on the host (it drives nix-darwin, the image builds, and the secret tooling).
+You need an Apple Silicon Mac on macOS Sequoia 15+, a Tailscale tailnet, and [Homebrew](https://brew.sh) (it installs `tart` and Tailscale; Nix runs inside the guests, not on the host).
 
 Run the entrypoint from a clone of this repo:
 
@@ -42,7 +40,7 @@ Run the entrypoint from a clone of this repo:
 just bootstrap
 ```
 
-It prompts for the human-supplied values in [`secrets/PLACEHOLDERS.md`](secrets/PLACEHOLDERS.md), mints and encrypts the runtime secrets with sops, applies the flake, builds the VM images, and ends by printing the **human gates** — the interactive one-time steps that cannot be scripted (SIP disable, Apple-ID sign-in, the Codex/Gemini browser logins, and the Google OAuth consent). Complete those, then verify:
+It prompts for the human-supplied values in [`secrets/PLACEHOLDERS.md`](secrets/PLACEHOLDERS.md), mints and encrypts the runtime secrets with sops into `~/.yclaw/state`, builds or pulls the VM images, boots the guests, and ends by printing the **human gates** — the interactive one-time steps that cannot be scripted (the locked-down-guest setup, Apple-ID sign-in, the Codex/Gemini browser logins, and the Google OAuth consent). Complete those, then verify:
 
 ```bash
 just smoke
@@ -56,12 +54,10 @@ just rebuild   # destroy, then bootstrap from zero
 
 ## Documentation
 
-- [Architecture](docs/hermes-home-server.md) — topology, the model and credential planes, and the locked decisions ledger.
-- [Configuration catalog](docs/hermes-config-catalog.md) — every hermes-agent setting and its chosen value.
-- [Implementation handoff](docs/IMPLEMENTATION-HANDOFF.md) — the build brief and phase plan.
-- [Build notes](docs/build-notes/) — the authoritative source extractions the modules are built from.
+- [Architecture](docs/ARCHITECTURE.md) — the target topology, the model plane, and the credential custody model.
+- [Deploy](docs/DEPLOY.md) — the high-level deploy flow and what to back up.
 - [`AGENTS.md`](AGENTS.md) / [`CLAUDE.md`](CLAUDE.md) — conventions for agents working in this repo.
 
 ## Status
 
-The full IaC is authored and verified as far as is possible without applying the host config: the flake locks, every output (`hermes`/`vault`/`host` configs, both VM images, the Aperture artifact) evaluates clean, and both Go services (`agent-vault`, `cli-proxy-api`) build with pinned `vendorHash`es. Still gated on the host: a full `nix flake check` and the VM image builds need the `aarch64-linux` builder (it comes up after `darwin-rebuild switch`), and the end-to-end rebuild depends on the human gates above. Items needing a human decision or a live-stack check are marked inline with `TODO(human):`.
+The architecture is decided and stable; the implementation is in progress. The target is a bare macOS host driving two tart guests — `metal` (the credential custodian) and `hermes` (the sandboxed gateway) — with all state and secrets in `~/.yclaw/state`. Build-out is tracked in [`CHANGELOG.md`](CHANGELOG.md).

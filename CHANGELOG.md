@@ -27,4 +27,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/build-notes/` — authoritative source extractions for hermes-agent, agent-vault,
   CLIProxyAPI, Aperture, and tart/Nix.
 
-[Unreleased]: https://github.com/yasyf/yclaw/commits/main
+[Unreleased]: ../../commits/main
