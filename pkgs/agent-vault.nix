@@ -1,6 +1,6 @@
-# Infisical agent-vault — the credential broker for the `vault` VM.
-# Pure-Go (modernc SQLite, CGO_ENABLED=0). Source pinned via the flake input
-# `agent-vault-src`; see docs/build-notes/agent-vault.md for the authoritative extraction.
+# Infisical agent-vault — the credential broker that runs inside the metal VM.
+# Pure-Go (modernc SQLite, CGO_ENABLED=0), so it builds for both aarch64-darwin (metal,
+# built in-guest by nix-darwin) and aarch64-linux. Source pinned via the flake input.
 {
   lib,
   buildGoModule,
@@ -40,6 +40,6 @@ buildGoModule {
     homepage = "https://github.com/Infisical/agent-vault";
     license = lib.licenses.mit;
     mainProgram = "agent-vault";
-    platforms = lib.platforms.linux;
+    platforms = lib.platforms.unix;
   };
 }
