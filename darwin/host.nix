@@ -32,10 +32,10 @@ in
 
   # --- Homebrew (tart + OSS Tailscale) -----------------------------------------
   # cleanup="none" keeps untracked packages; autoUpdate=false keeps `switch` idempotent.
-  # brews."tailscale" gives the OSS tailscale+tailscaled (supports `tailscale ssh`); the
-  # App Store build does not. tart provides /opt/homebrew/bin/tart.
-  # TODO(human): confirm tart's coordinates — cask `tart` in tap `cirruslabs/cli` vs a
-  #   formula; the host already has /opt/homebrew/bin/tart, match whatever installed it.
+  # brews."tailscale" gives the OSS tailscale CLI (the system tailscaled is a newer
+  # mise-built daemon already installed on this host — see the activation note below).
+  # tart is the cirruslabs/cli FORMULA, not a cask (verified: /opt/homebrew/bin/tart ->
+  # Cellar/tart/2.32.1, listed by `brew list --formula`).
   homebrew = {
     enable = true;
     onActivation = {
@@ -43,8 +43,10 @@ in
       autoUpdate = false;
     };
     taps = [ "cirruslabs/cli" ];
-    casks = [ "tart" ];
-    brews = [ "tailscale" ];
+    brews = [
+      "tailscale"
+      "cirruslabs/cli/tart"
+    ];
   };
 
   # --- Install the CLIProxyAPI config to a stable absolute path -----------------
@@ -136,13 +138,13 @@ in
   };
 
   # --- Activation-time imperative steps ----------------------------------------
-  # Runs as root after the main activation. Two idempotent steps:
-  #   1. pf VNC anchor — verbatim from tart-nixos-darwin.md §2.3 (grep -q guard appends once).
-  #   2. OSS Tailscale daemon hookup — `tailscaled install-system-daemon` expects
-  #      /usr/local/bin/tailscaled but Homebrew lands it in /opt/homebrew/bin (openclaw.md).
-  # TODO(human): confirm the activation attribute path on the current nix-darwin
-  #   (system.activationScripts.postActivation.text historically; the moved manual page
-  #   stopped quoting it verbatim).
+  # Runs as root after the main activation. One idempotent step: the pf VNC anchor
+  # (from tart-nixos-darwin.md §2.3; the grep guard appends to pf.conf once).
+  #
+  # The OSS Tailscale system daemon is intentionally NOT managed here: this host already
+  # runs a newer mise-built `tailscaled` (1.98.5) as the system daemon with `tailscale ssh`
+  # live, so re-pointing /usr/local/bin/tailscaled at the older Homebrew binary (1.96.4) and
+  # re-running `install-system-daemon` would downgrade a working setup. Leave it alone.
   system.activationScripts.postActivation.text = ''
     # pf VNC anchor — idempotent (only appends to pf.conf once)
     PF_ANCHOR_FILE="/etc/pf.anchors/vnc"
@@ -160,12 +162,5 @@ in
     CONF
     fi
     pfctl -f /etc/pf.conf
-
-    # OSS Tailscale daemon — install-system-daemon expects /usr/local/bin/tailscaled.
-    mkdir -p /usr/local/bin
-    ln -sf /opt/homebrew/bin/tailscaled /usr/local/bin/tailscaled
-    /opt/homebrew/bin/tailscaled install-system-daemon
-    # HUMAN: one-time `tailscale up --ssh --accept-dns --accept-routes` is still required
-    #   after first install to authenticate this host to the tailnet (interactive).
   '';
 }
