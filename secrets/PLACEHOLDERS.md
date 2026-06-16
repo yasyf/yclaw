@@ -29,10 +29,8 @@ prompt at run time. See [`hermes-home-server.md` §5](../docs/hermes-home-server
 | `@@EXA_API_KEY@@` | web search | vault static → `api.exa.ai` | prompt → vault |
 | `@@HONCHO_API_KEY@@` | memory (hosted Honcho) | vault static → `api.honcho.dev` | prompt → vault |
 | `@@GITHUB_TOKEN@@` | GitHub PAT (or move to OAuth) | vault static → `api.github.com` | prompt → vault |
-| `@@GOOGLE_OAUTH_CLIENT_ID@@` | Google Cloud **Web** OAuth client id (Gmail/Cal restricted scopes) | agent-vault `oauth/connect` | human creates in GCP console → prompt |
-| `@@GOOGLE_OAUTH_CLIENT_SECRET@@` | Google Cloud **Web** OAuth client secret | agent-vault `oauth/connect` | human creates in GCP console → prompt |
 | `@@AGENT_VAULT_MASTER_PASSWORD@@` | agent-vault vault encryption | vault server | bootstrap prompt → sops |
-| `@@APERTURE_STATIC_KEY@@` | static key Aperture presents to CLIProxyAPI | `ai.nix` ↔ CLIProxyAPI | generate (bootstrap may mint a random one) → sops |
+| `@@APERTURE_STATIC_KEY@@` | static key Aperture presents to CLIProxyAPI | `ai.nix` ↔ CLIProxyAPI; **generated, never substituted into the Nix store** | `secrets.sh` mints `openssl rand -hex 32` if unset → sops `aperture/static-key` |
 
 ## Interactive one-time sign-ins (cannot be scripted)
 
@@ -57,8 +55,10 @@ secret material; nothing here is committed in plaintext.
 These are produced during bootstrap, not prompted for — listed so the `@@…@@` markers in them aren't
 mistaken for missing inputs:
 
-- `@@AGE_PUBLIC_KEY@@` (in `.sops.yaml`) — bootstrap writes the public half of the age key it
-  generates; the private key lands at `/var/lib/sops-nix/key.txt` on each VM (never committed).
-- `@@AGENT_VAULT_CA_PEM@@` (in `nixos/agent-vault-ca.pem`) — a placeholder line; bootstrap fetches the
-  real public CA via `GET http://vault.<tailnet>:14321/v1/mitm/ca.pem` and overwrites the file. The CA
+- `@@AGE_PUBLIC_KEY@@` (in `.sops.yaml`) — `scripts/lib/secrets.sh` mints the age key and renders the
+  resolved public half into `~/.yclaw/state/sops.yaml`; the committed `.sops.yaml` keeps the placeholder
+  (never mutated). The private key lands at `/var/lib/sops-nix/key.txt` on each VM (never committed).
+- `@@AGENT_VAULT_CA_PEM@@` (in `nixos/agent-vault-ca.pem`) — ships as a placeholder line. At deploy
+  time (human gate 6) the operator fetches the real public CA via
+  `GET http://vault.<tailnet>:14321/v1/mitm/ca.pem`, overwrites the file, and re-applies hermes. The CA
   cert is public (only its key is secret), so the fetched PEM is safe to commit.

@@ -15,6 +15,8 @@ auth-dir: "/Users/@@HOST_USER@@/.cli-proxy-api"
 # The static keys clients present. Aperture injects `Authorization: Bearer @@APERTURE_STATIC_KEY@@`.
 # At least one real key is REQUIRED: an empty list unregisters the key-gate, and any leftover
 # example value ("your-api-key-1") trips the safe-mode guard and refuses to serve (cliproxyapi.md §1).
+# The real key lives in the sops `aperture/static-key` secret (~/.yclaw/state/secrets.sops.yaml),
+# NOT the world-readable Nix store; the @@APERTURE_STATIC_KEY@@ placeholder is injected from sops at deploy.
 api-keys:
   - "@@APERTURE_STATIC_KEY@@"
 

@@ -1,0 +1,20 @@
+# EXAMPLE — copy to ~/.yclaw/config.toml and edit. NON-secret, per-user setup values
+# authored by the setup flow. Secrets never live here; they are sops-encrypted in
+# ~/.yclaw/state/secrets.sops.yaml (see secrets/secrets.sops.yaml.example).
+
+[host]
+name = "yourmac"        # this Mac's hostname (targets darwin/host.nix)
+user = "you"            # the macOS login user that runs the launchd agents
+ram_gb = 128            # host RAM tier in GB, for VM sizing
+
+[network]
+# MagicDNS suffix. Auto-detect with:
+#   tailscale status --json | jq -re .MagicDNSSuffix
+tailnet_domain = "tailXXXX.ts.net"
+
+[messaging]
+allowed_handles = ["+15555550123"]   # iMessage allowlist (handles/groups)
+home_channel = "+15555550123"        # the channel the agent treats as home
+
+[model]
+qwen = "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"   # optional local model default

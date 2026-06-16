@@ -11,10 +11,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 RUNTIME_DIR="$REPO_ROOT/secrets/runtime"
-AGE_KEY_FILE="$RUNTIME_DIR/key.txt"            # private age key; gitignored, never committed
 VALUES_FILE="$RUNTIME_DIR/values.env"          # resolved non-secret tokens; gitignored
-SOPS_FILE="$REPO_ROOT/secrets/secrets.sops.yaml"
-SOPS_RULES="$REPO_ROOT/.sops.yaml"
+AGE_KEY_FILE="$HOME/.yclaw/state/age/key.txt"  # private age key minted by scripts/lib/secrets.sh
 HOST_AGE_KEY="/var/lib/sops-nix/key.txt"       # where sops-nix expects the private key on the host
 
 # The apply tree: everything `nix flake check` / a rebuild evaluates. Substitution and the
@@ -24,11 +22,12 @@ APPLY_TREE=(flake.nix nixos darwin pkgs .sops.yaml)
 # Non-secret tokens substituted literally into the apply tree wherever they appear (config
 # values + comment mentions alike — the value is the same). Rendered to the world-readable
 # Nix store, so none of these is a secret. AGE_PUBLIC_KEY is generated, not prompted.
-NONSECRET_TOKENS=(TAILNET_DOMAIN HOST_NAME HOST_USER HOST_RAM APERTURE_STATIC_KEY AUTHORIZED_HANDLES)
+NONSECRET_TOKENS=(TAILNET_DOMAIN HOST_NAME HOST_USER HOST_RAM AUTHORIZED_HANDLES)
 
-# Secret tokens prompted here and written ONLY into the sops-encrypted blob, never the tree.
-# Their NAMES still appear in apply-tree comments (e.g. nixos/common.nix references
-# @@TS_AUTHKEY@@) — those are documentation and are exempted from the residue guard below.
+# Secret token NAMES that appear in apply-tree comments/configs (e.g. nixos/common.nix
+# references @@TS_AUTHKEY@@; nixos/ai.nix references @@APERTURE_STATIC_KEY@@). The VALUES are
+# collected by scripts/lib/secrets.sh into ~/.yclaw/state, never the tree — these names are
+# exempted from the residue guard below so their placeholders may survive the apply.
 SECRET_TOKENS=(
   TS_AUTHKEY
   BLUEBUBBLES_PASSWORD
@@ -37,17 +36,19 @@ SECRET_TOKENS=(
   EXA_API_KEY
   HONCHO_API_KEY
   GITHUB_TOKEN
-  GOOGLE_OAUTH_CLIENT_ID
-  GOOGLE_OAUTH_CLIENT_SECRET
+  APERTURE_STATIC_KEY
 )
 
 # Tokens left UNRESOLVED on purpose: human-gate placeholders the residue guard must tolerate.
 # The CA pem is fetched post-apply (human gate 6); the secret-name mentions in comments stay as docs.
+# AGE_PUBLIC_KEY is rendered into ~/.yclaw/state/sops.yaml, so the committed .sops.yaml keeps its
+# @@AGE_PUBLIC_KEY@@ placeholder (the tracked file is never mutated).
 # (terminal.docker_image now has a concrete default pinned in nixos/hermes.nix, so it is no longer
 #  a placeholder — bootstrap leaves it alone.)
 GUARD_EXEMPT_TOKENS=(
   "${SECRET_TOKENS[@]}"
   AGENT_VAULT_CA_PEM
+  AGE_PUBLIC_KEY
 )
 
 # --- helpers -----------------------------------------------------------------
@@ -73,12 +74,17 @@ prompt_var() {
 
 # Replace every @@TOKEN@@ in a file with a literal value. Per-token (not envsubst): an
 # unknown @@OTHER@@ is left untouched so the residue guard catches it instead of blanking it.
-# bash `${var//pat/repl}` treats `&` in the replacement as the matched text, so escape it.
+# Done in Python (token/value via env) so the replacement is byte-literal and version-stable —
+# bash `${var//pat/repl}` mangles values containing a backslash.
 subst_token() {
-  local file="$1" token="$2" value="$3" body
-  value="${value//&/\\&}"
-  body="$(cat "$file")"
-  printf '%s' "${body//@@${token}@@/$value}" > "$file"
+  local file="$1" token="$2" value="$3"
+  TOKEN="$token" VALUE="$value" python3 - "$file" <<'PY'
+import os, sys
+p = sys.argv[1]
+tok, val = os.environ["TOKEN"], os.environ["VALUE"]
+s = open(p).read()
+open(p, "w").write(s.replace("@@" + tok + "@@", val))
+PY
 }
 
 # --- 0. preflight ------------------------------------------------------------
@@ -87,6 +93,8 @@ need age-keygen
 need sops
 need openssl
 need jq
+need gum
+need python3
 need darwin-rebuild
 need nix
 need tart
@@ -95,7 +103,7 @@ chmod 700 "$RUNTIME_DIR"
 
 # --- 1. collect values -------------------------------------------------------
 
-log "Resolving placeholder values (blank prompts are required; secrets are hidden)..."
+log "Resolving non-secret placeholder values (all prompts are required; secrets come later)..."
 
 # Tailnet domain: auto-detect from the host's own tailnet membership, else prompt.
 if [[ -z "${TAILNET_DOMAIN:-}" ]]; then
@@ -110,31 +118,13 @@ prompt_var HOST_USER "the macOS login user that runs the launchd agents"
 prompt_var HOST_RAM  "host RAM tier in GB, for VM sizing"
 prompt_var AUTHORIZED_HANDLES "iMessage allowlist (comma-separated handles/groups)"
 
-# Aperture static key: mint a random one if the operator did not supply it.
-if [[ -z "${APERTURE_STATIC_KEY:-}" ]]; then
-  APERTURE_STATIC_KEY="$(openssl rand -hex 32)"
-  log "Minted a random APERTURE_STATIC_KEY (openssl rand -hex 32)."
-fi
+# --- 2. age key + sops-encrypted secrets (single secrets module) ------------
 
-prompt_var TS_AUTHKEY "Tailscale auth key (reusable/ephemeral) for VM join" secret
-prompt_var BLUEBUBBLES_PASSWORD "BlueBubbles server password" secret
-prompt_var AGENT_VAULT_MASTER_PASSWORD "agent-vault vault encryption password" secret
-prompt_var OPENAI_API_KEY "OpenAI API key (image-gen + vision)" secret
-prompt_var EXA_API_KEY "Exa web-search API key" secret
-prompt_var HONCHO_API_KEY "Honcho memory API key" secret
-prompt_var GITHUB_TOKEN "GitHub PAT" secret
-prompt_var GOOGLE_OAUTH_CLIENT_ID "Google Cloud Web OAuth client id" secret
-prompt_var GOOGLE_OAUTH_CLIENT_SECRET "Google Cloud Web OAuth client secret" secret
-
-# --- 2. age key + sops-encrypted secrets ------------------------------------
-
-if [[ ! -s "$AGE_KEY_FILE" ]]; then
-  log "Generating age key at $AGE_KEY_FILE ..."
-  (umask 077; age-keygen -o "$AGE_KEY_FILE" 2>/dev/null)
-fi
-AGE_PUBLIC_KEY="$(age-keygen -y "$AGE_KEY_FILE")"
-[[ "$AGE_PUBLIC_KEY" == age1* ]] || die "could not derive an age public key from $AGE_KEY_FILE."
-log "age public key: $AGE_PUBLIC_KEY"
+# scripts/lib/secrets.sh is the ONE path that prompts for secrets, mints/reuses the age key,
+# mints the Aperture static key, renders ~/.yclaw/state/sops.yaml from the committed .sops.yaml,
+# and writes the encrypted ~/.yclaw/state/secrets.sops.yaml. Real secrets never touch the repo.
+source "$REPO_ROOT/scripts/lib/secrets.sh"
+collect_secrets
 
 # Stage the private key where sops-nix reads it on this host (its VM counterpart is seeded
 # out-of-band per node). Needs root; the admin user has passwordless sudo.
@@ -142,36 +132,6 @@ if [[ ! -s "$HOST_AGE_KEY" ]]; then
   log "Installing private age key to $HOST_AGE_KEY (sops-nix key path) ..."
   sudo install -D -m 600 "$AGE_KEY_FILE" "$HOST_AGE_KEY"
 fi
-
-# Pin the public key into the sops creation rules so re-encryption targets this recipient.
-if rg -q '@@AGE_PUBLIC_KEY@@' "$SOPS_RULES"; then
-  log "Writing age public key into $SOPS_RULES ..."
-  subst_token "$SOPS_RULES" AGE_PUBLIC_KEY "$AGE_PUBLIC_KEY"
-fi
-
-log "Building and encrypting $SOPS_FILE from the prompted secrets ..."
-PLAIN_SOPS="$(mktemp -t hermes-secrets.XXXXXX.yaml)"
-trap 'rm -f "$PLAIN_SOPS"' EXIT
-cat > "$PLAIN_SOPS" <<EOF
-tailscale:
-  authkey: "$TS_AUTHKEY"
-hermes:
-  env: |
-    BLUEBUBBLES_PASSWORD=$BLUEBUBBLES_PASSWORD
-vault:
-  master-password: "$AGENT_VAULT_MASTER_PASSWORD"
-  static-keys: |
-    OPENAI_API_KEY=$OPENAI_API_KEY
-    EXA_API_KEY=$EXA_API_KEY
-    HONCHO_API_KEY=$HONCHO_API_KEY
-    GITHUB_TOKEN=$GITHUB_TOKEN
-  google-oauth: |
-    GOOGLE_OAUTH_CLIENT_ID=$GOOGLE_OAUTH_CLIENT_ID
-    GOOGLE_OAUTH_CLIENT_SECRET=$GOOGLE_OAUTH_CLIENT_SECRET
-EOF
-sops --encrypt --age "$AGE_PUBLIC_KEY" "$PLAIN_SOPS" > "$SOPS_FILE"
-rm -f "$PLAIN_SOPS"; trap - EXIT
-log "Encrypted secrets written to $SOPS_FILE."
 
 # --- 3. resolve non-secret @@TOKEN@@ placeholders across the apply tree -------
 

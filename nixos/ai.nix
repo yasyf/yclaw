@@ -17,8 +17,9 @@
 #   Do NOT assert `PUT /api/config` as fact — confirm the real endpoint from http://ai/ui
 #   network calls or the JSON editor's export/import before scripting an apply step.
 # TODO(human): record the CLIProxyAPI static key (@@APERTURE_STATIC_KEY@@) in the Aperture
-#   dashboard, NOT in this flake — the Nix store is world-readable. The placeholder below is
-#   substituted at apply time.
+#   dashboard, NOT in this flake — the Nix store is world-readable. The real key now comes from
+#   the sops `aperture/static-key` secret (~/.yclaw/state/secrets.sops.yaml), not the Nix store;
+#   the placeholder below is left unresolved on purpose and injected from sops at deploy time.
 # TODO(human): the model ids `gpt-5.5` / `gemini-3.5` may be placeholders. Hit
 #   `GET http://@@HOST_NAME@@.@@TAILNET_DOMAIN@@:8317/v1/models` after the Codex/Gemini
 #   logins to read the real upstream ids; use those here directly or rename them via
