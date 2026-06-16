@@ -103,15 +103,15 @@ in
 
   # The two tart Linux VM runners. --suspendable enables `tart suspend`; bridged networking
   # gives each VM its own LAN IP + tailnet node (so `tart ip` does NOT work — use MagicDNS).
-  # TODO(human): confirm the bridged interface — openclaw.md used en12, this host may differ;
-  #   `tart run … --net-bridged=list` enumerates them, then pin the right one (en0 here).
+  # en12 is verified from this host's existing tart launchagents (the openclaw/bluebubbles VMs).
+  # `tart run … --net-bridged=list` enumerates interfaces if this changes.
   launchd.user.agents.tart-hermes.serviceConfig = {
     ProgramArguments = [
       "/opt/homebrew/bin/tart"
       "run"
       "hermes"
       "--no-graphics"
-      "--net-bridged=en0"
+      "--net-bridged=en12"
       "--suspendable"
     ];
     RunAtLoad = true;
@@ -126,7 +126,7 @@ in
       "run"
       "vault"
       "--no-graphics"
-      "--net-bridged=en0"
+      "--net-bridged=en12"
       "--suspendable"
     ];
     RunAtLoad = true;
