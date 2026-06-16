@@ -64,4 +64,4 @@ just rebuild   # destroy, then bootstrap from zero
 
 ## Status
 
-The full IaC is authored and internally cross-checked, but it has not yet been `nix flake check`-clean on a machine with Nix and an `aarch64-linux` builder, and the end-to-end rebuild still depends on the human gates above. Items needing a human decision or a live-stack check are marked inline with `TODO(human):`.
+The full IaC is authored and verified as far as is possible without applying the host config: the flake locks, every output (`hermes`/`vault`/`host` configs, both VM images, the Aperture artifact) evaluates clean, and both Go services (`agent-vault`, `cli-proxy-api`) build with pinned `vendorHash`es. Still gated on the host: a full `nix flake check` and the VM image builds need the `aarch64-linux` builder (it comes up after `darwin-rebuild switch`), and the end-to-end rebuild depends on the human gates above. Items needing a human decision or a live-stack check are marked inline with `TODO(human):`.
