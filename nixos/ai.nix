@@ -34,7 +34,7 @@ writeText "aperture-providers.json" (builtins.toJSON {
       # this entry: both route to CLIProxyAPI's unified /v1/chat/completions, which maps the
       # model id to the right OAuth account.
       baseurl = "http://@@HOST_NAME@@.@@TAILNET_DOMAIN@@:8317";
-      models = [ "gpt-5.5" "gemini-3.5" ];
+      models = [ "gpt-5.5" "gemini-3-pro-preview" ];
       apikey = "@@APERTURE_STATIC_KEY@@";
       authorization = "bearer";
       compatibility.openai_chat = true;
@@ -42,7 +42,7 @@ writeText "aperture-providers.json" (builtins.toJSON {
     qwen-local = {
       name = "Local Qwen (mlx_lm.server)";
       baseurl = "http://@@HOST_NAME@@.@@TAILNET_DOMAIN@@:8080";
-      models = [ "qwen-local" ];
+      models = [ "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit" ];
       compatibility.openai_chat = true;
     };
   };

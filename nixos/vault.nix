@@ -76,39 +76,56 @@ in
   # how this oneshot authenticates to push credentials/services (verify cmd/register.go
   # / cmd/owner_vault.go for a non-interactive path) before this step can run unattended.
   systemd.services.agent-vault-provision = {
-    description = "Seed agent-vault service rules + static credentials";
+    description = "Register owner + push service rules + static credentials";
     after = [ "agent-vault.service" ];
     requires = [ "agent-vault.service" ];
     wantedBy = [ "multi-user.target" ];
-    path = [ pkgs.agent-vault ];
-    environment.HOME = vaultHome;
+    path = [
+      pkgs.agent-vault
+      pkgs.curl
+      pkgs.gnugrep
+      pkgs.coreutils
+    ];
+    environment = {
+      HOME = vaultHome;
+      AGENT_VAULT_ADDR = "http://127.0.0.1:14321";
+    };
     serviceConfig = {
       Type = "oneshot";
-      User = vaultUser;
-      Group = vaultUser;
+      # Runs as root so it reads the root-owned sops secrets (master-password env + static-keys)
+      # directly; it only talks to the local API and reads files — the server stays ${vaultUser}.
+      EnvironmentFile = config.sops.secrets."vault/master-password".path;
       RemainAfterExit = true;
     };
     script = ''
       set -euo pipefail
+      ADDR=http://127.0.0.1:14321
+      owner=admin@hermes.local
 
-      # Replace-all the service rules for the `hermes` vault.
-      agent-vault vault service set --vault ${vaultName} -f ${servicesYaml}
+      # Wait for the server to accept connections.
+      for _ in $(seq 1 120); do curl -fsS "$ADDR/health" >/dev/null 2>&1 && break; sleep 1; done
 
-      # Static API keys (OPENAI/EXA/HONCHO/GITHUB) as KEY=VALUE lines from sops.
-      agent-vault credential set --vault ${vaultName} \
+      # First boot: register the owner non-interactively (the first user auto-activates and
+      # auto-logs in, persisting the CLI session under $HOME/.agent-vault). Idempotent — skipped
+      # once a user exists; falls back to a non-interactive login if the session is missing.
+      if curl -fsS "$ADDR/v1/status" | grep -q '"needs_first_user":true'; then
+        printf '%s' "$AGENT_VAULT_MASTER_PASSWORD" \
+          | agent-vault auth register --address "$ADDR" --email "$owner" --password-stdin
+      elif [ ! -s "$HOME/.agent-vault/session.json" ]; then
+        printf '%s' "$AGENT_VAULT_MASTER_PASSWORD" \
+          | agent-vault auth login --address "$ADDR" --email "$owner" --password-stdin
+      fi
+
+      # Ensure the target vault exists (registration only grants a "default" vault). Idempotent.
+      agent-vault vault create ${vaultName} 2>/dev/null || true
+
+      # Replace-all the service rules, then (re)set the static API keys from sops (KEY=VALUE lines).
+      agent-vault vault service set --vault ${vaultName} --file ${servicesYaml}
+      agent-vault vault credential set --vault ${vaultName} \
         $(cat ${config.sops.secrets."vault/static-keys".path})
 
-      # HUMAN: Google is an OAuth credential, NOT `credential set`. Connect it ONCE:
-      #   POST ${vaultAddr}/v1/credentials/oauth/connect
-      #     {vault: "${vaultName}", key: "GOOGLE_OAUTH_TOKEN",
-      #      authorization_url: "https://accounts.google.com/o/oauth2/v2/auth",
-      #      token_url: "https://oauth2.googleapis.com/token",
-      #      client_id/client_secret from sops vault/google-oauth, scopes: "<gws scopes>"}
-      #   then open the returned authorization_url in a browser to consent.
-      # The Google client's Authorized redirect URI must EXACTLY equal
-      #   ${vaultAddr}/v1/oauth/callback
-      # TODO(human): decide browser-consent vs. headless token-upload
-      #   (POST ${vaultAddr}/v1/credentials/oauth/tokens) for the Google credential.
+      # Google is an OAuth credential (key GOOGLE_OAUTH_TOKEN), connected out of band via the
+      # headless token upload POST ${vaultAddr}/v1/credentials/oauth/tokens — see DEPLOYMENT docs.
     '';
   };
 
