@@ -46,8 +46,26 @@ if command -v gh >/dev/null && GITHUB_TOKEN="$(gh auth token 2>/dev/null)" && [ 
 else
   GITHUB_TOKEN="$(ask 'GitHub token (ghp_… / github_pat_…)')"
 fi
-GOOGLE_OAUTH_CLIENT_ID="$(ask 'Google Workspace OAuth client id')"
-GOOGLE_OAUTH_CLIENT_SECRET="$(ask 'Google Workspace OAuth client secret')"
+# Google: reuse the local gws (googleworkspace-cli) OAuth client if present.
+GWS_CLIENT="$HOME/.config/gws/client_secret.json"
+read -r GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET < <(
+  python3 - "$GWS_CLIENT" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    c = d.get("installed") or d.get("web") or {}
+    cid, sec = c.get("client_id", ""), c.get("client_secret", "")
+    if cid and sec: print(cid, sec)
+except Exception:
+    pass
+PY
+)
+if [ -n "${GOOGLE_OAUTH_CLIENT_ID:-}" ] && [ -n "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]; then
+  note "Google OAuth client sourced from ~/.config/gws/client_secret.json."
+else
+  GOOGLE_OAUTH_CLIENT_ID="$(ask 'Google Workspace OAuth client id')"
+  GOOGLE_OAUTH_CLIENT_SECRET="$(ask 'Google Workspace OAuth client secret')"
+fi
 BLUEBUBBLES_PASSWORD="$(ask 'BlueBubbles password (leave blank to read off the VM)')"
 [ -n "$BLUEBUBBLES_PASSWORD" ] || BLUEBUBBLES_PASSWORD="__PENDING_READ_FROM_VM__"
 
