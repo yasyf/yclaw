@@ -1,0 +1,51 @@
+# agent-vault service rules (broker.Config) for the `hermes` vault.
+# Pushed at provisioning via `agent-vault vault service set -f` (replace-all).
+# Schema: broker.Config — see docs/build-notes/agent-vault.md §2.
+# `token`/`key`/`username` are credential KEY references (UPPER_SNAKE_CASE), not
+# the secret values; the real secrets are stored separately (sops -> credential set).
+# Injected auth headers use Set (not Add), so a dummy Authorization from hermes is
+# overwritten with the real/refreshed token.
+vault: hermes
+
+# Only declared hosts egress; everything else is 403. README:39 confirms
+# unmatched_host_policy=deny is the opt-in strict mode (brokercore default is
+# passthrough). Lives in this broker.Config file.
+unmatched_host_policy: deny
+
+services:
+  - name: openai
+    host: api.openai.com
+    auth:
+      type: bearer
+      token: OPENAI_API_KEY
+
+  - name: exa
+    host: api.exa.ai
+    auth:
+      type: bearer
+      token: EXA_API_KEY
+    # TODO(human): VERIFY Exa uses Bearer (some Exa APIs use x-api-key header).
+    # If x-api-key: use type: api-key, key: EXA_API_KEY, header: x-api-key.
+
+  - name: honcho
+    host: api.honcho.dev
+    auth:
+      type: bearer
+      token: HONCHO_API_KEY
+    # TODO(human): VERIFY Honcho auth header shape (Bearer vs x-api-key).
+
+  - name: github
+    host: api.github.com
+    auth:
+      type: bearer
+      token: GITHUB_TOKEN
+
+  - name: googleapis
+    # *. matches exactly one subdomain level: api.googleapis.com,
+    # storage.googleapis.com, oauth2.googleapis.com — not a.b.googleapis.com.
+    host: "*.googleapis.com"
+    auth:
+      type: bearer
+      token: GOOGLE_OAUTH_TOKEN
+    # OAuth-type credential under this same key, connected once via the OAuth flow
+    # (§3); access token auto-refreshed within 5 min of expiry at request time.
