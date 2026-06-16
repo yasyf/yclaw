@@ -1,0 +1,11 @@
+# sops creation rules. bootstrap.sh generates the age key, writes its PUBLIC key here
+# (replacing @@AGE_PUBLIC_KEY@@), and re-encrypts secrets/secrets.sops.yaml in place.
+# The PRIVATE key lands on each VM at /var/lib/sops-nix/key.txt (never committed).
+keys:
+  # Quoted: an unquoted scalar cannot start with `@` (a reserved YAML indicator).
+  - &host "@@AGE_PUBLIC_KEY@@" # TODO(human): bootstrap fills this with `age-keygen` public key.
+creation_rules:
+  - path_regex: secrets/[^/]+\.sops\.yaml$
+    key_groups:
+      - age:
+          - *host

@@ -14,3 +14,21 @@
 # Python bytecode (guard hooks are Python even in non-Python repos)
 __pycache__/
 *.py[cod]
+
+# Nix
+result
+result-*
+.direnv/
+
+# VM images / build artifacts (never commit a built image)
+*.qcow2
+*.raw
+*.img
+*.ipsw
+build/
+.packer.d/
+packer_cache/
+
+# Runtime secret material (only placeholders + encrypted blobs are tracked)
+secrets/*.decrypted
+secrets/runtime/
