@@ -1,0 +1,113 @@
+# Build the GENERIC hermes gateway image in CI so the host can PULL it (the host is being
+# de-Nix'd — no nix on it). Native aarch64-linux, raw-efi for tart. vault is being RETIRED
+# (folded into the metal VM), so ONLY hermes is built here.
+#
+# The image carries NO per-machine identity: every @@PLACEHOLDER@@ in nixos/** is substituted
+# on the HOST at bootstrap, and per-user secrets/config are injected at first boot via the
+# tart virtiofs share (nixos/common.nix `seedNodeConfig`). The genericity guard below fails
+# the build if any author-specific string leaks into the closure or the image.
+name: build-images
+
+on:
+  push:
+    branches: [main]
+    # Path filters are evaluated for BRANCH pushes only — GitHub does NOT apply `paths` to
+    # tag pushes, so a `v*` tag always cuts a release regardless of which files it touches.
+    paths:
+      - flake.nix
+      - flake.lock
+      - nixos/**
+      - pkgs/**
+    tags:
+      - "v*"
+  workflow_dispatch:
+  # Weekly rebuild to follow upstream hermes-agent. (A merged bump-upstream.yml lock change
+  # also triggers the push build above, since flake.lock is in the path filter.)
+  schedule:
+    - cron: "17 4 * * 1" # Mondays 04:17 UTC
+
+concurrency:
+  group: build-images-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # create releases / upload assets on tag push
+
+jobs:
+  hermes-image:
+    name: Build hermes image (aarch64-linux)
+    runs-on: ubuntu-24.04-arm # native aarch64 — no qemu, avoids the cross-build OOM
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build hermes raw-efi image
+        run: nix build --print-build-logs .#packages.aarch64-linux.hermes-image
+
+      - name: Locate raw-efi image and derive asset name
+        id: img
+        run: |
+          set -euo pipefail
+          raw="$(find -L result -maxdepth 1 -type f -name '*.img' | head -1)"
+          test -n "$raw" || { echo "no *.img under result/"; ls -lL result; exit 1; }
+          echo "raw=$raw" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            name="hermes-${GITHUB_REF_NAME}"
+          else
+            name="hermes-$(date -u +%Y%m%d)-${GITHUB_SHA::7}"
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Genericity guard (no author-specific strings in the closure or image)
+        env:
+          RAW: ${{ steps.img.outputs.raw }}
+        run: |
+          set -uo pipefail
+          # A clean CI build contains only the literal @@…@@ tokens — never these real values.
+          # The raw image is ext4 plaintext, so a byte-grep scans the entire baked store.
+          pattern='tail71af5d|yasyf-home|yasyfm@gmail.com|6176316733|169bebe8'
+          fail=0
+          echo "== scanning image-closure store-path names =="
+          ph="$(nix path-info -r ./result | grep -E "$pattern" || true)"
+          if [ -n "$ph" ]; then echo "::error::author-specific string in a closure store-path name:"; echo "$ph"; fail=1; fi
+          echo "== scanning raw image bytes =="
+          hits="$(LC_ALL=C grep -aoE "$pattern" "$RAW" | sort -u || true)"
+          if [ -n "$hits" ]; then echo "::error::author-specific string baked into the image:"; echo "$hits"; fail=1; fi
+          test "$fail" -eq 0 || exit 1
+          echo "genericity guard passed"
+
+      - name: Compress (zstd -19) and checksum
+        id: pack
+        env:
+          RAW: ${{ steps.img.outputs.raw }}
+          NAME: ${{ steps.img.outputs.name }}
+        run: |
+          set -euo pipefail
+          out="${NAME}.img.zst"
+          zstd -19 -T0 -o "$out" "$RAW"
+          sha256sum "$out" > "$out.sha256"
+          echo "out=$out" >> "$GITHUB_OUTPUT"
+          ls -lh "$out" "$out.sha256"
+
+      - name: Upload Release asset (tag push)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.pack.outputs.out }}
+            ${{ steps.pack.outputs.out }}.sha256
+
+      - name: Upload build artifact (non-tag)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.img.outputs.name }}
+          path: |
+            ${{ steps.pack.outputs.out }}
+            ${{ steps.pack.outputs.out }}.sha256
+          if-no-files-found: error

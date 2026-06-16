@@ -28,8 +28,13 @@
     };
 
     # The hermes gateway, its NixOS module, and the declarative config.yaml renderer.
-    # Pinned; brings its own nixpkgs closure for the package (see docs/build-notes/hermes-nixos-module.md).
-    hermes-agent.url = "github:NousResearch/hermes-agent/f7955137828e43d26bab926f0aacc5302d5fa357";
+    # Tracks the default branch — the EXACT rev is pinned in flake.lock, so the build stays
+    # reproducible and bumps are deliberate: the weekly `.github/workflows/bump-upstream.yml`
+    # job runs `nix flake update hermes-agent` and opens a PR. The `--replace-fail` patch
+    # anchors in nixos/hermes.nix make a bump FAIL LOUD at build time if upstream moved the
+    # patched lines — the intended signal for a human to re-roll the patch before merging.
+    # Brings its own nixpkgs closure for the package (see docs/build-notes/hermes-nixos-module.md).
+    hermes-agent.url = "github:NousResearch/hermes-agent";
 
     # Build-from-source inputs for the two Go services (no upstream Nix packaging).
     agent-vault-src = {
