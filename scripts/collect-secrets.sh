@@ -88,11 +88,13 @@ PUB="$(age-keygen -y "$AGE_KEY")"
 [ "${PUB:0:4}" = "age1" ] || fail 'could not derive age public key.'
 note "age public key: $PUB"
 
-# Pin the public key into the sops creation rules (idempotent).
+# Pin the public key into the sops creation rules (idempotent). Read fully BEFORE opening
+# for write — `open(w)` truncates, so a one-liner would clobber the file before reading it.
 python3 - "$REPO/.sops.yaml" "$PUB" <<'PY'
 import sys
 p, pub = sys.argv[1], sys.argv[2]
-open(p, "w").write(open(p).read().replace("@@AGE_PUBLIC_KEY@@", pub))
+s = open(p).read()
+open(p, "w").write(s.replace("@@AGE_PUBLIC_KEY@@", pub))
 PY
 
 export TS_AUTHKEY AGENT_VAULT_MASTER_PASSWORD OPENAI_API_KEY EXA_API_KEY \
