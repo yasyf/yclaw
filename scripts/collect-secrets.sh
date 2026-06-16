@@ -40,7 +40,12 @@ TS_AUTHKEY="$(ask 'Tailscale auth key (tskey-auth-…, reusable)')"
 OPENAI_API_KEY="$(ask 'OpenAI API key (sk-…)')"
 EXA_API_KEY="$(ask 'Exa API key')"
 HONCHO_API_KEY="$(ask 'Honcho API key')"
-GITHUB_TOKEN="$(ask 'GitHub token (ghp_… / github_pat_…)')"
+# GitHub: reuse the locally-authenticated gh CLI token rather than prompting.
+if command -v gh >/dev/null && GITHUB_TOKEN="$(gh auth token 2>/dev/null)" && [ -n "$GITHUB_TOKEN" ]; then
+  note "GitHub token sourced from gh CLI (account: $(gh api user -q .login 2>/dev/null || echo '?'))."
+else
+  GITHUB_TOKEN="$(ask 'GitHub token (ghp_… / github_pat_…)')"
+fi
 GOOGLE_OAUTH_CLIENT_ID="$(ask 'Google Workspace OAuth client id')"
 GOOGLE_OAUTH_CLIENT_SECRET="$(ask 'Google Workspace OAuth client secret')"
 BLUEBUBBLES_PASSWORD="$(ask 'BlueBubbles password (leave blank to read off the VM)')"
