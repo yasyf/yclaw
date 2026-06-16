@@ -13,6 +13,7 @@
   config,
   lib,
   pkgs,
+  inputs,
   ...
 }:
 let
@@ -24,11 +25,11 @@ let
     HTTPS_PROXY=http://vault.@@TAILNET_DOMAIN@@:14322
     HTTP_PROXY=http://vault.@@TAILNET_DOMAIN@@:14322
     NO_PROXY=ai,.ts.net,localhost,127.0.0.1,@@HOST_NAME@@.@@TAILNET_DOMAIN@@,bluebubbles.@@TAILNET_DOMAIN@@
-    SSL_CERT_FILE=/etc/ssl/agent-vault-ca.pem
-    NODE_EXTRA_CA_CERTS=/etc/ssl/agent-vault-ca.pem
-    REQUESTS_CA_BUNDLE=/etc/ssl/agent-vault-ca.pem
-    CURL_CA_BUNDLE=/etc/ssl/agent-vault-ca.pem
-    GIT_SSL_CAINFO=/etc/ssl/agent-vault-ca.pem
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+    CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+    GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
     # Dummy API keys. The SDKs refuse to send a request with an empty key, so each
     # must be non-empty to initialize; agent-vault's MITM proxy OVERWRITES the
     # Authorization header with the real, custody-held key on the wire (agent-vault.md
@@ -55,13 +56,17 @@ let
   # separate macOS VM reached via `tailscale serve https`; if hermes starts first
   # the gateway crash-loops on connect. ExecStartPre blocks until BB answers.
   waitForBlueBubbles = pkgs.writeShellScript "wait-for-bluebubbles" ''
-    set -euo pipefail
+    set -uo pipefail
+    # /api/v1/server/info needs the password and returns 401 without it — but a 401 still
+    # means the server is UP. So check reachability (any HTTP response), NOT -f (which would
+    # treat 401 as failure and wait forever). curl exits 0 on any response, non-zero only if
+    # it can't connect at all.
     url="https://bluebubbles.@@TAILNET_DOMAIN@@/api/v1/server/info"
-    until ${pkgs.curl}/bin/curl -fsS --max-time 5 "$url" >/dev/null 2>&1; do
+    until ${pkgs.curl}/bin/curl -sS -o /dev/null --max-time 5 "$url" 2>/dev/null; do
       echo "waiting for BlueBubbles at $url ..."
       sleep 5
     done
-    echo "BlueBubbles is ready."
+    echo "BlueBubbles is reachable."
   '';
 
   # --- Honcho activation file (~/.honcho/config.json) --------------------------
@@ -84,6 +89,43 @@ let
     dialecticReasoningLevel = "low";
   });
 
+  # --- Patched hermes-agent package (codified iMessage reply-routing fix) ------
+  # UPSTREAM BUG (present on latest main, verified 2026-06-16 against the source):
+  # a BlueBubbles webhook delivery that omits the chat GUID makes the gateway key the
+  # session on the bare sender handle (`bluebubbles.py` webhook handler). Replies then
+  # go through `_resolve_chat_guid`, which resolves a bare phone/email to the FIRST chat
+  # that merely lists it as a participant — a GROUP if one sorts ahead of the 1:1 — so a
+  # DM reply leaks into a group chat. No upstream fix exists, so we rebuild the pinned
+  # package from patched source (no fork; reuses hermes-agent's own nixpkgs + inputs):
+  #   1. webhook handler: synthesize the DM GUID (`any;-;<sender>`) for chat-less, non-group
+  #      events, so the reply targets the 1:1 and the session dedupes with the GUID session.
+  #   2. _resolve_chat_guid: never resolve a bare handle to a group chat (guid contains ";+;").
+  # substituteInPlace's --replace-fail makes a stale anchor fail the build loudly on a bump.
+  ha = inputs.hermes-agent;
+  haSystem = pkgs.stdenv.hostPlatform.system;
+  haPkgs = import ha.inputs.nixpkgs {
+    system = haSystem;
+    config.allowUnfree = true;
+  };
+  bbResolveOld = "                guid = chat.get(\"guid\") or chat.get(\"chatGuid\")\n                identifier = chat.get(\"chatIdentifier\")";
+  bbResolveNew = "                guid = chat.get(\"guid\") or chat.get(\"chatGuid\")\n                if guid and \";+;\" in guid:\n                    continue\n                identifier = chat.get(\"chatIdentifier\")";
+  bbWebhookOld = "        if not (chat_guid or chat_identifier) and sender:\n            chat_identifier = sender";
+  bbWebhookNew = "        if not chat_guid and sender and not bool(record.get(\"isGroup\")):\n            chat_guid = \"any;-;\" + sender\n        if not (chat_guid or chat_identifier) and sender:\n            chat_identifier = sender";
+  patchedHermesSrc = haPkgs.applyPatches {
+    name = "hermes-agent-src-bbroutingfix";
+    src = ha;
+    postPatch = ''
+      substituteInPlace gateway/platforms/bluebubbles.py \
+        --replace-fail ${lib.escapeShellArg bbResolveOld} ${lib.escapeShellArg bbResolveNew} \
+        --replace-fail ${lib.escapeShellArg bbWebhookOld} ${lib.escapeShellArg bbWebhookNew}
+    '';
+  };
+  patchedHermesAgent = haPkgs.callPackage "${patchedHermesSrc}/nix/hermes-agent.nix" {
+    inherit (ha.inputs) uv2nix pyproject-nix pyproject-build-systems;
+    npm-lockfile-fix = ha.inputs.npm-lockfile-fix.packages.${haSystem}.default;
+    rev = ha.rev or null;
+  };
+
   cfg = config.services.hermes-agent;
 in
 {
@@ -92,6 +134,9 @@ in
   # --- Hermes agent gateway ----------------------------------------------------
   services.hermes-agent = {
     enable = true;
+
+    # Rebuilt from patched source — see patchedHermesAgent above (DM-reply routing fix).
+    package = patchedHermesAgent;
 
     # Appended into ~/.hermes/.env in order: non-secret first, sops secret last.
     # environmentFiles is `listOf str`, so coerce the writeText derivation to its
@@ -109,19 +154,19 @@ in
         provider = "custom";
         default = "gpt-5.5";
         base_url = "http://ai/v1";
-        # api_key/key_env UNSET — Aperture is tailnet-gated.
-        # TODO(human): confirm whether Aperture requires a presented key on the
-        #   hermes side; if so set key_env to APERTURE_STATIC_KEY (@@APERTURE_STATIC_KEY@@).
+        # api_key/key_env UNSET — Aperture authenticates by tailnet identity (the source
+        # node), not a presented bearer (verified: requests with a dummy `Bearer -` route
+        # fine). The cliproxy upstream's real key is injected by Aperture, not by hermes.
       };
       fallback_providers = [
         {
           provider = "custom";
-          model = "gemini-3.5";
+          model = "gemini-3-pro-preview";
           base_url = "http://ai/v1";
         }
         {
           provider = "custom";
-          model = "qwen-local";
+          model = "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit";
           base_url = "http://ai/v1";
         }
       ];
@@ -330,6 +375,10 @@ in
 
   # --- In-VM Docker sandbox (terminal.backend = "docker") ----------------------
   virtualisation.docker.enable = true;
+  # The hermes-agent service runs with a restricted systemd PATH that lacks the docker CLI,
+  # so the code-execution tool's `docker` lookup fails ("Docker executable not found in PATH").
+  # Put the docker client on the service PATH (verified: without this, execute_code errors).
+  systemd.services.hermes-agent.path = [ config.virtualisation.docker.package ];
   # The hermes-agent module's default user is "hermes" (hermes-nixos-module.md §2).
   # TODO(human): confirm the module's user name is "hermes" before relying on this group.
   users.users.hermes.extraGroups = [ "docker" ];
