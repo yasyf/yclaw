@@ -1,0 +1,39 @@
+# CLIProxyAPI config — the host-side OAuth -> static-key proxy (Codex + Gemini-personal).
+# Installed to /etc/cli-proxy-api/config.yaml by darwin/host.nix; the launchd agent runs
+# `cli-proxy-api --config /etc/cli-proxy-api/config.yaml`. Schema from docs/build-notes/cliproxyapi.md §1.
+
+# "" binds all interfaces so the separate `ai` (Aperture) tailnet node reaches the host's :8317.
+host: ""
+# THE port Aperture targets (http://<host>:8317/v1/chat/completions). Tailscale ACLs gate access.
+port: 8317
+
+# Where OAuth tokens are persisted by `--codex-login` / `--login`. Absolute (launchd does NOT
+# expand ~) and under the login user's home. BACK THIS UP — the refresh tokens are rotating/
+# single-use and CLIProxyAPI must be their only holder (cliproxyapi.md §2).
+auth-dir: "/Users/@@HOST_USER@@/.cli-proxy-api"
+
+# The static keys clients present. Aperture injects `Authorization: Bearer @@APERTURE_STATIC_KEY@@`.
+# At least one real key is REQUIRED: an empty list unregisters the key-gate, and any leftover
+# example value ("your-api-key-1") trips the safe-mode guard and refuses to serve (cliproxyapi.md §1).
+api-keys:
+  - "@@APERTURE_STATIC_KEY@@"
+
+# Management API disabled entirely (empty secret-key -> no /v0/management routes).
+remote-management:
+  allow-remote: false
+  secret-key: ""
+
+# Model -> Codex-vs-Gemini routing is automatic by registry ownership; no manual table needed.
+# The literal ids gpt-5.5 / gemini-3.5 are architecture-doc placeholders — the real upstream ids
+# may differ. Define oauth-model-alias only if they do; the example below renames real ids to the
+# ids Aperture/hermes request. Aliases affect both /v1/models and request routing.
+# TODO(human): after `--codex-login` + `--login`, hit `GET http://@@HOST_NAME@@.@@TAILNET_DOMAIN@@:8317/v1/models`
+#   to read the real upstream ids, then either use those ids in Aperture directly or uncomment +
+#   correct this block (the `name:` values below are guesses, not confirmed ids).
+# oauth-model-alias:
+#   codex:
+#     - name: "gpt-5"            # real upstream id from /v1/models
+#       alias: "gpt-5.5"         # the id Aperture/hermes requests
+#   gemini-cli:
+#     - name: "gemini-3.5-flash" # real upstream id from /v1/models
+#       alias: "gemini-3.5"
