@@ -123,7 +123,10 @@ vault:
 ''')
 PY
 
-sops --encrypt --age "$PUB" "$PLAIN" > "$REPO/secrets/secrets.sops.yaml"
+# --input-type/--output-type yaml are REQUIRED: the mktemp file has no .yaml extension, so
+# sops would otherwise treat it as binary and wrap the whole document in a `data:` blob that
+# sops-nix cannot navigate (it extracts secrets by key path like tailscale/authkey).
+sops --encrypt --input-type yaml --output-type yaml --age "$PUB" "$PLAIN" > "$REPO/secrets/secrets.sops.yaml"
 rm -f "$PLAIN"; trap - EXIT
 install -m 600 "$AGE_KEY" "$VM_SECRETS/key.txt"
 
