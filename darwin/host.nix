@@ -4,9 +4,10 @@
 # and the activation-time pf VNC anchor + Tailscale OSS daemon hookup.
 #
 # Sources: docs/build-notes/tart-nixos-darwin.md §2, docs/build-notes/cliproxyapi.md §4.
-{ pkgs, ... }:
+{ pkgs, lib, ... }:
 let
-  logs = "/Users/@@HOST_USER@@/Library/Logs";
+  home = "/Users/@@HOST_USER@@";
+  logs = "${home}/Library/Logs";
 in
 {
   networking.hostName = "@@HOST_NAME@@";
@@ -26,9 +27,24 @@ in
     enable = true;
     ephemeral = true;
     maxJobs = 4;
+    # The default builder disk is too small for the hermes closure + the 5 GB raw-efi image
+    # (the build VM runs out of space mid-`mv`). Give it room.
+    config = {
+      # nix-darwin's builder profile pins diskSize=20480; override it.
+      virtualisation.diskSize = lib.mkForce (60 * 1024); # MiB
+      # Default builder RAM (~3 GB) OOM-kills `npm ci` when building hermes-agent's
+      # tui/web frontends from source (host has 128 GiB, so this is free headroom).
+      virtualisation.memorySize = lib.mkForce (16 * 1024); # MiB
+    };
   };
   # The builder must be usable by the operator and reachable as a remote store.
   nix.settings.trusted-users = [ "@@HOST_USER@@" ];
+
+  # Leave the host's existing Touch-ID-for-sudo config alone. /etc/pam.d/sudo_local
+  # already enables pam_tid + pam_reattach (homebrew) and is out of scope for this stack;
+  # letting nix-darwin manage it would rewrite the auth path. Disable management so the
+  # working file survives untouched.
+  security.pam.services.sudo_local.enable = false;
 
   # --- Homebrew (tart + OSS Tailscale) -----------------------------------------
   # cleanup="none" keeps untracked packages; autoUpdate=false keeps `switch` idempotent.
@@ -46,6 +62,7 @@ in
     brews = [
       "tailscale"
       "cirruslabs/cli/tart"
+      "gum" # TUI for scripts/collect-secrets.sh
     ];
   };
 
@@ -58,14 +75,15 @@ in
   # User agents (gui session), NOT system daemons: MLX/Parakeet need the GPU + Metal,
   # which the system domain lacks. All ProgramArguments are absolute (launchd does not
   # use PATH or expand ~). RunAtLoad + KeepAlive = restart-always.
-  # TODO(human): MLX (`mlx_lm.server`) and Parakeet (`parakeet-server`) are NOT Nix-packaged
-  #   — install them out of band (pip/uv/brew) so /opt/homebrew/bin/{mlx_lm.server,parakeet-server}
-  #   exist; confirm those exact binary names/paths.
+  # MLX and Parakeet are installed out of band (not Nix-packaged). MLX is a mise pipx tool
+  # (`mise use -g pipx:mlx-lm`); the absolute binary lives under the mise install dir. The
+  # server runs WITHOUT a pinned --model so it loads the requested model lazily on the first
+  # request (no multi-GB download at launchd start, verified); the qwen-local fallback request
+  # carries the real MLX model id. Parakeet (STT) is still TODO(human): `parakeet-server` is not
+  # yet installed (out of scope for the smoke tests — voice transcription only).
   launchd.user.agents.mlx-qwen.serviceConfig = {
     ProgramArguments = [
-      "/opt/homebrew/bin/mlx_lm.server"
-      "--model"
-      "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"
+      "${home}/.local/share/mise/installs/pipx-mlx-lm/latest/bin/mlx_lm.server"
       "--host"
       "0.0.0.0"
       "--port"
@@ -103,8 +121,12 @@ in
     StandardErrorPath = "${logs}/cliproxyapi/proxy.error.log";
   };
 
-  # The two tart Linux VM runners. --suspendable enables `tart suspend`; bridged networking
-  # gives each VM its own LAN IP + tailnet node (so `tart ip` does NOT work — use MagicDNS).
+  # The two tart Linux VM runners (NO --suspendable — `tart suspend` is macOS-guest-only and
+  # errors on Linux VMs). NAT networking (tart default — no --net-bridged): this host's only
+  # active uplink is Wi-Fi (en1) and both wired ports (en0, USB-LAN en12) are unplugged, so
+  # bridged networking has no carrier. The VMs reach the internet through the host's NAT and
+  # join the tailnet via MagicDNS regardless of uplink. A virtiofs --dir share (tag `sops`)
+  # seeds the age key. (If a wired port is later restored, add `--net-bridged=<iface>` back.)
   # en12 is verified from this host's existing tart launchagents (the openclaw/bluebubbles VMs).
   # `tart run … --net-bridged=list` enumerates interfaces if this changes.
   launchd.user.agents.tart-hermes.serviceConfig = {
@@ -113,8 +135,11 @@ in
       "run"
       "hermes"
       "--no-graphics"
-      "--net-bridged=en12"
-      "--suspendable"
+      # Drain the guest serial console to /dev/null. Without a console sink, a headless
+      # `--no-graphics` boot HANGS once the virtio console ring fills (verified) — `--serial`
+      # works only because it drains the PTY. /dev/null is the launchd-friendly equivalent.
+      "--serial-path=/dev/null"
+      "--dir=${home}/.config/yclaw/vm-secrets:ro,tag=sops"
     ];
     RunAtLoad = true;
     KeepAlive = true;
@@ -128,8 +153,11 @@ in
       "run"
       "vault"
       "--no-graphics"
-      "--net-bridged=en12"
-      "--suspendable"
+      # Drain the guest serial console to /dev/null. Without a console sink, a headless
+      # `--no-graphics` boot HANGS once the virtio console ring fills (verified) — `--serial`
+      # works only because it drains the PTY. /dev/null is the launchd-friendly equivalent.
+      "--serial-path=/dev/null"
+      "--dir=${home}/.config/yclaw/vm-secrets:ro,tag=sops"
     ];
     RunAtLoad = true;
     KeepAlive = true;
@@ -145,6 +173,10 @@ in
   # runs a newer mise-built `tailscaled` (1.98.5) as the system daemon with `tailscale ssh`
   # live, so re-pointing /usr/local/bin/tailscaled at the older Homebrew binary (1.96.4) and
   # re-running `install-system-daemon` would downgrade a working setup. Leave it alone.
+  #
+  # The application-firewall allowlist matters: the macOS app firewall blocks inbound to
+  # unsigned binaries, so Aperture (the `ai` node) cannot reach cli-proxy-api (:8317) or the
+  # MLX server (:8080) back over the tailnet until those binaries are explicitly unblocked.
   system.activationScripts.postActivation.text = ''
     # pf VNC anchor — idempotent (only appends to pf.conf once)
     PF_ANCHOR_FILE="/etc/pf.anchors/vnc"
@@ -154,13 +186,35 @@ in
     pass in quick proto { tcp udp } from <vnc_allowed> to any port 5900:5902
     block in quick proto { tcp udp } from any to any port 5900:5902
     EOF
+    # CRITICAL: `pfctl -f /etc/pf.conf` reloads the MAIN ruleset, which flushes the
+    # dynamically-loaded vmnet / Internet-Sharing NAT anchors (shared_v4 / shared_v6 /
+    # network_isolation) that the tart VMs rely on for internet + tailnet egress. Running it
+    # on every activation silently kills every VM's egress (all model calls via http://ai
+    # time out) until the VMs are restarted. So only do the full reload when we ACTUALLY add
+    # the anchor declaration (first run / after a pf.conf reset); on every other activation
+    # reload ONLY the vnc anchor with `pfctl -a vnc`, which leaves the NAT anchors untouched.
     if ! grep -q 'anchor "vnc"' /etc/pf.conf; then
       cat >> /etc/pf.conf <<CONF
 
     anchor "vnc"
     load anchor "vnc" from "/etc/pf.anchors/vnc"
     CONF
+      pfctl -f /etc/pf.conf
     fi
-    pfctl -f /etc/pf.conf
+    pfctl -a vnc -f "$PF_ANCHOR_FILE" 2>/dev/null || true
+
+    # Application-firewall allowlist for the host model services. Without this the macOS app
+    # firewall silently drops inbound connections from the tailnet to these unsigned binaries,
+    # so `http://ai/v1` (Aperture -> cliproxy / qwen-local) hangs. Idempotent (re-adding an
+    # already-listed app is a no-op).
+    FW=/usr/libexec/ApplicationFirewall/socketfilterfw
+    CLIPROXY_BIN="${pkgs.cli-proxy-api}/bin/cli-proxy-api"
+    MLX_PY="${home}/.local/share/mise/installs/pipx-mlx-lm/latest/bin/python"
+    "$FW" --add "$CLIPROXY_BIN" >/dev/null 2>&1 || true
+    "$FW" --unblockapp "$CLIPROXY_BIN" >/dev/null 2>&1 || true
+    if [ -e "$MLX_PY" ]; then
+      "$FW" --add "$MLX_PY" >/dev/null 2>&1 || true
+      "$FW" --unblockapp "$MLX_PY" >/dev/null 2>&1 || true
+    fi
   '';
 }
