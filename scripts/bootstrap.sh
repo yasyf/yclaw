@@ -194,7 +194,6 @@ build_and_replace() {
 }
 
 build_and_replace hermes hermes-image
-build_and_replace vault  vault-image
 
 # --- 7. load the launchd agents ---------------------------------------------
 

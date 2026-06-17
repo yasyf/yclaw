@@ -6,8 +6,9 @@
 
 ## When
 
-After the macOS base image boots for the first time (`just build-images` produces it from
-`packer/bluebubbles.pkr.hcl`) and before running `scripts/bluebubbles-setup.sh`.
+On the metal macOS guest, before installing the BlueBubbles server. SIP must be off for
+BlueBubbles's private-message API. (The folded-in metal guest reuses the already-SIP-off
+bluebubbles VM, so this is only needed when building metal from a fresh macOS base.)
 
 ## Steps
 
