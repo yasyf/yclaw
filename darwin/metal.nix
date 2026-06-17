@@ -381,11 +381,13 @@ in
         fi
       done
 
-      # OpenSSH Remote Login OFF. macOS sshd is independent of tailscale ssh (which runs inside
-      # tailscaled, brought up by `tailscale up --ssh` below), so disabling it does NOT cut admin
-      # access. After this the ONLY admin path is `tailscale ssh root@metal`; tailscaled itself is
-      # left running. `-f` skips the confirmation prompt.
-      /usr/sbin/systemsetup -f -setremotelogin off >/dev/null 2>&1 || true
+      # OpenSSH Remote Login OFF. `systemsetup -setremotelogin off` needs Full Disk Access — which
+      # the activation context does NOT have — so it silently no-ops; disable the sshd LaunchDaemon
+      # directly instead (FDA-independent, idempotent). macOS sshd is independent of tailscale ssh
+      # (served inside tailscaled), so this does NOT cut admin access: the ONLY admin path becomes
+      # `tailscale ssh root@metal`, and tailscaled is left running.
+      /bin/launchctl disable system/com.openssh.sshd >/dev/null 2>&1 || true
+      /bin/launchctl bootout system/com.openssh.sshd >/dev/null 2>&1 || true
 
       # Disable every sharing / remote-access surface — metal is headless and tailnet-only.
       # `launchctl disable` writes the persistent override db (survives reboot). This does NOT
