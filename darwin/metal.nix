@@ -139,6 +139,11 @@ in
   system.stateVersion = 5;
   system.primaryUser = adminUser;
 
+  # Nix is installed by the Determinate installer in-guest (it runs its own daemon), so
+  # nix-darwin must NOT also manage the Nix installation — otherwise activation aborts with
+  # "Determinate detected". This forgoes the `nix.*` settings options (unused here).
+  nix.enable = false;
+
   # --- Homebrew (omlx + OSS Tailscale) -----------------------------------------
   # cleanup="none" keeps untracked packages; autoUpdate=false keeps `switch` idempotent.
   # omlx is the jundot/omlx FORMULA (bin /opt/homebrew/bin/omlx); tailscale is the OSS CLI
