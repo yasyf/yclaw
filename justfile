@@ -10,14 +10,11 @@ default:
 setup:
     ./scripts/setup.sh
 
-# Build the NixOS raw-efi disk images for the Linux VMs.
-# The host has no nix and cannot build aarch64-linux from Darwin natively; this
-# runs on an aarch64-linux builder (nix.linux-builder VM, remote builder, or the
-# VM itself). See docs/build-notes/tart-nixos-darwin.md §1.2.
-# TODO(human): pin which aarch64-linux builder the build runs on.
-build-images:
-    nix build .#packages.aarch64-linux.hermes-image
-    nix build .#packages.aarch64-linux.vault-image
+# Build the hermes NixOS raw-efi image WITHOUT host Nix, in a linux/arm64 Docker container
+# (scripts/build-hermes-image.sh). This is the de-Nix'd builder; CI runs the same nix build
+# remotely. Output: ./result-hermes/nixos.img.
+build-hermes-image:
+    ./scripts/build-hermes-image.sh
 
 # Apply one node. host→darwin-rebuild; hermes/vault→rebuild image + tart disk-replace; ai→deploy-ai.
 # NOTE (Phase 4): the de-Nix'd host writes its VM runners as `com.yclaw.tart-<node>` (scripts/setup.sh),
