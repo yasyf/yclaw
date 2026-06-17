@@ -1,8 +1,9 @@
 # nix-darwin module for the `metal` macOS guest VM. Applies IN-GUEST with
 # `darwin-rebuild switch --flake <repo>#metal`.
 #
-# metal is ONE locked-down macOS guest holding ALL credentials, its own tailnet node,
-# serving four OpenAI-compatible services over the tailnet:
+# metal is the SIP-ON, MAX-LOCKED credential + AI services VM — one of three guests on the
+# bare-macOS host (alongside `bluebubbles` and `hermes`), with its own tailnet node. It holds
+# ALL credentials and serves four OpenAI-compatible services over the tailnet:
 #   omlx        :8000   local Qwen (replaces mlx_lm.server)
 #   mlx-audio   :8765   STT, ibm-granite/granite-speech-4.1-2b (replaces parakeet)
 #   cliproxy    :8317   CLIProxyAPI, Codex/Gemini OAuth -> static key
@@ -12,9 +13,16 @@
 # shares ~/.yclaw/state); the repo is shared read-only at "/Volumes/My Shared Files/repo".
 # The guest admin user is `admin` (home /Users/admin).
 #
-# SIP is OFF on this guest (BlueBubbles needs it on the host image this guest is cloned from).
-# The tradeoff is accepted because the surface is mitigated two ways: the vault is encrypted at
-# rest and every service is bound tailnet-only by the pf anchor + app-firewall allowlist below.
+# metal runs NO iMessage and NO BlueBubbles: those live on the separate `bluebubbles` guest,
+# which keeps SIP OFF (its Private API needs it) precisely so metal can stay SIP-ON and maximally
+# locked down. metal holds the credentials; bluebubbles and hermes hold none.
+#
+# Lockdown posture: SIP on, Gatekeeper on, app firewall + a pf tailnet-only anchor, every
+# sharing/remote-access surface off, and OpenSSH Remote Login off — the ONLY admin path is
+# `tailscale ssh root@metal`. In-guest auto-login stays ON (set by packer) so omlx gets a GPU
+# aqua session; FileVault is therefore NOT used (auto-login would negate it). Sensitive state
+# lives on the host's ~/.yclaw/state, backed up encrypted off-box; the vault is also encrypted
+# at rest, and every service is bound tailnet-only by the pf anchor + app-firewall allowlist.
 #
 # Ports the host.nix launchd/pf/app-firewall patterns and the vault.nix agent-vault server +
 # provisioning oneshot (systemd -> launchd). Sources: darwin/host.nix, nixos/vault.nix,
@@ -144,6 +152,18 @@ in
   # "Determinate detected". This forgoes the `nix.*` settings options (unused here).
   nix.enable = false;
 
+  # --- Lockdown: typed nix-darwin options --------------------------------------
+  # The hardening nix-darwin exposes as typed system.defaults; everything without a typed option
+  # (Remote Login, sharing services, Gatekeeper, Spotlight, Siri, telemetry) is applied
+  # imperatively in postActivation below. Guest login is killed and the `>console` login-window
+  # escape is disabled. Auto-login stays ON (set by packer) so omlx gets a GPU aqua session, so
+  # FileVault is deliberately NOT used (it would negate auto-login); sensitive state lives on the
+  # host's ~/.yclaw/state and is backed up encrypted off-box.
+  system.defaults.loginwindow = {
+    GuestEnabled = false;
+    DisableConsoleAccess = true;
+  };
+
   # --- Homebrew (omlx + OSS Tailscale) -----------------------------------------
   # cleanup="none" keeps untracked packages; autoUpdate=false keeps `switch` idempotent.
   # omlx is the jundot/omlx FORMULA (bin /opt/homebrew/bin/omlx); tailscale is the OSS CLI
@@ -236,6 +256,26 @@ in
     StandardErrorPath = "${logs}/agent-vault/provision.error.log";
   };
 
+  # --- pf enable at BOOT (system daemon) ---------------------------------------
+  # The postActivation script (below) enables pf, but activation runs only on `darwin-rebuild`,
+  # NOT at boot. macOS's boot-time com.apple.pfctl loads /etc/pf.conf (so the `metal` anchor's
+  # rules are present) but never ENABLES pf — so after any reboot (including the auto-security-
+  # update reboots this module deliberately keeps on) pf would sit DISABLED until the next manual
+  # rebuild, leaving the credential services reachable from the vmnet LAN. This daemon closes that
+  # window: at every boot it reloads /etc/pf.conf (which includes the persisted `metal` anchor)
+  # and enables pf. The guest runs no vmnet/NAT anchors, so a full `-f` reload is safe here.
+  launchd.daemons.metal-pf-enable.serviceConfig = {
+    ProgramArguments = [
+      "/bin/sh"
+      "-c"
+      "/sbin/pfctl -f /etc/pf.conf 2>/dev/null || true; /sbin/pfctl -e 2>/dev/null || true"
+    ];
+    RunAtLoad = true;
+    KeepAlive = false;
+    StandardOutPath = "/var/log/metal-pf-enable.log";
+    StandardErrorPath = "/var/log/metal-pf-enable.error.log";
+  };
+
   # --- Activation-time imperative steps ----------------------------------------
   # Runs as root with a minimal env (env -i, coreutils+gnugrep on PATH); use absolute paths
   # for everything else.
@@ -278,7 +318,7 @@ in
       mv "$SETTINGS.tmp" "$SETTINGS"
       chown -R ${adminUser} "$OMLX_DIR"
 
-      # pf anchor — inbound to the service ports ONLY from the tailnet + RFC-1918, blocked
+      # pf anchor — inbound to the service ports ONLY from the tailnet (100.64.0.0/10), blocked
       # otherwise. Idempotent (only appends to pf.conf once). NEVER `pfctl -f /etc/pf.conf`
       # except on the first anchor add: a full reload flushes the dynamically-loaded vmnet/NAT
       # anchors; reload ONLY this anchor with `pfctl -a metal` on every other activation (the
@@ -286,8 +326,12 @@ in
       PF_ANCHOR_FILE="/etc/pf.anchors/metal"
       mkdir -p /etc/pf.anchors
       cat > "$PF_ANCHOR_FILE" <<'EOF'
-      table <metal_allowed> { 100.64.0.0/10, 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12 }
-      pass in quick proto tcp from <metal_allowed> to any port { 8000, 8765, 8317, 14321, 14322 }
+      # Loopback is never filtered (the agent-vault provision oneshot + service health checks hit
+      # 127.0.0.1:14321). Allow ONLY the tailnet CGNAT to the five service ports; every other
+      # source — including the sibling guests sharing the host's vmnet LAN bridge — is dropped.
+      # RFC-1918 is deliberately NOT allowed: these credential/AI services are tailnet-only.
+      pass in quick on lo0 all
+      pass in quick proto tcp from 100.64.0.0/10 to any port { 8000, 8765, 8317, 14321, 14322 }
       block in quick proto tcp from any to any port { 8000, 8765, 8317, 14321, 14322 }
       EOF
       if ! grep -q 'anchor "metal"' /etc/pf.conf; then
@@ -296,31 +340,114 @@ in
       anchor "metal"
       load anchor "metal" from "/etc/pf.anchors/metal"
       CONF
-        /sbin/pfctl -f /etc/pf.conf
+        /sbin/pfctl -f /etc/pf.conf || true
       fi
       /sbin/pfctl -a metal -f "$PF_ANCHOR_FILE" 2>/dev/null || true
+      # ENABLE pf. macOS ships pf DISABLED and only auto-enables it for Internet Sharing/vmnet —
+      # which runs on the HOST, not in this guest — so, unlike host.nix, we MUST enable it here or
+      # the anchor is loaded-but-never-enforced and the services are NOT actually tailnet-only.
+      # `-e` is idempotent enough (no-ops with a harmless error if pf is already enabled). The
+      # scoped anchor only blocks the five ports, so enabling pf never touches ssh/tailscale.
+      /sbin/pfctl -e 2>/dev/null || true
 
-      # Application-firewall allowlist: the macOS app firewall silently drops inbound to unsigned
-      # binaries, so the tailnet cannot reach these services until they are explicitly unblocked.
-      # Idempotent (re-adding a listed app is a no-op).
+      # Application firewall: ON + stealth + logging, plus a per-binary allowlist. The macOS app
+      # firewall silently drops inbound to unsigned binaries, so the tailnet cannot reach these
+      # services until they are explicitly unblocked; tailscaled is allowlisted too so direct
+      # (non-DERP) inbound and the tailscale-ssh path survive. Idempotent (each call is a no-op
+      # when already applied). NOTE: deliberately NO --setblockall — "block all incoming" overrides
+      # this allowlist and would drop both the five services and tailscaled, cutting service
+      # inbound AND the only admin path; pf above is the tailnet-only default-deny.
       FW=/usr/libexec/ApplicationFirewall/socketfilterfw
+      "$FW" --setglobalstate on >/dev/null 2>&1 || true
+      "$FW" --setstealthmode on >/dev/null 2>&1 || true
+      "$FW" --setloggingmode on >/dev/null 2>&1 || true
+      # Allowlist the ACTUAL listening binaries. omlx and the STT wrapper each serve from a Python
+      # framework interpreter (the process renames itself to "omlx-server" via setproctitle, but the
+      # kernel — and socketfilterfw — see the interpreter), so allowlist the Homebrew python
+      # framework (omlx) and the CommandLineTools python framework (STT) by glob: version-agnostic
+      # and robust across brew/CLT upgrades. cli-proxy-api/agent-vault are the real nix-store
+      # listeners; tailscaled is allowlisted so direct (non-DERP) inbound and tailscale-ssh survive.
+      # pf above is the real tailnet-only gate; this allowlist is per-app defense-in-depth.
       for BIN in \
+        /opt/homebrew/opt/python@*/Frameworks/Python.framework/Versions/*/Resources/Python.app/Contents/MacOS/Python \
+        /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/*/Resources/Python.app/Contents/MacOS/Python \
         /opt/homebrew/bin/omlx \
-        ${lib.escapeShellArg "${sttVenv}/bin/python"} \
         ${pkgs.cli-proxy-api}/bin/cli-proxy-api \
-        ${pkgs.agent-vault}/bin/agent-vault; do
+        ${pkgs.agent-vault}/bin/agent-vault \
+        /opt/homebrew/bin/tailscaled; do
         if [ -e "$BIN" ]; then
           "$FW" --add "$BIN" >/dev/null 2>&1 || true
           "$FW" --unblockapp "$BIN" >/dev/null 2>&1 || true
         fi
       done
+
+      # OpenSSH Remote Login OFF. macOS sshd is independent of tailscale ssh (which runs inside
+      # tailscaled, brought up by `tailscale up --ssh` below), so disabling it does NOT cut admin
+      # access. After this the ONLY admin path is `tailscale ssh root@metal`; tailscaled itself is
+      # left running. `-f` skips the confirmation prompt.
+      /usr/sbin/systemsetup -f -setremotelogin off >/dev/null 2>&1 || true
+
+      # Disable every sharing / remote-access surface — metal is headless and tailnet-only.
+      # `launchctl disable` writes the persistent override db (survives reboot). This does NOT
+      # touch the host's tart console (tart exposes the guest framebuffer at the virtualization
+      # layer, independent of the guest's Screen Sharing), so a console fallback remains.
+      /bin/launchctl disable system/com.apple.screensharing >/dev/null 2>&1 || true
+      /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+        -deactivate -stop >/dev/null 2>&1 || true
+      /bin/launchctl disable system/com.apple.smbd >/dev/null 2>&1 || true
+      /bin/launchctl disable system/com.apple.AppleFileServer >/dev/null 2>&1 || true
+      /usr/sbin/cupsctl --no-share-printers >/dev/null 2>&1 || true
+      /bin/launchctl disable system/com.apple.InternetSharing >/dev/null 2>&1 || true
+      /usr/sbin/systemsetup -f -setremoteappleevents off >/dev/null 2>&1 || true
+      /usr/bin/AssetCacheManagerUtil deactivate >/dev/null 2>&1 || true
+      /usr/bin/sudo -u ${adminUser} /usr/bin/defaults write com.apple.amp.mediasharingd home-sharing-enabled -int 0 >/dev/null 2>&1 || true
+      /usr/bin/sudo -u ${adminUser} /usr/bin/defaults -currentHost write com.apple.Bluetooth PrefKeyServicesEnabled -bool false >/dev/null 2>&1 || true
+
+      # Guest account off (belt-and-suspenders with system.defaults.loginwindow.GuestEnabled),
+      # Gatekeeper assessments ON, Spotlight indexing OFF.
+      /usr/sbin/sysadminctl -guestAccount off >/dev/null 2>&1 || true
+      /usr/sbin/spctl --global-enable >/dev/null 2>&1 || true
+      /usr/bin/mdutil -a -i off >/dev/null 2>&1 || true
+
+      # Reduce surface / noise: Siri, analytics submission, AirDrop, Handoff, Wi-Fi power. The
+      # user-domain writes go through the admin login session (auto-login is on); best-effort and
+      # re-applied each activation. The VM uses virtio ethernet, so -setairportpower usually
+      # no-ops (no airport device).
+      /usr/bin/sudo -u ${adminUser} /usr/bin/defaults write com.apple.assistant.support "Assistant Enabled" -bool false >/dev/null 2>&1 || true
+      /usr/bin/sudo -u ${adminUser} /usr/bin/defaults write com.apple.Siri StatusMenuVisible -bool false >/dev/null 2>&1 || true
+      /usr/bin/defaults write "/Library/Application Support/CrashReporter/DiagnosticMessagesHistory.plist" AutoSubmit -bool false >/dev/null 2>&1 || true
+      /usr/bin/defaults write "/Library/Application Support/CrashReporter/DiagnosticMessagesHistory.plist" ThirdPartyDataSubmit -bool false >/dev/null 2>&1 || true
+      /usr/bin/sudo -u ${adminUser} /usr/bin/defaults write com.apple.NetworkBrowser DisableAirDrop -bool true >/dev/null 2>&1 || true
+      /usr/bin/sudo -u ${adminUser} /usr/bin/defaults -currentHost write com.apple.coreservices.useractivityd ActivityAdvertisingAllowed -bool false >/dev/null 2>&1 || true
+      /usr/bin/sudo -u ${adminUser} /usr/bin/defaults -currentHost write com.apple.coreservices.useractivityd ActivityReceivingAllowed -bool false >/dev/null 2>&1 || true
+      /usr/sbin/networksetup -setairportpower en0 off >/dev/null 2>&1 || true
+
+      # KEEP automatic security updates ON — deliberate: with everything else locked down, XProtect
+      # / security responses must keep flowing. Major OS auto-install is left OFF.
+      /usr/bin/defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled -bool true >/dev/null 2>&1 || true
+      /usr/bin/defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload -bool true >/dev/null 2>&1 || true
+      /usr/bin/defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall -bool true >/dev/null 2>&1 || true
+      /usr/bin/defaults write /Library/Preferences/com.apple.SoftwareUpdate ConfigDataInstall -bool true >/dev/null 2>&1 || true
+
+      # Sudo: admin keeps password-gated `%admin` sudo (the macOS default) — we add NO passwordless
+      # rule, and nix-darwin needs none here (darwin-rebuild prompts). The admin account password
+      # is baked by packer via @@VM_ADMIN_PASS@@, closing the cirruslabs base image's default
+      # admin/admin hole; it is never hardcoded here.
     ''
     # Tailscale: join the tailnet as `metal` with SSH. mkAfter so it runs AFTER sops-nix installs
     # the authkey secret (sops appends its install with mkAfter to this same hook). Idempotent —
-    # skip if already up.
+    # skip if already up. NO --shields-up (it would block hermes->metal inbound) and NO
+    # --advertise-tags (advertising an undefined tag fails `tailscale up`); least-privilege
+    # reachability is enforced separately by a tag:metal ACL on the tailnet.
     (lib.mkAfter ''
-      if [ -s ${lib.escapeShellArg tailscaleAuthkeyFile} ] \
-         && ! /opt/homebrew/bin/tailscale status >/dev/null 2>&1; then
+      # Ensure BOTH the tailnet join and the SSH server, idempotently. The SSH assertion must NOT
+      # be gated on tailscale being down: OpenSSH Remote Login is disabled above, so if tailscaled
+      # were already up WITHOUT --ssh, a down-gated `up --ssh` would be skipped forever and leave NO
+      # admin path (the sharpest lockout vector). `tailscale set --ssh` is idempotent and applies
+      # whether up or down; the cold-join branch (authkey present, tailscale down) handles first boot.
+      if /opt/homebrew/bin/tailscale status >/dev/null 2>&1; then
+        /opt/homebrew/bin/tailscale set --ssh=true || true
+      elif [ -s ${lib.escapeShellArg tailscaleAuthkeyFile} ]; then
         /opt/homebrew/bin/tailscale up \
           --authkey "$(cat ${lib.escapeShellArg tailscaleAuthkeyFile})" \
           --hostname metal --ssh || true
