@@ -256,24 +256,28 @@ in
     StandardErrorPath = "${logs}/agent-vault/provision.error.log";
   };
 
-  # --- pf enable at BOOT (system daemon) ---------------------------------------
-  # The postActivation script (below) enables pf, but activation runs only on `darwin-rebuild`,
-  # NOT at boot. macOS's boot-time com.apple.pfctl loads /etc/pf.conf (so the `metal` anchor's
-  # rules are present) but never ENABLES pf — so after any reboot (including the auto-security-
-  # update reboots this module deliberately keeps on) pf would sit DISABLED until the next manual
-  # rebuild, leaving the credential services reachable from the vmnet LAN. This daemon closes that
-  # window: at every boot it reloads /etc/pf.conf (which includes the persisted `metal` anchor)
-  # and enables pf. The guest runs no vmnet/NAT anchors, so a full `-f` reload is safe here.
-  launchd.daemons.metal-pf-enable.serviceConfig = {
+  # --- boot-time system setup (system daemon) ----------------------------------
+  # The postActivation script (below) sets the Metal wired-memory cap and enables pf, but
+  # activation runs only on `darwin-rebuild`, NOT at boot — and BOTH reset on reboot:
+  #   * iogpu.wired_limit_mb is a runtime sysctl that reverts to the macOS default (~36 GB) on
+  #     boot, too small for the 35B model + KV cache, so omlx would fail/OOM on first serve.
+  #   * macOS's boot-time com.apple.pfctl loads /etc/pf.conf (so the `metal` anchor rules are
+  #     present) but never ENABLES pf, so the tailnet-only gate would sit inert after a reboot
+  #     (including the auto-security-update reboots this module keeps on), exposing the
+  #     credential services to the vmnet LAN.
+  # This RunAtLoad daemon re-applies both at every boot: raise the wired cap, then reload
+  # /etc/pf.conf (includes the persisted `metal` anchor) and enable pf. The guest runs no
+  # vmnet/NAT anchors, so a full `-f` reload is safe here.
+  launchd.daemons.metal-boot-setup.serviceConfig = {
     ProgramArguments = [
       "/bin/sh"
       "-c"
-      "/sbin/pfctl -f /etc/pf.conf 2>/dev/null || true; /sbin/pfctl -e 2>/dev/null || true"
+      "/usr/sbin/sysctl iogpu.wired_limit_mb=43008 || true; /sbin/pfctl -f /etc/pf.conf 2>/dev/null || true; /sbin/pfctl -e 2>/dev/null || true"
     ];
     RunAtLoad = true;
     KeepAlive = false;
-    StandardOutPath = "/var/log/metal-pf-enable.log";
-    StandardErrorPath = "/var/log/metal-pf-enable.error.log";
+    StandardOutPath = "/var/log/metal-boot-setup.log";
+    StandardErrorPath = "/var/log/metal-boot-setup.error.log";
   };
 
   # --- Activation-time imperative steps ----------------------------------------
