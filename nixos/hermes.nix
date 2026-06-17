@@ -22,9 +22,9 @@ let
   # BLUEBUBBLES_PASSWORD is the one secret and lives in the sops "hermes/env" file,
   # appended AFTER this file (environmentFiles order), so the secret never hits the store.
   hermesEnvFile = pkgs.writeText "hermes.env" ''
-    HTTPS_PROXY=http://vault.@@TAILNET_DOMAIN@@:14322
-    HTTP_PROXY=http://vault.@@TAILNET_DOMAIN@@:14322
-    NO_PROXY=ai,.ts.net,localhost,127.0.0.1,@@HOST_NAME@@.@@TAILNET_DOMAIN@@,bluebubbles.@@TAILNET_DOMAIN@@
+    HTTPS_PROXY=http://metal.@@TAILNET_DOMAIN@@:14322
+    HTTP_PROXY=http://metal.@@TAILNET_DOMAIN@@:14322
+    NO_PROXY=ai,.ts.net,localhost,127.0.0.1
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
     REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
@@ -166,7 +166,7 @@ in
         }
         {
           provider = "custom";
-          model = "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit";
+          model = "unsloth--Qwen3.6-35B-A3B-UD-MLX-4bit";
           base_url = "http://ai/v1";
         }
       ];
@@ -265,8 +265,8 @@ in
         enabled = true;
         provider = "openai";
         openai = {
-          # Host's tailnet name on :8765 — added to NO_PROXY so it stays DIRECT.
-          base_url = "http://@@HOST_NAME@@.@@TAILNET_DOMAIN@@:8765/v1";
+          # metal's tailnet name on :8765 — covered by .ts.net in NO_PROXY so it stays DIRECT.
+          base_url = "http://metal.@@TAILNET_DOMAIN@@:8765/v1";
           api_key = "local";
           model = "whisper-1";
         };
