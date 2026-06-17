@@ -1,43 +1,94 @@
 #!/usr/bin/env bash
-# Build the aarch64-linux hermes raw-efi image WITHOUT Nix on the host, in a
-# linux/arm64 `nixos/nix` Docker container. Replaces the nix-darwin `linux-builder`.
+# Build the aarch64-linux hermes raw-efi image WITHOUT Nix on the de-Nix'd host.
 #
-# REQUIRES A KVM-CAPABLE DOCKER HOST: nixpkgs' make-disk-image runs qemu with hard
-# `-enable-kvm` (no TCG fallback), so the final image step fails on a host without
-# /dev/kvm. This works in CI (the GitHub `ubuntu-24.04-arm` runner has /dev/kvm) and on
-# Linux/kvm Docker hosts. It does NOT work in Docker Desktop / OrbStack on Apple Silicon —
-# Apple has not exposed nested-virt kvm to those Linux VMs (verified Jun 2026).
+# CANONICAL PATH IS CI. .github/workflows/build-images.yml builds this image natively on a
+# GitHub `ubuntu-24.04-arm` runner (which exposes /dev/kvm), runs the genericity guard, and
+# publishes `hermes-<ver>.img.zst` as a release asset on every `v*` tag (plus weekly + on
+# nixos/** pushes). The de-Nix'd host PULLS that published image — it does NOT build locally
+# in the normal flow.
 #
-# On an Apple-Silicon host the local build path is a tart Linux VM run with `--nested`
-# (which DOES get /dev/kvm on M3+), or just let CI build + publish the image. The de-Nix'd
-# host pulls the CI-published image rather than building locally.
+# This script is the LOCAL fallback for iterating on the image without cutting a tag. The host
+# runs no Nix, so the build happens inside a throwaway tart LINUX VM launched with `--nested`:
+# nixpkgs' make-disk-image runs qemu with a hard `-enable-kvm` (no TCG fallback), so the image
+# step needs a real /dev/kvm, and `--nested` is the only way to get one on Apple Silicon (M3+).
+# Docker Desktop / OrbStack do NOT expose nested-virt kvm to their Linux VMs on Apple Silicon
+# (verified Jun 2026), so the old `nixos/nix` container path is gone.
 #
-# A named volume (yclaw-nix-store) persists the container's /nix across runs. Output:
-# ./result-hermes/nixos.img.
+# Output: ./result-hermes/nixos.img.
 #
 #   ./scripts/build-hermes-image.sh
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="${NIX_DOCKER_IMAGE:-nixos/nix:latest}"
-STORE_VOLUME="${NIX_STORE_VOLUME:-yclaw-nix-store}"
+TART_BIN="${TART_BIN:-/opt/homebrew/bin/tart}"
+BUILDER_VM="${BUILDER_VM:-hermes-image-builder}"
+BUILDER_IMAGE="${BUILDER_IMAGE:-ghcr.io/cirruslabs/ubuntu:latest}"
+BUILDER_DISK_GB="${BUILDER_DISK_GB:-40}"
+SSH_USER="${BUILDER_SSH_USER:-admin}"
+SSH_PASS="${BUILDER_SSH_PASS:-admin}" # cirruslabs Linux base-image default credentials
 OUT_LINK="$REPO/result-hermes"
 
-command -v docker >/dev/null || { echo "FATAL: docker not found." >&2; exit 1; }
-docker version >/dev/null 2>&1 || { echo "FATAL: docker daemon not running." >&2; exit 1; }
+die() { echo "[build-hermes-image] FATAL: $*" >&2; exit 1; }
 
-echo "[build-hermes-image] building .#packages.aarch64-linux.hermes-image in $IMAGE ..."
-docker run --rm --platform linux/arm64 \
-  -v "$REPO":/repo \
-  -v "$STORE_VOLUME":/nix \
-  -w /repo \
-  "$IMAGE" \
-  sh -euc '
-    git config --global --add safe.directory /repo
-    nix --extra-experimental-features "nix-command flakes" \
-      build .#packages.aarch64-linux.hermes-image --out-link /repo/result-hermes --print-build-logs
-  '
+[[ "$(uname -m)" == "arm64" ]] || die "local builder needs Apple Silicon (--nested kvm); use CI elsewhere."
+[[ -x "$TART_BIN" ]] || die "tart not at $TART_BIN (brew install cirruslabs/cli/tart)."
+command -v sshpass >/dev/null || die "sshpass not found (brew install sshpass) — needed to log in to the builder VM."
+
+# 1. Clone the Linux builder VM from the cirruslabs base image (idempotent; clone auto-pulls).
+#    The VM persists across runs so its /nix store warms; the repo is re-shared fresh each run.
+if ! "$TART_BIN" list --format json | jq -re --arg n "$BUILDER_VM" '.[]? | select(.Name==$n)' >/dev/null; then
+  echo "[build-hermes-image] cloning $BUILDER_IMAGE -> $BUILDER_VM ..."
+  "$TART_BIN" clone "$BUILDER_IMAGE" "$BUILDER_VM"
+  "$TART_BIN" set "$BUILDER_VM" --disk-size "$BUILDER_DISK_GB"
+fi
+
+# 2. Boot it headless WITH nested virt and the repo shared rw over virtiofs (tag `repo`).
+echo "[build-hermes-image] starting $BUILDER_VM (--nested, repo shared rw) ..."
+"$TART_BIN" run "$BUILDER_VM" --no-graphics --nested "--dir=repo:$REPO" &
+trap '"$TART_BIN" stop "$BUILDER_VM" 2>/dev/null || true' EXIT
+
+# 3. Wait for the guest to report an IP (DHCP on the tart NAT).
+echo "[build-hermes-image] waiting for $BUILDER_VM IP ..."
+ip=""
+for _ in $(seq 1 60); do
+  ip="$("$TART_BIN" ip "$BUILDER_VM" 2>/dev/null || true)"
+  [[ -n "$ip" ]] && break
+  sleep 5
+done
+[[ -n "$ip" ]] || die "$BUILDER_VM never reported an IP."
+
+ssh_guest() {
+  sshpass -p "$SSH_PASS" ssh \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
+    "$SSH_USER@$ip" "$@"
+}
+
+echo "[build-hermes-image] waiting for sshd on $BUILDER_VM ..."
+for _ in $(seq 1 60); do
+  ssh_guest true 2>/dev/null && break
+  sleep 5
+done
+ssh_guest true 2>/dev/null || die "sshd on $BUILDER_VM never came up."
+
+# 4. In-guest: prove real kvm, install Nix, build the image, drop it into the shared repo dir.
+# TODO(human): the virtiofs share tag (`repo`) and the cirruslabs default creds (admin/admin)
+#   are unverified against a running builder — confirm the mount tag + login on first run.
+echo "[build-hermes-image] building inside $BUILDER_VM ..."
+ssh_guest bash -euo pipefail <<'GUEST'
+test -e /dev/kvm || { echo "FATAL: /dev/kvm missing — --nested did not expose nested virt." >&2; exit 1; }
+if ! command -v nix >/dev/null; then
+  curl -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm
+fi
+. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+sudo mkdir -p /mnt/repo
+mountpoint -q /mnt/repo || sudo mount -t virtiofs repo /mnt/repo
+cd /mnt/repo
+nix --extra-experimental-features "nix-command flakes" \
+  build .#packages.aarch64-linux.hermes-image --out-link /tmp/result-hermes --print-build-logs
+sudo install -d -m 755 /mnt/repo/result-hermes
+sudo cp -L /tmp/result-hermes/nixos.img /mnt/repo/result-hermes/nixos.img
+GUEST
 
 IMG="$OUT_LINK/nixos.img"
-[ -e "$IMG" ] || { echo "FATAL: build finished but $IMG is missing." >&2; exit 1; }
+[[ -e "$IMG" ]] || die "build finished but $IMG is missing."
 echo "[build-hermes-image] OK -> $IMG ($(du -h "$IMG" | cut -f1))"
