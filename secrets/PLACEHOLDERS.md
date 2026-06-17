@@ -6,8 +6,8 @@ run time (or reads it from sops/agenix if pre-seeded), and code fails loud if a 
 unresolved at apply time — it never silently defaults.
 
 Real secrets never land in the Nix store, the hermes VM filesystem, or a commit. They flow through
-the credential planes (agent-vault on the `vault` VM, CLIProxyAPI on the host) or the `bootstrap`
-prompt at run time. See [`hermes-home-server.md` §5](../docs/hermes-home-server.md#5-credential-planes-custody-not-containment).
+the credential planes (agent-vault and CLIProxyAPI on the `metal` VM) or the `bootstrap`
+prompt at run time. See [Architecture § Credential custody](../docs/ARCHITECTURE.md#credential-custody).
 
 ## Tokens
 
@@ -16,13 +16,14 @@ prompt at run time. See [`hermes-home-server.md` §5](../docs/hermes-home-server
 | `@@TAILNET_DOMAIN@@` | MagicDNS suffix, e.g. `tailXXXX.ts.net` | every `*.<tailnet>.ts.net` name | auto-detect via `tailscale status --json` if the host is on the tailnet; else prompt |
 | `@@TS_AUTHKEY@@` | Tailscale auth key (reusable/ephemeral) for VM join | each VM's `tailscaled` (cloud-init / nixos) | bootstrap prompt → sops |
 | `@@HOST_NAME@@` | Which Mac (hostname) the host config targets | `darwin/host.nix`, packer | prompt |
-| `@@HOST_USER@@` | macOS login user on the host (home dir, launchd log paths, CLIProxyAPI `auth-dir`) | `darwin/host.nix`, `darwin/cliproxyapi-config.yaml` | prompt |
+| `@@HOST_USER@@` | macOS login user on the host (home dir, launchd log paths) | `darwin/host.nix` | prompt |
 | `@@HOST_RAM@@` | Host RAM tier (GB) for VM sizing | `darwin/host.nix` | prompt |
-| `@@IPSW_URL@@` | Pinned macOS Tahoe IPSW URL for the metal VM | `packer/metal.pkr.hcl` | prompt |
+| `@@IPSW_URL@@` | Pinned macOS Tahoe IPSW URL for the macOS guests | `packer/metal.pkr.hcl`, `packer/bluebubbles.pkr.hcl` | prompt |
 | `@@GITHUB_OWNER@@` | GitHub owner the metal VM clones the repo from at build | `packer/metal.pkr.hcl` | prompt |
-| `@@APPLE_ID@@` | Dedicated Apple ID for iMessage (on metal) | metal VM sign-in | **interactive (human gate)** |
-| `@@APPLE_ID_PW@@` | Password for the dedicated Apple ID | metal VM sign-in | **interactive (human gate)** |
-| `@@VM_ADMIN_PASS@@` | Password for the `admin` user baked into the metal macOS image (sensitive) | `packer/metal.pkr.hcl` | packer var (prompt) |
+| `@@APPLE_ID@@` | Dedicated Apple ID for iMessage (on the bluebubbles VM) | `scripts/bluebubbles-setup.sh` iMessage sign-in | **interactive (human gate)** |
+| `@@APPLE_ID_PW@@` | Password for the dedicated Apple ID | `scripts/bluebubbles-setup.sh` iMessage sign-in | **interactive (human gate)** |
+| `@@VM_ADMIN_USER@@` | Local admin username baked into the macOS guest images (SSH login until Tailscale SSH takes over) | `packer/bluebubbles.pkr.hcl`, `packer/metal.pkr.hcl` | packer var (prompt) |
+| `@@VM_ADMIN_PASS@@` | Password for the baked-in admin user (sensitive) | `packer/bluebubbles.pkr.hcl`, `packer/metal.pkr.hcl` | packer var (prompt) |
 | `@@BLUEBUBBLES_PASSWORD@@` | BlueBubbles server password | vault static cred → hermes env | bootstrap prompt → vault |
 | `@@AUTHORIZED_HANDLES@@` | iMessage allowlist (your + approved handles/groups) | bluebubbles `allow_from` / `*_ALLOWED_*` | prompt (list) |
 | `@@OPENAI_API_KEY@@` | image-gen (gpt-image-2) + vision/web_extract aux | vault static → injected on `api.openai.com` | prompt → vault |
@@ -36,10 +37,11 @@ prompt at run time. See [`hermes-home-server.md` §5](../docs/hermes-home-server
 
 These leave a `HUMAN:` note in the relevant script and the run continues elsewhere:
 
-- `cli-proxy-api --codex-login` — ChatGPT **subscription** account (host, one-time browser flow).
-- `cli-proxy-api --gemini-login` — **personal** Google (free Code Assist) (host, one-time browser flow).
+- `cli-proxy-api --codex-login` — ChatGPT **subscription** account (metal, one-time browser flow).
+- `cli-proxy-api --gemini-login` — **personal** Google (free Code Assist) (metal, one-time browser flow).
 - agent-vault **Google OAuth consent** — `POST /v1/credentials/oauth/connect` → browser, callback to
-  `https://vault.<tailnet>.ts.net/v1/oauth/callback` from any tailnet device.
+  `https://metal.<tailnet>.ts.net/v1/oauth/callback` from any tailnet device.
+- **SIP enable** on the metal VM (recovery mode) — see [`../scripts/sip-enable.md`](../scripts/sip-enable.md).
 - **Apple-ID iMessage sign-in** (2FA) on the bluebubbles VM.
 - **SIP disable** on the bluebubbles VM (recovery mode) — see [`../scripts/sip-disable.md`](../scripts/sip-disable.md).
 
@@ -60,5 +62,5 @@ mistaken for missing inputs:
   (never mutated). The private key lands at `/var/lib/sops-nix/key.txt` on each VM (never committed).
 - `@@AGENT_VAULT_CA_PEM@@` (in `nixos/agent-vault-ca.pem`) — ships as a placeholder line. At deploy
   time (human gate 6) the operator fetches the real public CA via
-  `GET http://vault.<tailnet>:14321/v1/mitm/ca.pem`, overwrites the file, and re-applies hermes. The CA
+  `GET http://metal.<tailnet>:14321/v1/mitm/ca.pem`, overwrites the file, and re-applies hermes. The CA
   cert is public (only its key is secret), so the fetched PEM is safe to commit.

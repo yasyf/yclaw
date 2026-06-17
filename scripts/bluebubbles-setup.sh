@@ -1,10 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# bluebubbles-setup.sh — idempotent, run ON the metal macOS VM (the consolidated
-# services + iMessage guest). Brings up the BlueBubbles server + Private API helper,
-# exposes it on the tailnet, points its webhook at hermes, and locks VNC to tailnet/LAN.
-# One-time human gates (recovery-mode SIP off, Apple-ID 2FA, app GUI grants)
+# bluebubbles-setup.sh — idempotent, run ON the bluebubbles macOS VM (iMessage/BlueBubbles
+# only; SIP off; its OWN tailnet node; holds NO credentials). Brings up the BlueBubbles server
+# + Private API helper, exposes it on the tailnet, points its webhook at hermes, and locks VNC
+# to tailnet/LAN. One-time human gates (recovery-mode SIP off, Apple-ID 2FA, app GUI grants)
 # are flagged `HUMAN:` and the script continues with what is scriptable.
 
 BB_PASSWORD="@@BLUEBUBBLES_PASSWORD@@"

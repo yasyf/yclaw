@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # De-Nix'd host bring-up: the runtime role that darwin/host.nix used to play, as a plain
 # idempotent shell script. The host runs NO Nix — just Homebrew `tart` + `gum`, the existing
-# Tailscale daemon, the `~/.yclaw/state` virtiofs source, and two launchd VM runners.
+# Tailscale daemon, the `~/.yclaw/state` virtiofs source, and three launchd VM runners.
 #
 # Re-runnable: brew installs are no-ops when present, mkdir -p is idempotent, and each
 # LaunchAgent is rewritten then re-bootstrapped (bootout-before-bootstrap) so a changed plist
 # takes effect.
 #
 # ── darwin/host.nix responsibility mapping ───────────────────────────────────────────────────
-# DELETED (gone with the host services, now folded into the `metal` VM):
+# DELETED (gone with the host services, which now run inside the `metal` VM):
 #   • nix.linux-builder (the aarch64-linux build VM)        — host no longer builds anything
 #   • launchd agents mlx-qwen / parakeet-stt / cliproxyapi  — retired; live inside metal
 #   • environment.etc."cli-proxy-api/config.yaml"           — cliproxy config lives in metal
@@ -16,7 +16,8 @@
 #                                                           — no host model services to unblock
 #   • all nix-darwin scaffolding (stateVersion, primaryUser, trusted-users, pam.sudo_local,
 #     homebrew module)                                      — replaced by this script
-#   • the tart-vault runner                                 — vault VM retired (folded into metal)
+#   • the tart-vault runner                                 — vault VM retired; its agent-vault
+#                                                             role now runs inside metal
 # MOVED here (was nix-darwin, now plain shell):
 #   • Homebrew tart + gum install (cirruslabs/cli tap)      — ensure_brew + brew install below
 #   • the tart VM runners (launchd.user.agents.tart-*)      — write_agent + bootstrap below
@@ -134,12 +135,20 @@ mkdir -p "$LOGS_DIR" "$LAUNCH_AGENTS_DIR"
 # secrets.sops.yaml, model cache, vault/cliproxy state) from the single `state` share —
 # metal.nix's preActivation + sops.defaultSopsFile both point under /Volumes/My Shared Files/state.
 #
-# NO --no-graphics for metal: it auto-logs-in and BlueBubbles (folding into metal) needs a live
-# GUI session to drive Messages. (omlx itself validated fine headless, but BlueBubbles forces a
-# GUI session, so metal runs WITH graphics.)
+# metal runs HEADLESS (--no-graphics): it holds ONLY the credential + AI services and NO
+# iMessage, so it needs no host-side GUI window. omlx's Metal GPU works headless because
+# in-guest auto-login creates the aqua session GPU access requires (verified).
 write_agent metal \
   run metal \
+  --no-graphics \
   "--dir=state:$STATE_DIR"
+
+# bluebubbles is the SIP-off iMessage node — its OWN tailnet node, holds NO credentials, so no
+# state share. It runs WITH graphics (no --no-graphics): the one-time GUI gates (Apple-ID 2FA,
+# Full Disk Access / Accessibility grants, the Private API toggle in Messages.app) and Screen
+# Sharing need a live aqua session, which in-guest auto-login provides.
+write_agent bluebubbles \
+  run bluebubbles
 
 # hermes is a Linux guest: --no-graphics, and the serial console MUST be drained or a headless
 # boot hangs once the virtio console ring fills (mirrors darwin/host.nix:132-148). The sops share
@@ -168,4 +177,4 @@ EOF
   sudo pfctl -a vnc -f "$PF_ANCHOR_FILE"
 fi
 
-log "Host setup complete. VM runners loaded as com.yclaw.tart-metal / com.yclaw.tart-hermes."
+log "Host setup complete. VM runners loaded as com.yclaw.tart-metal / com.yclaw.tart-bluebubbles / com.yclaw.tart-hermes."

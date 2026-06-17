@@ -1,17 +1,15 @@
-# Packer template: the macOS "metal" guest (cirruslabs/tart) — the single locked-down
-# services VM (omlx, mlx-audio STT, CLIProxyAPI, agent-vault) that ALSO runs BlueBubbles/
-# iMessage. Builds a fresh macOS Tahoe install from a pinned IPSW, installs Nix + nix-darwin,
-# and applies `darwinConfigurations.metal` (darwin/metal.nix) so every service is declarative.
+# Packer template: the macOS "metal" guest (cirruslabs/tart) — the locked-down, SIP-on
+# credential + AI services VM (omlx, mlx-audio STT, CLIProxyAPI, agent-vault). Holds no
+# iMessage/BlueBubbles. Builds a fresh macOS Tahoe install from a pinned IPSW, installs
+# Nix + nix-darwin, and applies `darwinConfigurations.metal` (darwin/metal.nix) so every
+# service is declarative.
 #
 # The un-scriptable steps are HUMAN gates that run AFTER this image boots:
-#   - SIP disable (recovery mode):        scripts/sip-disable.md  (BlueBubbles private API needs it)
-#   - Apple-ID / iMessage sign-in:        interactive 2FA + trust prompts (use a SEPARATE Apple ID)
+#   - enable SIP (metal is SIP-on):       tart run metal --recovery → csrutil enable (scripts/sip-enable.md)
 #   - cliproxy Codex/Gemini logins:       device-code / VNC browser flow
 #   - Google OAuth:                       scripts/connect-google-oauth.py (VAULT_ADDR=http://metal…)
 #   - place the local model:              hf download the Qwen MLX model onto the state mount
 #
-# HUMAN: SIP disable needs macOS recovery (`tart run metal --recovery` -> `csrutil disable`),
-#   which a Packer provisioner cannot reach — keep it in scripts/sip-disable.md.
 # HUMAN: After capture, the cryptographically-bound boot-blob triple — hardwareModel + ecid
 #   (config.json) + nvram.bin — must be copied verbatim (`cp -c`) on any clone and NEVER
 #   regenerated; change one and the guest will not boot.
@@ -52,9 +50,9 @@ variable "disk_size_gb" {
   default = 200
 }
 
-# Local admin baked into the image (independent of the Apple ID that signs into iMessage).
-# nix-darwin's primaryUser + launchd.user.agents target this account, so it MUST be `admin`
-# to match darwin/metal.nix (adminUser = "admin", home /Users/admin).
+# Local admin baked into the image. nix-darwin's primaryUser + launchd.user.agents target
+# this account, so it MUST be `admin` to match darwin/metal.nix (adminUser = "admin",
+# home /Users/admin).
 variable "vm_admin_user" {
   type    = string
   default = "admin"
@@ -101,9 +99,8 @@ build {
   }
 
   # HUMAN: the remaining bring-up is NOT scripted here (see the gates listed in the header):
-  #   1. scripts/sip-disable.md           — disable SIP in recovery mode (BlueBubbles private API).
-  #   2. Apple-ID iMessage sign-in        — interactive 2FA; install the BlueBubbles server + helper.
-  #   3. cliproxy --codex-login/--login   — device-code / VNC browser flow.
-  #   4. scripts/connect-google-oauth.py  — VAULT_ADDR=http://metal.@@TAILNET_DOMAIN@@:14321.
-  #   5. place the Qwen MLX model         — hf download onto /Volumes/My Shared Files/state/hf.
+  #   1. enable SIP (metal is SIP-on)     — tart run metal --recovery → csrutil enable; see scripts/sip-enable.md.
+  #   2. cliproxy --codex-login/--login   — device-code / VNC browser flow.
+  #   3. scripts/connect-google-oauth.py  — VAULT_ADDR=http://metal.@@TAILNET_DOMAIN@@:14321.
+  #   4. place the Qwen MLX model         — hf download onto /Volumes/My Shared Files/state/hf.
 }

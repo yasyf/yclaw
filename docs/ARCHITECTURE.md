@@ -10,21 +10,25 @@ credential.
 
 ## Topology
 
-A bare macOS host boots two tart guests on one tailnet; a hosted node fronts the
-model plane.
+A bare macOS host boots three tart guests on one tailnet; a hosted node fronts
+the model plane.
 
 - **host** — bare macOS, no Nix. Homebrew provides `tart`, Tailscale, and
-  `launchd`. It boots and supervises the two guests and holds nothing else; all
+  `launchd`. It boots and supervises the three guests and holds nothing else; all
   persistent state and secrets live outside the repo in `~/.yclaw/state`.
-- **metal** — a locked-down macOS guest, its own tailnet node, configured by
-  nix-darwin internally. It is the single credential custodian and runs every
-  host-class service:
+- **metal** — the credential + AI guest: a macOS node with SIP **on** and the OS
+  maximally locked down, its own tailnet node, configured by nix-darwin
+  internally. It is the single credential custodian and runs only the credential
+  and inference services — **no iMessage**:
   - **omlx** (`:8000`) — local Qwen MLX inference, per-model idle-TTL.
-  - **parakeet** (`:8765`) — Parakeet STT, started lazily.
+  - **mlx-audio** (`:8765`) — `granite-speech` STT, started lazily.
   - **cliproxy** (`:8317`) — CLIProxyAPI: Codex/Gemini OAuth in, static key out.
   - **agent-vault** (`:14321`/`:14322`) — credential broker and TLS-MITM forward
     proxy.
-  - **BlueBubbles** — the iMessage channel, folded into this guest.
+- **bluebubbles** — a second macOS guest on its own tailnet node, SIP **off**
+  (BlueBubbles' Private API needs it off). It runs only the BlueBubbles server
+  and the iMessage channel and holds **no** credentials; it exposes its REST API
+  at `https://bluebubbles.<tailnet>`.
 - **hermes** — a NixOS Linux gateway running `hermes-agent` in a Docker sandbox.
   It holds **no** credentials and reaches the internet only through
   agent-vault's proxy on metal.
@@ -32,6 +36,10 @@ model plane.
   metal upstreams: `gpt-5.5` and `gemini-3.5` via cliproxy, `qwen-local` via
   omlx. Aperture routes by model id only; the fallback chain (`gpt-5.5`,
   then `gemini-3.5`, then `qwen-local`) lives in hermes.
+
+macOS's Virtualization.framework caps a host at two concurrent macOS guests;
+metal and bluebubbles spend exactly that budget, and hermes is Linux so it does
+not count against it.
 
 ## Credential custody
 

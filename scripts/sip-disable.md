@@ -6,16 +6,16 @@
 
 ## When
 
-On the metal macOS guest, before installing the BlueBubbles server. SIP must be off for
-BlueBubbles's private-message API. (The folded-in metal guest reuses the already-SIP-off
-bluebubbles VM, so this is only needed when building metal from a fresh macOS base.)
+On the bluebubbles macOS guest, before installing the BlueBubbles server. SIP must be off for
+BlueBubbles's private-message API. metal stays SIP **on** (it runs no iMessage), so this applies
+to the bluebubbles VM only.
 
 ## Steps
 
 1. Boot the VM into recovery mode:
 
    ```bash
-   tart run bluebubbles --recovery-mode
+   tart run bluebubbles --recovery
    ```
 
 2. In the recovery menu open **Utilities → Terminal** and disable SIP:

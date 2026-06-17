@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `nixos/ai.nix` — a rendered Tailscale Aperture providers-config artifact.
 - `darwin/host.nix` + `darwin/cliproxyapi-config.yaml` — Homebrew (`tart`, Tailscale),
   launchd agents for MLX/Parakeet/CLIProxyAPI and the tart VMs, and the `pf` anchor.
-- `packer/bluebubbles.pkr.hcl` — the macOS base image for the iMessage VM.
+- `packer/bluebubbles.pkr.hcl` and `packer/metal.pkr.hcl` — the macOS base images
+  for the iMessage and credential/AI guests.
 - `scripts/` — `bootstrap.sh` (the destroy-and-rebuild entrypoint), `deploy-vm.sh`,
   `bluebubbles-setup.sh`, `sip-disable.md`, and `gws-bridge.patch` (dummy-token cutover).
 - `justfile` orchestration (`bootstrap`, `build-images`, `deploy`, `smoke`, `destroy`,
@@ -26,5 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `secrets/PLACEHOLDERS.md` — the human-input manifest.
 - `docs/build-notes/` — authoritative source extractions for hermes-agent, agent-vault,
   CLIProxyAPI, Aperture, and tart/Nix.
+
+### Changed
+- BlueBubbles un-folded back into its own `bluebubbles` macOS guest — a separate
+  SIP-off tailnet node that runs only the iMessage channel and holds no
+  credentials — reversing the earlier consolidation into `metal`. This keeps the
+  Apple two-concurrent-macOS-guest budget at metal + bluebubbles (hermes is Linux).
+- `metal` kept SIP **on** and locked down to the maximum (pf/app-firewall network
+  lockdown), serving as the credential + AI vault only: omlx, mlx-audio
+  (`granite-speech`) STT, CLIProxyAPI, and agent-vault now run inside `metal`,
+  not on the host, and no iMessage runs there.
 
 [Unreleased]: ../../commits/main

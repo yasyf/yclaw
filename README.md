@@ -8,10 +8,11 @@ Every machine and every credential plane rebuilds from this repo. The agent runs
 
 ## What's here
 
-The stack is a bare macOS host, two tart guests on one tailnet, and a hosted gateway node — all defined as code:
+The stack is a bare macOS host, three tart guests on one tailnet, and a hosted gateway node — all defined as code:
 
 - **host** — bare macOS, no Nix. Homebrew `tart`, Tailscale, and `launchd` boot and supervise the guests; all state and secrets live in `~/.yclaw/state`.
-- **metal** guest (macOS, nix-darwin) — the single credential custodian: local Qwen MLX (`omlx`), Parakeet STT, CLIProxyAPI (the Codex/Gemini OAuth-to-static-key proxy), the `agent-vault` broker, and BlueBubbles for the iMessage channel.
+- **metal** guest (macOS, nix-darwin, SIP-on and locked down) — the single credential custodian, credential and AI services only and no iMessage: local Qwen MLX (`omlx`), `granite-speech` STT, CLIProxyAPI (the Codex/Gemini OAuth-to-static-key proxy), and the `agent-vault` broker.
+- **bluebubbles** guest (macOS, SIP-off, its own tailnet node) — the iMessage channel only, via the BlueBubbles server; holds no credentials.
 - **hermes** guest (NixOS) — the `hermes gateway` in a Docker sandbox; holds no credentials and reaches the internet only through the agent-vault proxy.
 - **ai** — hosted Tailscale Aperture, routing `http://ai/v1` to the metal model upstreams.
 
@@ -22,6 +23,7 @@ The architecture is decided and documented; this repo is the implementation. The
 ```
 flake.nix              # the metal (nix-darwin) and hermes (NixOS) configs; pins all inputs
 justfile               # the setup flow + per-node recipes
+packer/                # the metal + bluebubbles macOS base images (from a pinned IPSW)
 nixos/                 # the hermes gateway VM
 darwin/                # the metal guest: services + credential custody
 pkgs/                  # agent-vault + cli-proxy-api Go derivations
@@ -40,7 +42,7 @@ Run the entrypoint from a clone of this repo:
 just bootstrap
 ```
 
-It prompts for the human-supplied values in [`secrets/PLACEHOLDERS.md`](secrets/PLACEHOLDERS.md), mints and encrypts the runtime secrets with sops into `~/.yclaw/state`, builds or pulls the VM images, boots the guests, and ends by printing the **human gates** — the interactive one-time steps that cannot be scripted (the locked-down-guest setup, Apple-ID sign-in, the Codex/Gemini browser logins, and the Google OAuth consent). Complete those, then verify:
+It prompts for the human-supplied values in [`secrets/PLACEHOLDERS.md`](secrets/PLACEHOLDERS.md), mints and encrypts the runtime secrets with sops into `~/.yclaw/state`, builds or pulls the VM images, boots the guests, and ends by printing the **human gates** — the interactive one-time steps that cannot be scripted (the metal SIP-enable, the bluebubbles SIP-disable and Apple-ID iMessage sign-in, the Codex/Gemini browser logins on metal, and the Google OAuth consent). Complete those, then verify:
 
 ```bash
 just smoke
@@ -60,4 +62,4 @@ just rebuild   # destroy, then bootstrap from zero
 
 ## Status
 
-The architecture is decided and stable; the implementation is in progress. The target is a bare macOS host driving two tart guests — `metal` (the credential custodian) and `hermes` (the sandboxed gateway) — with all state and secrets in `~/.yclaw/state`. Build-out is tracked in [`CHANGELOG.md`](CHANGELOG.md).
+The architecture is decided and stable; the implementation is in progress. The target is a bare macOS host driving three tart guests — `metal` (the credential custodian), `bluebubbles` (the iMessage channel), and `hermes` (the sandboxed gateway) — with all state and secrets in `~/.yclaw/state`. Build-out is tracked in [`CHANGELOG.md`](CHANGELOG.md).
