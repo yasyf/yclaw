@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# De-Nix'd host bring-up: the runtime role that darwin/host.nix used to play, as a plain
+# idempotent shell script. The host runs NO Nix — just Homebrew `tart` + `gum`, the existing
+# Tailscale daemon, the `~/.yclaw/state` virtiofs source, and two launchd VM runners.
+#
+# Re-runnable: brew installs are no-ops when present, mkdir -p is idempotent, and each
+# LaunchAgent is rewritten then re-bootstrapped (bootout-before-bootstrap) so a changed plist
+# takes effect.
+#
+# ── darwin/host.nix responsibility mapping ───────────────────────────────────────────────────
+# DELETED (gone with the host services, now folded into the `metal` VM):
+#   • nix.linux-builder (the aarch64-linux build VM)        — host no longer builds anything
+#   • launchd agents mlx-qwen / parakeet-stt / cliproxyapi  — retired; live inside metal
+#   • environment.etc."cli-proxy-api/config.yaml"           — cliproxy config lives in metal
+#   • the app-firewall allowlist (socketfilterfw add/unblock for cli-proxy-api + MLX python)
+#                                                           — no host model services to unblock
+#   • all nix-darwin scaffolding (stateVersion, primaryUser, trusted-users, pam.sudo_local,
+#     homebrew module)                                      — replaced by this script
+#   • the tart-vault runner                                 — vault VM retired (folded into metal)
+# MOVED here (was nix-darwin, now plain shell):
+#   • Homebrew tart + gum install (cirruslabs/cli tap)      — ensure_brew + brew install below
+#   • the tart VM runners (launchd.user.agents.tart-*)      — write_agent + bootstrap below
+# PRESERVED (left untouched by this script):
+#   • the mise-built tailscaled 1.98.5 system daemon with `tailscale ssh` — detected, never
+#     clobbered; `brew install tailscale` runs ONLY when no tailscaled exists
+#   • the pf VNC anchor                                     — OFF by default (no host model
+#     services to gate); see ENABLE_VNC_ANCHOR below
+set -euo pipefail
+
+HOME_DIR="$HOME"
+STATE_DIR="$HOME_DIR/.yclaw/state"
+LAUNCH_AGENTS_DIR="$HOME_DIR/Library/LaunchAgents"
+TART_BIN="/opt/homebrew/bin/tart"
+LOGS_DIR="$HOME_DIR/Library/Logs/Tart"
+
+# State subdirs the VMs read/write over the virtiofs `state` share (metal.nix mounts them).
+STATE_SUBDIRS=(age vm-secrets cli-proxy-api/auth agent-vault hf mlx-audio)
+
+# pf VNC anchor: OFF by default. The host runs no VNC-exposed model services anymore, so there
+# is nothing to gate. Set ENABLE_VNC_ANCHOR=1 only if a VNC service is reintroduced on the host.
+ENABLE_VNC_ANCHOR="${ENABLE_VNC_ANCHOR:-0}"
+
+# --- helpers -----------------------------------------------------------------
+
+log() { printf '\033[1;34m[setup]\033[0m %s\n' "$*"; }
+die() { printf '\033[1;31m[setup] FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# Write one tart LaunchAgent plist and (re)load it. bootout-before-bootstrap so a changed plist
+# replaces the running agent instead of erroring on "service already loaded".
+write_agent() {
+  local node="$1"; shift
+  local label="com.yclaw.tart-$node"
+  local plist="$LAUNCH_AGENTS_DIR/$label.plist"
+  local args=("$@")
+
+  local program_args=""
+  local a
+  for a in "$TART_BIN" "${args[@]}"; do
+    program_args+="    <string>$a</string>"$'\n'
+  done
+
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+$program_args  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$LOGS_DIR/$node.log</string>
+  <key>StandardErrorPath</key>
+  <string>$LOGS_DIR/$node.error.log</string>
+</dict>
+</plist>
+PLIST
+
+  local domain="gui/$(id -u)"
+  launchctl bootout "$domain/$label" 2>/dev/null || true
+  launchctl bootstrap "$domain" "$plist"
+  log "Loaded LaunchAgent $label."
+}
+
+# --- 0. Homebrew + tart + gum ------------------------------------------------
+
+ensure_brew() {
+  if command -v brew >/dev/null 2>&1; then return; fi
+  log "Installing Homebrew ..."
+  NONINTERACTIVE=1 /bin/bash -c \
+    "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  eval "$(/opt/homebrew/bin/brew shellenv)"
+}
+
+ensure_brew
+command -v brew >/dev/null 2>&1 || die "Homebrew not on PATH after install."
+
+log "Ensuring tart + gum (tap cirruslabs/cli) ..."
+brew tap cirruslabs/cli
+brew install cirruslabs/cli/tart gum
+[[ -x "$TART_BIN" ]] || die "tart not at $TART_BIN after brew install."
+
+# --- 1. Tailscale (detect-then-install; never clobber the mise daemon) -------
+
+# The host already runs a mise-built tailscaled 1.98.5 (system daemon, `tailscale ssh` live).
+# Re-pointing it at the older Homebrew binary would DOWNGRADE a working setup, so install the
+# Homebrew tailscale ONLY when no tailscaled exists at all (fresh host).
+if pgrep -qx tailscaled || command -v tailscaled >/dev/null 2>&1; then
+  log "Existing tailscaled detected — leaving it untouched (not installing Homebrew tailscale)."
+else
+  log "No tailscaled found — installing Homebrew tailscale ..."
+  brew install tailscale
+fi
+
+# --- 2. ~/.yclaw/state + per-VM subdirs --------------------------------------
+
+log "Creating $STATE_DIR and per-VM subdirs ..."
+mkdir -p "$STATE_DIR"
+for sub in "${STATE_SUBDIRS[@]}"; do
+  mkdir -p "$STATE_DIR/$sub"
+done
+chmod 700 "$STATE_DIR/age" "$STATE_DIR/vm-secrets"
+mkdir -p "$LOGS_DIR" "$LAUNCH_AGENTS_DIR"
+
+# --- 3. LaunchAgents for the VM runners --------------------------------------
+
+# tart auto-mounts the `name:path` --dir form to /Volumes/My Shared Files/<name> inside macOS
+# guests (verified); the `tag=` form does NOT auto-mount. metal reads everything (age key,
+# secrets.sops.yaml, model cache, vault/cliproxy state) from the single `state` share —
+# metal.nix's preActivation + sops.defaultSopsFile both point under /Volumes/My Shared Files/state.
+#
+# NO --no-graphics for metal: it auto-logs-in and BlueBubbles (folding into metal) needs a live
+# GUI session to drive Messages. (omlx itself validated fine headless, but BlueBubbles forces a
+# GUI session, so metal runs WITH graphics.)
+write_agent metal \
+  run metal \
+  "--dir=state:$STATE_DIR"
+
+# hermes is a Linux guest: --no-graphics, and the serial console MUST be drained or a headless
+# boot hangs once the virtio console ring fills (mirrors darwin/host.nix:132-148). The sops share
+# seeds the age key for the NixOS first-boot node-config seeding.
+write_agent hermes \
+  run hermes \
+  --no-graphics \
+  --serial-path=/dev/null \
+  "--dir=sops:$HOME_DIR/.config/yclaw/vm-secrets:ro"
+
+# --- 4. pf VNC anchor (optional, OFF by default) -----------------------------
+
+# Ports ONLY the targeted `pfctl -a vnc` reload from darwin/host.nix:189-204. NEVER
+# `pfctl -f /etc/pf.conf`: a full reload flushes the vmnet / Internet-Sharing NAT anchors
+# (shared_v4 / shared_v6 / network_isolation) the VMs need for internet + tailnet egress.
+if [[ "$ENABLE_VNC_ANCHOR" == "1" ]]; then
+  log "Loading pf VNC anchor (ENABLE_VNC_ANCHOR=1) ..."
+  PF_ANCHOR_FILE="/etc/pf.anchors/vnc"
+  sudo mkdir -p /etc/pf.anchors
+  sudo tee "$PF_ANCHOR_FILE" >/dev/null <<'EOF'
+table <vnc_allowed> { 100.64.0.0/10, 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12 }
+pass in quick proto { tcp udp } from <vnc_allowed> to any port 5900:5902
+block in quick proto { tcp udp } from any to any port 5900:5902
+EOF
+  # Targeted anchor reload only — leaves the NAT anchors untouched.
+  sudo pfctl -a vnc -f "$PF_ANCHOR_FILE"
+fi
+
+log "Host setup complete. VM runners loaded as com.yclaw.tart-metal / com.yclaw.tart-hermes."

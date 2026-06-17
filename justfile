@@ -6,9 +6,9 @@
 default:
     @just --list
 
-# Destroy-and-rebuild acceptance entrypoint (prompts → applies flake → builds images → smoke).
-bootstrap:
-    ./scripts/bootstrap.sh
+# De-Nix'd host bring-up: Homebrew tart/gum, ~/.yclaw/state, and the com.yclaw.tart-* runners.
+setup:
+    ./scripts/setup.sh
 
 # Build the NixOS raw-efi disk images for the Linux VMs.
 # The host has no nix and cannot build aarch64-linux from Darwin natively; this
@@ -20,6 +20,9 @@ build-images:
     nix build .#packages.aarch64-linux.vault-image
 
 # Apply one node. host→darwin-rebuild; hermes/vault→rebuild image + tart disk-replace; ai→deploy-ai.
+# NOTE (Phase 4): the de-Nix'd host writes its VM runners as `com.yclaw.tart-<node>` (scripts/setup.sh),
+# NOT `org.nixos.tart-<node>`. deploy-vm.sh still kickstarts the old org.nixos.* label and must be
+# updated to com.yclaw.tart-* when the host is de-Nix'd.
 deploy node:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -78,13 +81,12 @@ smoke:
 destroy:
     #!/usr/bin/env bash
     set -euo pipefail
-    # nix-darwin labels user agents `org.nixos.<name>` (darwin/host.nix defines
-    # launchd.user.agents.tart-hermes / tart-vault). Boot them out so KeepAlive
-    # can't relaunch the VM mid-teardown.
-    launchctl bootout "gui/$(id -u)/org.nixos.tart-hermes" || true
-    launchctl bootout "gui/$(id -u)/org.nixos.tart-vault"  || true
+    # scripts/setup.sh writes the runners as `com.yclaw.tart-<node>` (NOT the old nix-darwin
+    # `org.nixos.*` labels). Boot them out so KeepAlive can't relaunch the VM mid-teardown.
+    launchctl bootout "gui/$(id -u)/com.yclaw.tart-metal"  || true
+    launchctl bootout "gui/$(id -u)/com.yclaw.tart-hermes" || true
+    tart stop metal  2>/dev/null || true ; tart delete metal  2>/dev/null || true
     tart stop hermes 2>/dev/null || true ; tart delete hermes 2>/dev/null || true
-    tart stop vault  2>/dev/null || true ; tart delete vault  2>/dev/null || true
 
-# From-zero acceptance test: destroy then bootstrap.
-rebuild: destroy bootstrap
+# From-zero acceptance test: destroy then bring the host back up.
+rebuild: destroy setup
