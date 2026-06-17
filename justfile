@@ -72,7 +72,7 @@ smoke:
 
     # --- live-stack checks below need a running stack; run by hand once up. ---
     # fallback: disable the gpt-5.5 upstream → confirm hermes hops gemini-3.5 → qwen-local
-    # vault: a tool call needing Exa/OpenAI succeeds (bearer injected via http://vault.@@TAILNET_DOMAIN@@:14322) and fails cleanly if vault is down
+    # vault: a tool call needing Exa/OpenAI succeeds (bearer injected via http://metal.@@TAILNET_DOMAIN@@:14322) and fails cleanly if the broker is down
     # gmail: `gws` with a dummy token round-trips through the vault proxy (real token never in the hermes VM)
     # bluebubbles: send/receive in a DM AND a group, from an authorized handle (allowlist enforced) via https://bluebubbles.@@TAILNET_DOMAIN@@
 

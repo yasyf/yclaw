@@ -10,7 +10,7 @@
 # Run on the host. Prints CONSENT_URL:<url>; open it, approve, and it finishes + verifies.
 import http.server, json, os, subprocess, sys, time, urllib.parse, urllib.request
 
-VAULT = os.environ.get("VAULT_ADDR", "http://vault.@@TAILNET_DOMAIN@@:14321")
+VAULT = os.environ.get("VAULT_ADDR", "http://metal.@@TAILNET_DOMAIN@@:14321")
 OWNER = os.environ.get("VAULT_OWNER", "admin@hermes.local")
 VAULT_NAME = "hermes"
 KEY = "GOOGLE_OAUTH_TOKEN"

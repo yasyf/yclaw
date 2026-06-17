@@ -233,12 +233,12 @@ cat <<EOF
                                                  # personal Google (free Code Assist)
 
   [ ] 5. agent-vault Google OAuth connect (any tailnet device):
-           POST http://vault.$TAILNET_DOMAIN:14321/v1/credentials/oauth/connect
+           POST http://metal.$TAILNET_DOMAIN:14321/v1/credentials/oauth/connect
          Follow the browser consent; callback lands at
-           https://vault.$TAILNET_DOMAIN/v1/oauth/callback
+           https://metal.$TAILNET_DOMAIN/v1/oauth/callback
 
   [ ] 6. Fetch the agent-vault MITM CA and commit it to the OS trust store:
-           curl -fsS http://vault.$TAILNET_DOMAIN:14321/v1/mitm/ca.pem \\
+           curl -fsS http://metal.$TAILNET_DOMAIN:14321/v1/mitm/ca.pem \\
              -o nixos/agent-vault-ca.pem
          Then re-apply hermes so security.pki.certificateFiles installs it:
            just deploy hermes

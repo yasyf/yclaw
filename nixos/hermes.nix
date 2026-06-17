@@ -369,8 +369,10 @@ in
   # --- agent-vault MITM CA → OS trust store ------------------------------------
   # Rust/rustls clients (the `gws` Google CLI) IGNORE SSL_CERT_FILE and read only
   # the system store, so the .env CA vars are necessary but NOT sufficient.
-  # TODO(human): bootstrap fetches GET http://vault.@@TAILNET_DOMAIN@@:14321/v1/mitm/ca.pem
-  #   into ./nixos/agent-vault-ca.pem and commits the PUBLIC PEM (a CA cert is not a secret).
+  # The deploy flow fetches GET http://metal.@@TAILNET_DOMAIN@@:14321/v1/mitm/ca.pem into
+  # ./nixos/agent-vault-ca.pem (the committed file is the @@AGENT_VAULT_CA_PEM@@ placeholder; a
+  # CA public cert is not a secret). Baked into the system trust store so rustls clients — which
+  # ignore SSL_CERT_FILE and read only the system store — also trust the metal MITM proxy.
   security.pki.certificateFiles = [ ./agent-vault-ca.pem ];
 
   # --- In-VM Docker sandbox (terminal.backend = "docker") ----------------------
