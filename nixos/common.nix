@@ -1,4 +1,4 @@
-# Shared base for every NixOS Linux VM (hermes, vault). Booted by tart from a
+# Shared base for every NixOS Linux VM (just hermes now). Booted by tart from a
 # nixos-generators `raw-efi` image. NOT imported by ai.nix (Aperture is a hosted
 # Tailscale service, not a VM — see nixos/ai.nix).
 #
@@ -54,7 +54,7 @@
   networking.firewall.enable = lib.mkDefault false;
 
   # --- Tailscale (each VM is its own tailnet node) -----------------------------
-  # Per-node tailscaled so MagicDNS resolves `ai`, `vault`, `hermes`, `bluebubbles`.
+  # Per-node tailscaled so MagicDNS resolves `ai`, `hermes`, `bluebubbles`, `metal`.
   services.tailscale = {
     enable = true;
     authKeyFile = config.sops.secrets."tailscale/authkey".path;

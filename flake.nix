@@ -113,12 +113,6 @@
         ./nixos/common.nix
         ./nixos/hermes.nix
       ];
-      vaultModules = [
-        overlayModuleLinux
-        sops-nix.nixosModules.sops
-        ./nixos/common.nix
-        ./nixos/vault.nix
-      ];
 
       mkImage =
         modules:
@@ -139,11 +133,6 @@
           specialArgs = { inherit inputs; };
           modules = hermesModules;
         };
-        vault = nixpkgs.lib.nixosSystem {
-          system = linuxSystem;
-          specialArgs = { inherit inputs; };
-          modules = vaultModules;
-        };
       };
 
       # --- Apple-Silicon host (nix-darwin) ---------------------------------------
@@ -159,8 +148,10 @@
       };
 
       # The metal macOS guest VM. Applies IN-GUEST with `darwin-rebuild switch --flake .#metal`.
-      # One locked-down node holding all credentials (omlx, mlx-audio STT, CLIProxyAPI,
-      # agent-vault); sops-nix provides the credential decryption. See darwin/metal.nix.
+      # The SIP-on, max-locked credential/AI vault node — runs ONLY omlx, mlx-audio STT,
+      # CLIProxyAPI, and agent-vault; sops-nix provides the credential decryption. It runs NO
+      # iMessage: that lives on the separate bluebubbles VM, its own SIP-off tailnet node.
+      # See darwin/metal.nix.
       darwinConfigurations.metal = nix-darwin.lib.darwinSystem {
         system = darwinSystem;
         specialArgs = { inherit inputs; };
@@ -178,7 +169,6 @@
         # JSON we paste into the Aperture dashboard. See nixos/ai.nix.
         aperture-config = pkgsLinux.callPackage ./nixos/ai.nix { };
         hermes-image = mkImage hermesModules;
-        vault-image = mkImage vaultModules;
       };
 
       packages.${darwinSystem} = {
