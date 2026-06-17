@@ -90,3 +90,17 @@ destroy:
 
 # From-zero acceptance test: destroy then bring the host back up.
 rebuild: destroy setup
+
+# Back up the irreplaceable host state (~/.yclaw/state) via restic. Set YCLAW_RESTIC_REPO
+# + RESTIC_PASSWORD first (a B2/S3 URL or a local/NAS path). Skips the large, regenerable caches.
+backup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${YCLAW_RESTIC_REPO:?set YCLAW_RESTIC_REPO (restic repo URL or path)}"
+    : "${RESTIC_PASSWORD:?set RESTIC_PASSWORD}"
+    command -v restic >/dev/null || brew install restic
+    restic -r "$YCLAW_RESTIC_REPO" snapshots >/dev/null 2>&1 || restic -r "$YCLAW_RESTIC_REPO" init
+    restic -r "$YCLAW_RESTIC_REPO" backup "$HOME/.yclaw/state" \
+      --exclude "$HOME/.yclaw/state/hf" \
+      --exclude "$HOME/.yclaw/state/omlx" \
+      --exclude "$HOME/.yclaw/state/mlx-audio"
