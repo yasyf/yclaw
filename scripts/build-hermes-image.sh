@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
-# Build the aarch64-linux hermes raw-efi image WITHOUT Nix on the host, using a
-# linux/arm64 `nixos/nix` Docker container. This replaces the nix-darwin
-# `linux-builder` so the host can be de-Nix'd (scripts/uninstall-nix.sh) and still
-# rebuild the hermes image on demand (the CI workflow does the same build remotely).
+# Build the aarch64-linux hermes raw-efi image WITHOUT Nix on the host, in a
+# linux/arm64 `nixos/nix` Docker container. Replaces the nix-darwin `linux-builder`.
 #
-# A named volume (yclaw-nix-store) persists the container's /nix across runs so the
-# closure is cached and only changed paths rebuild. Output: ./result-hermes/nixos.img.
+# REQUIRES A KVM-CAPABLE DOCKER HOST: nixpkgs' make-disk-image runs qemu with hard
+# `-enable-kvm` (no TCG fallback), so the final image step fails on a host without
+# /dev/kvm. This works in CI (the GitHub `ubuntu-24.04-arm` runner has /dev/kvm) and on
+# Linux/kvm Docker hosts. It does NOT work in Docker Desktop / OrbStack on Apple Silicon —
+# Apple has not exposed nested-virt kvm to those Linux VMs (verified Jun 2026).
+#
+# On an Apple-Silicon host the local build path is a tart Linux VM run with `--nested`
+# (which DOES get /dev/kvm on M3+), or just let CI build + publish the image. The de-Nix'd
+# host pulls the CI-published image rather than building locally.
+#
+# A named volume (yclaw-nix-store) persists the container's /nix across runs. Output:
+# ./result-hermes/nixos.img.
 #
 #   ./scripts/build-hermes-image.sh
 set -euo pipefail

@@ -18,11 +18,11 @@ prompt at run time. See [`hermes-home-server.md` §5](../docs/hermes-home-server
 | `@@HOST_NAME@@` | Which Mac (hostname) the host config targets | `darwin/host.nix`, packer | prompt |
 | `@@HOST_USER@@` | macOS login user on the host (home dir, launchd log paths, CLIProxyAPI `auth-dir`) | `darwin/host.nix`, `darwin/cliproxyapi-config.yaml` | prompt |
 | `@@HOST_RAM@@` | Host RAM tier (GB) for VM sizing | `darwin/host.nix` | prompt |
-| `@@IPSW_URL@@` | Pinned Sequoia IPSW URL for the macOS BB VM | `packer/bluebubbles.pkr.hcl` | prompt |
-| `@@APPLE_ID@@` | Dedicated Apple ID for iMessage | bluebubbles VM sign-in | **interactive (human gate)** |
-| `@@APPLE_ID_PW@@` | Password for the dedicated Apple ID | bluebubbles VM sign-in | **interactive (human gate)** |
-| `@@VM_ADMIN_USER@@` | Local admin user baked into the bluebubbles macOS image | `packer/bluebubbles.pkr.hcl` | packer var (prompt) |
-| `@@VM_ADMIN_PASS@@` | Password for `@@VM_ADMIN_USER@@` (sensitive) | `packer/bluebubbles.pkr.hcl` | packer var (prompt) |
+| `@@IPSW_URL@@` | Pinned macOS Tahoe IPSW URL for the metal VM | `packer/metal.pkr.hcl` | prompt |
+| `@@GITHUB_OWNER@@` | GitHub owner the metal VM clones the repo from at build | `packer/metal.pkr.hcl` | prompt |
+| `@@APPLE_ID@@` | Dedicated Apple ID for iMessage (on metal) | metal VM sign-in | **interactive (human gate)** |
+| `@@APPLE_ID_PW@@` | Password for the dedicated Apple ID | metal VM sign-in | **interactive (human gate)** |
+| `@@VM_ADMIN_PASS@@` | Password for the `admin` user baked into the metal macOS image (sensitive) | `packer/metal.pkr.hcl` | packer var (prompt) |
 | `@@BLUEBUBBLES_PASSWORD@@` | BlueBubbles server password | vault static cred → hermes env | bootstrap prompt → vault |
 | `@@AUTHORIZED_HANDLES@@` | iMessage allowlist (your + approved handles/groups) | bluebubbles `allow_from` / `*_ALLOWED_*` | prompt (list) |
 | `@@OPENAI_API_KEY@@` | image-gen (gpt-image-2) + vision/web_extract aux | vault static → injected on `api.openai.com` | prompt → vault |
