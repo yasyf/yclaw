@@ -56,7 +56,7 @@ cat > "${BB_CONFIG}" <<EOF
   "auto_start": true,
   "authorized_handles": "${AUTHORIZED_HANDLES}",
   "webhooks": [
-    { "url": "${WEBHOOK_URL}", "events": ["new-message", "updated-message"] }
+    { "url": "${WEBHOOK_URL}", "events": ["new-message"] }
   ]
 }
 EOF

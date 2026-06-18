@@ -11,7 +11,6 @@
 # (BlueBubbles is in NO_PROXY, so it cannot be wire-injected — see env section).
 {
   config,
-  lib,
   pkgs,
   inputs,
   ...
@@ -89,36 +88,41 @@ let
     dialecticReasoningLevel = "low";
   });
 
-  # --- Patched hermes-agent package (codified iMessage reply-routing fix) ------
-  # UPSTREAM BUG (present on latest main, verified 2026-06-16 against the source):
-  # a BlueBubbles webhook delivery that omits the chat GUID makes the gateway key the
-  # session on the bare sender handle (`bluebubbles.py` webhook handler). Replies then
-  # go through `_resolve_chat_guid`, which resolves a bare phone/email to the FIRST chat
-  # that merely lists it as a participant — a GROUP if one sorts ahead of the 1:1 — so a
-  # DM reply leaks into a group chat. No upstream fix exists, so we rebuild the pinned
-  # package from patched source (no fork; reuses hermes-agent's own nixpkgs + inputs):
-  #   1. webhook handler: synthesize the DM GUID (`any;-;<sender>`) for chat-less, non-group
-  #      events, so the reply targets the 1:1 and the session dedupes with the GUID session.
-  #   2. _resolve_chat_guid: never resolve a bare handle to a group chat (guid contains ";+;").
-  # substituteInPlace's --replace-fail makes a stale anchor fail the build loudly on a bump.
+  # --- Patched hermes-agent package (upstream fixes pulled from PRs) -----------
+  # We rebuild the pinned package from patched source (no fork; reuses hermes-agent's
+  # own nixpkgs + inputs). Each fix is an upstream PR, fetched as its `.diff` and applied
+  # via `applyPatches`. A non-applying patch fails the build loudly on a rev bump — so the
+  # pinned hash both verifies the download and pins the exact diff content we tested.
+  #
+  #   * PR #45717 — fix(bluebubbles): prevent duplicate processing and DM-to-group
+  #     misrouting. Covers BOTH the DM-misroute privacy fix (issue #24157) and the
+  #     double-send dedup (issues #34372/#30708):
+  #       - _resolve_chat_guid no longer falls back to participant membership, so a bare
+  #         handle can never resolve to a group chat (DM replies stop leaking into groups).
+  #       - the webhook handler synthesizes the DM GUID (`any;-;<sender>`) for chat-less,
+  #         non-group events, so the reply targets the 1:1.
+  #       - drops `updated-message` from `_MESSAGE_EVENTS` AND the webhook subscription,
+  #         plus a GUID-keyed dedup cache, so one iMessage is no longer processed twice.
+  #   * PR #18366 — fix: make /busy command available on gateway platforms. Removes
+  #     `cli_only=True` from the `busy` CommandDef and adds a gateway `_handle_busy_command`
+  #     + dispatch, so `/busy` works on the BlueBubbles path (issue #18362).
   ha = inputs.hermes-agent;
   haSystem = pkgs.stdenv.hostPlatform.system;
   haPkgs = import ha.inputs.nixpkgs {
     system = haSystem;
     config.allowUnfree = true;
   };
-  bbResolveOld = "                guid = chat.get(\"guid\") or chat.get(\"chatGuid\")\n                identifier = chat.get(\"chatIdentifier\")";
-  bbResolveNew = "                guid = chat.get(\"guid\") or chat.get(\"chatGuid\")\n                if guid and \";+;\" in guid:\n                    continue\n                identifier = chat.get(\"chatIdentifier\")";
-  bbWebhookOld = "        if not (chat_guid or chat_identifier) and sender:\n            chat_identifier = sender";
-  bbWebhookNew = "        if not chat_guid and sender and not bool(record.get(\"isGroup\")):\n            chat_guid = \"any;-;\" + sender\n        if not (chat_guid or chat_identifier) and sender:\n            chat_identifier = sender";
+  prPatch = num: hash: haPkgs.fetchpatch {
+    url = "https://github.com/NousResearch/hermes-agent/pull/${toString num}.diff";
+    inherit hash;
+  };
   patchedHermesSrc = haPkgs.applyPatches {
-    name = "hermes-agent-src-bbroutingfix";
+    name = "hermes-agent-src-patched";
     src = ha;
-    postPatch = ''
-      substituteInPlace gateway/platforms/bluebubbles.py \
-        --replace-fail ${lib.escapeShellArg bbResolveOld} ${lib.escapeShellArg bbResolveNew} \
-        --replace-fail ${lib.escapeShellArg bbWebhookOld} ${lib.escapeShellArg bbWebhookNew}
-    '';
+    patches = [
+      (prPatch 45717 "sha256-odBb8kxvIjHue131FB0xAzIx0994BJjUe6cTwMeneH4=")
+      (prPatch 18366 "sha256-Q28QQH/S5oWt2stDHIXfDBUnUCppN1q8B64LMmzx2Bc=")
+    ];
   };
   patchedHermesAgent = haPkgs.callPackage "${patchedHermesSrc}/nix/hermes-agent.nix" {
     inherit (ha.inputs) uv2nix pyproject-nix pyproject-build-systems;
