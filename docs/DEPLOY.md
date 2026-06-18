@@ -14,6 +14,20 @@
    pinned IPSW via Packer; the bluebubbles macOS base is cloned from the cirruslabs
    SIP-off base (`ghcr.io/cirruslabs/macos-tahoe-base`) and provisioned via Packer;
    the hermes (NixOS) gateway image is built with `tart --nested` or in CI and pulled.
+
+   The macOS guests bake an admin password that step 2 random-generated into the login
+   Keychain (`yclaw-vm-admin-pass`). Source it from the Keychain into the env before each
+   Packer build so the password is never prompted or hardcoded:
+
+   ```sh
+   export PKR_VAR_vm_admin_pass="$(security find-generic-password -a "$USER" -s yclaw-vm-admin-pass -w)"
+   packer build packer/metal.pkr.hcl
+   packer build packer/bluebubbles.pkr.hcl
+   ```
+
+   The packer `vm_admin_pass` variable defaults to the `@@VM_ADMIN_PASS@@` placeholder, so a
+   build that forgets the export bakes the literal placeholder (fail-loud) instead of a real
+   credential.
 4. **Boot the VMs.** tart launches the metal, bluebubbles, and hermes guests;
    each joins the tailnet as its own node.
 5. **Clear the human gates.** Finish the one-time interactive steps that cannot

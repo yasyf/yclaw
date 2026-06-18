@@ -11,12 +11,16 @@
 #   sops.yaml             resolved sops creation rules (from the committed .sops.yaml)
 #   vm-secrets/key.txt    age key staged for the VMs (virtiofs mount)
 #
-# The vault master password is GENERATED here and stored in the login Keychain
-# (service "yclaw-agent-vault-master"); retrieve it with:
-#   security find-generic-password -s yclaw-agent-vault-master -w
+# Three passwords are GENERATED here and stored in the login Keychain, then reused on
+# re-run (retrieve any with `security find-generic-password -s <service> -w`):
+#   yclaw-agent-vault-master    agent-vault master password
+#   yclaw-vm-admin-pass         admin account baked into both macOS guest images (packer)
+#   yclaw-bluebubbles-password  BlueBubbles server password (also rendered into sops hermes/env)
 
 YCLAW_STATE="${YCLAW_STATE:-$HOME/.yclaw/state}"
 KC_SERVICE="yclaw-agent-vault-master"
+KC_SERVICE_VM_ADMIN="yclaw-vm-admin-pass"
+KC_SERVICE_BLUEBUBBLES="yclaw-bluebubbles-password"
 SECRETS_LIB_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 _secrets_ask()  { gum input --password --prompt "  $1 ❯ "; }
@@ -24,10 +28,10 @@ _secrets_note() { gum style --foreground 244 "  $*"; }
 _secrets_ok()   { gum style --foreground 84  "  $*"; }
 _secrets_fail() { gum style --foreground 196 "  $*"; exit 1; }
 
-# Prompt for the runtime secrets, mint/reuse the age key + vault master password,
-# and write the sops-encrypted blob to ~/.yclaw/state. Idempotent: reuses an
-# existing age key and the Keychain-stored vault master password; re-prompts the
-# API keys. The caller must run under `set -euo pipefail`.
+# Prompt for the external API secrets, generate/reuse the age key + the three Keychain
+# passwords (vault master, VM admin, BlueBubbles), and write the sops-encrypted blob to
+# ~/.yclaw/state. Idempotent: reuses an existing age key and the Keychain-stored
+# passwords; re-prompts the external API keys. The caller must run under `set -euo pipefail`.
 collect_secrets() {
   local t age_key vm_key sops_out sops_rendered sops_template pub plain
 
@@ -58,10 +62,6 @@ collect_secrets() {
   else
     GITHUB_TOKEN="$(_secrets_ask 'GitHub token (ghp_… / github_pat_…)')"
   fi
-  # BlueBubbles is OPTIONAL: a blank answer OMITS the hermes/env key entirely (no
-  # sentinel). Consumers that need it fail loud when the key is absent.
-  BLUEBUBBLES_PASSWORD="$(_secrets_ask 'BlueBubbles password (leave blank to set later off the VM)')"
-
   # Aperture static key: mint a random one when the operator did not supply it.
   if [ -z "${APERTURE_STATIC_KEY:-}" ]; then
     APERTURE_STATIC_KEY="$(openssl rand -hex 32)"
@@ -77,6 +77,32 @@ collect_secrets() {
     security add-generic-password -U -a "$USER" -s "$KC_SERVICE" \
       -l 'yclaw agent-vault master password' -w "$AGENT_VAULT_MASTER_PASSWORD"
     _secrets_ok "Generated vault master password → Keychain ($KC_SERVICE)."
+  fi
+
+  # VM admin password: generate once, persist in the login Keychain, reuse thereafter.
+  # NOT a sops/runtime secret — packer reads it from the Keychain as PKR_VAR_vm_admin_pass
+  # at image-build time (see docs/DEPLOY.md and packer/*.pkr.hcl).
+  if VM_ADMIN_PASS="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_VM_ADMIN" -w 2>/dev/null)"; then
+    _secrets_note "Reusing VM admin password from Keychain ($KC_SERVICE_VM_ADMIN)."
+  else
+    VM_ADMIN_PASS="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9')"
+    VM_ADMIN_PASS="${VM_ADMIN_PASS:0:40}"
+    security add-generic-password -U -a "$USER" -s "$KC_SERVICE_VM_ADMIN" \
+      -l 'yclaw VM admin password' -w "$VM_ADMIN_PASS"
+    _secrets_ok "Generated VM admin password → Keychain ($KC_SERVICE_VM_ADMIN)."
+  fi
+
+  # BlueBubbles server password: generate once, persist in the login Keychain, reuse
+  # thereafter. Rendered into the sops hermes/env below so the hermes VM carries it; the
+  # bluebubbles VM's setup flow resolves @@BLUEBUBBLES_PASSWORD@@ from this same value.
+  if BLUEBUBBLES_PASSWORD="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_BLUEBUBBLES" -w 2>/dev/null)"; then
+    _secrets_note "Reusing BlueBubbles password from Keychain ($KC_SERVICE_BLUEBUBBLES)."
+  else
+    BLUEBUBBLES_PASSWORD="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9')"
+    BLUEBUBBLES_PASSWORD="${BLUEBUBBLES_PASSWORD:0:40}"
+    security add-generic-password -U -a "$USER" -s "$KC_SERVICE_BLUEBUBBLES" \
+      -l 'yclaw BlueBubbles server password' -w "$BLUEBUBBLES_PASSWORD"
+    _secrets_ok "Generated BlueBubbles password → Keychain ($KC_SERVICE_BLUEBUBBLES)."
   fi
 
   if [ ! -s "$age_key" ]; then
@@ -97,16 +123,15 @@ open(dst, "w").write(s.replace("@@AGE_PUBLIC_KEY@@", pub))
 PY
 
   export TS_AUTHKEY AGENT_VAULT_MASTER_PASSWORD OPENAI_API_KEY EXA_API_KEY \
-         HONCHO_API_KEY GITHUB_TOKEN BLUEBUBBLES_PASSWORD APERTURE_STATIC_KEY
+         HONCHO_API_KEY GITHUB_TOKEN BLUEBUBBLES_PASSWORD APERTURE_STATIC_KEY VM_ADMIN_PASS
   plain="$(mktemp)"; trap 'rm -f "$plain"' EXIT
   # Built in Python so secret values are written literally (no shell/YAML interpolation).
-  # The hermes block is OMITTED when BlueBubbles is unset — no sentinel placeholder.
+  # BLUEBUBBLES_PASSWORD is always generated above, so the hermes/env block is always rendered.
   python3 - "$plain" <<'PY'
 import os, sys, json
 e = os.environ
 parts = [f'tailscale:\n  authkey: {json.dumps(e["TS_AUTHKEY"])}\n']
-if e["BLUEBUBBLES_PASSWORD"]:
-    parts.append(f'hermes:\n  env: |\n    BLUEBUBBLES_PASSWORD={e["BLUEBUBBLES_PASSWORD"]}\n')
+parts.append(f'hermes:\n  env: |\n    BLUEBUBBLES_PASSWORD={e["BLUEBUBBLES_PASSWORD"]}\n')
 parts.append(
     'vault:\n'
     f'  master-password: |\n    AGENT_VAULT_MASTER_PASSWORD={e["AGENT_VAULT_MASTER_PASSWORD"]}\n'
