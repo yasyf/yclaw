@@ -135,6 +135,18 @@ in
 {
   networking.hostName = "hermes";
 
+  # --- Persistent agent state externalized to the host -------------------------
+  # /var/lib/hermes (the hermes-agent stateDir: honcho memory, sessions, ~/.hermes config) is
+  # mounted from the host's ~/.yclaw/state/hermes over virtiofs (tag `hermesstate`, shared rw by
+  # the tart-hermes runner in scripts/setup.sh). The state survives destroying/rebuilding the VM
+  # and is covered by `just backup`. `nofail` so a host that boots hermes without the share (e.g.
+  # an image smoke-build) degrades to ephemeral in-VM state instead of failing the boot.
+  fileSystems."/var/lib/hermes" = {
+    device = "hermesstate";
+    fsType = "virtiofs";
+    options = [ "nofail" ];
+  };
+
   # --- Hermes agent gateway ----------------------------------------------------
   services.hermes-agent = {
     enable = true;

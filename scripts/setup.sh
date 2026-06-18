@@ -35,7 +35,7 @@ TART_BIN="/opt/homebrew/bin/tart"
 LOGS_DIR="$HOME_DIR/Library/Logs/Tart"
 
 # State subdirs the VMs read/write over the virtiofs `state` share (metal.nix mounts them).
-STATE_SUBDIRS=(age vm-secrets cli-proxy-api/auth agent-vault hf mlx-audio)
+STATE_SUBDIRS=(age vm-secrets cli-proxy-api/auth agent-vault hf mlx-audio hermes)
 
 # pf VNC anchor: OFF by default. The host runs no VNC-exposed model services anymore, so there
 # is nothing to gate. Set ENABLE_VNC_ANCHOR=1 only if a VNC service is reintroduced on the host.
@@ -165,13 +165,16 @@ write_agent bluebubbles \
   run bluebubbles
 
 # hermes is a Linux guest: --no-graphics, and the serial console MUST be drained or a headless
-# boot hangs once the virtio console ring fills (mirrors darwin/host.nix:132-148). The sops share
-# seeds the age key for the NixOS first-boot node-config seeding.
+# boot hangs once the virtio console ring fills. The `sops` share (ro) seeds the age key +
+# secrets for first-boot node-config seeding; the `hermesstate` share (rw) externalizes the
+# agent's persistent state (/var/lib/hermes — honcho memory, sessions) onto ~/.yclaw/state so it
+# survives a VM rebuild and is covered by `just backup` (nixos/hermes.nix mounts the matching tag).
 write_agent hermes \
   run hermes \
   --no-graphics \
   --serial-path=/dev/null \
-  "--dir=sops:$HOME_DIR/.config/yclaw/vm-secrets:ro"
+  "--dir=sops:$HOME_DIR/.config/yclaw/vm-secrets:ro" \
+  "--dir=hermesstate:$STATE_DIR/hermes"
 
 # --- 4. pf VNC anchor (optional, OFF by default) -----------------------------
 
