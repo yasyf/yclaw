@@ -99,13 +99,18 @@
   #   key.txt            → /var/lib/sops-nix/key.txt               REQUIRED  (age private key)
   #   secrets.sops.yaml  → /var/lib/node-config/secrets.sops.yaml  REQUIRED  (encrypted secrets;
   #                          this is the runtime path sops.defaultSopsFile points at, above)
+  #   agent-vault-token  → /var/lib/node-config/agent-vault-token  OPTIONAL here (hermes-only:
+  #                          its per-host agent-vault proxy token, minted from metal by
+  #                          bootstrap.sh; hermes builds HTTPS_PROXY from it and makes it
+  #                          fail-fast in its own renderHermesProxyEnv activation — this shared
+  #                          base copies it if present but never requires it)
   #   node.env           → /var/lib/node-config/node.env           OPTIONAL  (non-secret KEY=VALUE)
   #   agent-vault-ca.pem → /var/lib/node-config/agent-vault-ca.pem OPTIONAL  (public MITM CA)
   #
-  # Idempotent: once the REQUIRED pair is on the VM's persistent root the share is not
-  # re-read. Fail-fast (STYLEGUIDE): a node that boots without the age key or the sops blob
-  # aborts activation loudly rather than limping on with no secrets. The two OPTIONAL files
-  # are tolerated-if-absent — not every node ships a node.env or a CA.
+  # Idempotent: once the REQUIRED pair (age key + sops blob) is on the VM's persistent root the
+  # share is not re-read. Fail-fast (STYLEGUIDE): a node that boots without the age key or the
+  # sops blob aborts activation loudly rather than limping on with no secrets. The OPTIONAL files
+  # are tolerated-if-absent — host-specific requirements live in that host's own module.
   system.activationScripts.seedNodeConfig = {
     deps = [ "specialfs" ];
     text = ''
@@ -124,6 +129,7 @@
             echo "seed-diag: MOUNTED tag=$tag contents=[$(ls -a "$src" 2>/dev/null | tr '\n' ',')]"
             [ -s "$src/key.txt" ] && install -m 600 "$src/key.txt" /var/lib/sops-nix/key.txt && echo "seedNodeConfig: installed age key"
             [ -s "$src/secrets.sops.yaml" ] && install -m 600 "$src/secrets.sops.yaml" /var/lib/node-config/secrets.sops.yaml && echo "seedNodeConfig: installed secrets.sops.yaml"
+            [ -s "$src/agent-vault-token" ] && install -m 600 "$src/agent-vault-token" /var/lib/node-config/agent-vault-token && echo "seedNodeConfig: installed agent-vault-token"
             [ -s "$src/node.env" ] && install -m 644 "$src/node.env" /var/lib/node-config/node.env && echo "seedNodeConfig: installed node.env"
             [ -s "$src/agent-vault-ca.pem" ] && install -m 644 "$src/agent-vault-ca.pem" /var/lib/node-config/agent-vault-ca.pem && echo "seedNodeConfig: installed agent-vault-ca.pem"
             ${pkgs.util-linux}/bin/umount "$src" 2>/dev/null || true

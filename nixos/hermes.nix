@@ -6,8 +6,12 @@
 #   * services.hermes-agent.environmentFiles → ~/.hermes/.env   (runtime proxy/CA/BlueBubbles wiring)
 #
 # The agent reaches the internet ONLY through agent-vault's MITM forward proxy
-# (HTTPS_PROXY), which injects the real API keys on the wire. The hermes VM holds
-# none of those keys — the sole real secret that lands here is BLUEBUBBLES_PASSWORD
+# (HTTPS_PROXY), which injects the real API keys on the wire. The proxy URL carries the
+# per-host agent-vault PROXY TOKEN (http://<token>:hermes@metal:14322) — minted from metal at
+# bootstrap and rendered into /var/lib/node-config/agent-vault-proxy.env by the activation
+# script below (the token is the custody-plane credential that authorizes injection on the
+# matched hosts; without it agent-vault 407s every brokered request). The hermes VM holds
+# none of the upstream API keys — the sole real secret that lands here is BLUEBUBBLES_PASSWORD
 # (BlueBubbles is in NO_PROXY, so it cannot be wire-injected — see env section).
 {
   config,
@@ -27,8 +31,6 @@ let
   # BLUEBUBBLES_PASSWORD is the one secret and lives in the sops "hermes/env" file,
   # appended AFTER this file (environmentFiles order), so the secret never hits the store.
   hermesEnvFile = pkgs.writeText "hermes.env" ''
-    HTTPS_PROXY=http://metal:14322
-    HTTP_PROXY=http://metal:14322
     NO_PROXY=ai,metal,bluebubbles,.ts.net,localhost,127.0.0.1
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
@@ -41,8 +43,8 @@ let
     # client sends Authorization: Bearer dummy, the broker replaces it.
     # api.openai.com / api.exa.ai / api.honcho.dev are NOT in NO_PROXY, so they route
     # through the vault proxy and get injected. The model (custom provider) call no longer
-    # rides a dummy: it goes to metal's cliproxy directly with the real APERTURE_STATIC_KEY
-    # (model.key_env below).
+    # rides a dummy: it goes to metal's cliproxy directly with hermes's own HERMES_CLIPROXY_KEY
+    # (model.key_env below) — a distinct bearer, not metal's aperture/static-key.
     # TODO(human): confirm each SDK honors HTTPS_PROXY (so vault can intercept) — Exa/Honcho/OpenAI.
     OPENAI_API_KEY=__openai__
     EXA_API_KEY=__exa__
@@ -271,13 +273,20 @@ in
     # so files land with the ownership the service expects (the honcho plugin writes mode 0600).
     addToSystemPackages = true;
 
-    # Appended into ~/.hermes/.env in order: non-secret first, sops secret last.
-    # environmentFiles is `listOf str`, so coerce the writeText derivation to its
-    # store-path string (the sops path is already a string).
+    # Appended into ~/.hermes/.env in order: non-secret first, sops secret, then the rendered
+    # proxy env LAST. The module's activation script cat-appends these into a single ~/.hermes/.env
+    # at activation time (NOT a systemd EnvironmentFile), and python-dotenv keeps the LAST
+    # occurrence of a duplicate key — so agent-vault-proxy.env's HTTPS_PROXY/HTTP_PROXY win. Each
+    # entry must be a file that already exists at activation time: node.env and agent-vault-proxy.env
+    # are both seeded/rendered under /var/lib/node-config by the seedNodeConfig→renderProxyEnv
+    # activation chain (which runs before the hermes-agent setup script — see renderHermesProxyEnv
+    # below). environmentFiles is `listOf str`, so coerce the writeText derivation to its
+    # store-path string (the other paths are already strings).
     environmentFiles = [
       "${hermesEnvFile}"
       "/var/lib/node-config/node.env"
       config.sops.secrets."hermes/env".path
+      "/var/lib/node-config/agent-vault-proxy.env"
     ];
 
     # Full declarative config.yaml. Nix attrset,
@@ -288,20 +297,21 @@ in
       # through it added a measured ~0.5s TTFB per call (paid again on each tool round).
       # We now hit metal's upstreams directly: gpt-5.5 + gemini → cliproxy :8317,
       # Qwen → omlx :8000. Bare `metal` resolves via MagicDNS and is in NO_PROXY, so these
-      # stay DIRECT (no agent-vault MITM hop). cliproxy gates :8317 with a static bearer that
-      # Aperture used to inject — hermes now presents it via key_env. omlx :8000 needs no key.
+      # stay DIRECT (no agent-vault MITM hop). cliproxy gates :8317 with a static bearer; hermes
+      # presents its OWN cliproxy key (HERMES_CLIPROXY_KEY — distinct from metal's aperture/static-key,
+      # rotatable independently) via key_env. omlx :8000 needs no key.
       model = {
         provider = "custom";
         default = "gpt-5.5";
         base_url = "http://metal:8317/v1";
-        key_env = "APERTURE_STATIC_KEY";
+        key_env = "HERMES_CLIPROXY_KEY";
       };
       fallback_providers = [
         {
           provider = "custom";
           model = "gemini-3-pro-preview";
           base_url = "http://metal:8317/v1";
-          key_env = "APERTURE_STATIC_KEY";
+          key_env = "HERMES_CLIPROXY_KEY";
         }
         {
           provider = "custom";
@@ -504,16 +514,16 @@ in
     };
   };
 
-  # Two real secrets land in the hermes VM by design, both carried by the encrypted sops
-  # "hermes/env" file (appended last into ~/.hermes/.env, so neither hits the world-readable
-  # Nix store):
-  #   * BLUEBUBBLES_PASSWORD (BLUEBUBBLES_PASSWORD=@@BLUEBUBBLES_PASSWORD@@) — BlueBubbles is
-  #     in NO_PROXY, so agent-vault cannot inject it on the wire.
-  #   * APERTURE_STATIC_KEY (APERTURE_STATIC_KEY=@@APERTURE_STATIC_KEY@@) — the bearer cliproxy
-  #     requires on metal:8317. With Aperture bypassed (model.key_env above), hermes presents it
-  #     directly instead of Aperture injecting it. Same value as metal's sops `aperture/static-key`;
-  #     tailnet ACLs already gate :8317 to hermes, so holding it here is acceptable.
-  # TODO(human): confirm this is acceptable vs the DoD "no real secret in hermes VM" stance.
+  # Two secrets land in the hermes VM, both carried by the encrypted sops "hermes/env" file
+  # (appended last into ~/.hermes/.env, so neither hits the world-readable Nix store):
+  #   * BLUEBUBBLES_PASSWORD — BlueBubbles is in NO_PROXY, so agent-vault cannot inject it on the
+  #     wire; hermes must hold it. Scope the BlueBubbles account to least privilege + rotate on
+  #     any hermes compromise.
+  #   * HERMES_CLIPROXY_KEY — hermes's OWN bearer for metal's cliproxy on :8317 (model.key_env
+  #     above). This is NOT metal's aperture/static-key: it is a distinct, machine-minted key that
+  #     cliproxy also accepts (api-keys list) and that can be rotated independently of the Aperture
+  #     key. So a hermes compromise leaks only hermes's cliproxy access (gated to tag:hermes by the
+  #     tailnet ACL), never metal's real Aperture bearer or any upstream API key.
   #
   # Derived from the manifest's hosts.hermes.secrets (single source of truth), minus
   # tailscale/authkey — that universal secret is already declared by nixos/common.nix, so we
@@ -529,6 +539,37 @@ in
   # CA public cert is not a secret). Baked into the system trust store so rustls clients — which
   # ignore SSL_CERT_FILE and read only the system store — also trust the metal MITM proxy.
   security.pki.certificateFiles = [ ./agent-vault-ca.pem ];
+
+  # --- agent-vault proxy env (token → HTTPS_PROXY URL) -------------------------
+  # The hermes-agent module assembles ~/.hermes/.env by cat-appending each environmentFiles entry
+  # at ACTIVATION time (NOT a systemd EnvironmentFile), skipping any path that doesn't yet exist.
+  # So the proxy env must be a PERSISTENT file present before that activation step — a systemd
+  # oneshot writing /run/... would be invisible to the activation cat (the /run file doesn't exist
+  # at activation on a cold boot). We therefore render it in an activation script:
+  #   read the per-host proxy TOKEN seedNodeConfig copied to /var/lib/node-config/agent-vault-token
+  #   → write http://<token>:hermes@metal:14322 as HTTPS_PROXY/HTTP_PROXY into agent-vault-proxy.env.
+  # Mode 600 (the URL embeds the injection-authorizing token — treat it like a secret). Fail-fast:
+  # an empty/missing token aborts activation rather than booting hermes with a dead proxy (it would
+  # 407 every brokered request). Ordered after seedNodeConfig (which seeds the token) and before the
+  # hermes-agent setup script that consumes environmentFiles — setupSecrets already deps on
+  # seedNodeConfig, and the hermes-agent module's setup runs stringAfter setupSecrets, so inserting
+  # renderHermesProxyEnv into that chain keeps the ordering.
+  system.activationScripts.renderHermesProxyEnv = {
+    deps = [ "seedNodeConfig" ];
+    text = ''
+      tok=$(cat /var/lib/node-config/agent-vault-token 2>/dev/null || true)
+      [ -n "$tok" ] || { echo "renderHermesProxyEnv: FATAL empty/missing /var/lib/node-config/agent-vault-token — the agent-vault proxy URL cannot be built; every brokered request would 407" >&2; exit 1; }
+      install -d -m 700 /var/lib/node-config
+      install -m 600 /dev/null /var/lib/node-config/agent-vault-proxy.env
+      # Vault hint after the first colon ("hermes"); host metal:14322 is the MITM proxy port.
+      printf 'HTTPS_PROXY=http://%s:hermes@metal:14322\nHTTP_PROXY=http://%s:hermes@metal:14322\n' \
+        "$tok" "$tok" > /var/lib/node-config/agent-vault-proxy.env
+    '';
+  };
+  # Chain renderHermesProxyEnv between seedNodeConfig and the hermes-agent setup script (which runs
+  # stringAfter setupSecrets and cat-appends environmentFiles). setupSecrets already deps on
+  # seedNodeConfig; adding renderHermesProxyEnv guarantees the proxy.env exists before it is read.
+  system.activationScripts.setupSecrets.deps = [ "renderHermesProxyEnv" ];
 
   # --- In-VM Docker sandbox (terminal.backend = "docker") ----------------------
   virtualisation.docker.enable = true;

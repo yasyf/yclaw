@@ -61,6 +61,7 @@ let
   masterPasswordFile = config.sops.secrets."vault/master-password".path;
   staticKeysFile = config.sops.secrets."vault/static-keys".path;
   apertureKeyFile = config.sops.secrets."aperture/static-key".path;
+  hermesCliproxyKeyFile = config.sops.secrets."hermes/cliproxy-key".path;
   tailscaleAuthkeyFile = config.sops.secrets."tailscale/authkey".path;
 
   # Wrappers: launchd has no EnvironmentFile, so each wrapper sources the secret/env it needs
@@ -108,10 +109,11 @@ let
     # Wait for sops-nix to decrypt the key. /run/secrets is tmpfs (empty on a cold boot) and this
     # RunAtLoad agent can win the race against the sops secret-install daemon; without the wait the
     # `cat` fails under `set -e` and the service crash-loops until kicked.
-    for _ in $(seq 1 60); do [ -s ${lib.escapeShellArg apertureKeyFile} ] && break; sleep 1; done
+    for _ in $(seq 1 60); do [ -s ${lib.escapeShellArg apertureKeyFile} ] && [ -s ${lib.escapeShellArg hermesCliproxyKeyFile} ] && break; sleep 1; done
     KEY=$(cat ${lib.escapeShellArg apertureKeyFile})
+    HKEY=$(cat ${lib.escapeShellArg hermesCliproxyKeyFile})
     mkdir -p ${lib.escapeShellArg "/Volumes/My Shared Files/cliproxy/auth"}
-    ${pkgs.gnused}/bin/sed "s|@@APERTURE_STATIC_KEY@@|$KEY|g" \
+    ${pkgs.gnused}/bin/sed -e "s|@@APERTURE_STATIC_KEY@@|$KEY|g" -e "s|@@HERMES_CLIPROXY_KEY@@|$HKEY|g" \
       ${lib.escapeShellArg "${cliproxyConfigTemplate}"} > ${lib.escapeShellArg cliproxyConfigRendered}
     chmod 600 ${lib.escapeShellArg cliproxyConfigRendered}
     exec ${pkgs.cli-proxy-api}/bin/cli-proxy-api --config ${lib.escapeShellArg cliproxyConfigRendered}
@@ -125,6 +127,13 @@ let
     # Wait for sops-nix to decrypt on boot (tmpfs /run/secrets, RunAtLoad-vs-sops race).
     for _ in $(seq 1 60); do [ -s ${lib.escapeShellArg masterPasswordFile} ] && break; sleep 1; done
     set -a; . ${lib.escapeShellArg masterPasswordFile}; set +a
+    # Proxy rate limits (instance-wide — agent-vault has no per-vault knob). hermes is the SOLE
+    # proxy consumer, so instance-wide == per-vault here. Tune these to taste; LOCK pins them so a
+    # runtime call cannot widen them. (M9.)
+    export AGENT_VAULT_RATELIMIT_PROXY_RATE=15
+    export AGENT_VAULT_RATELIMIT_PROXY_BURST=100
+    export AGENT_VAULT_RATELIMIT_PROXY_CONCURRENCY=32
+    export AGENT_VAULT_RATELIMIT_LOCK=true
     exec ${pkgs.agent-vault}/bin/agent-vault server --host 0.0.0.0 --port 14321 --mitm-port 14322
   '';
 
@@ -155,6 +164,11 @@ let
     "$AV" vault service set --vault ${vaultName} --file ${lib.escapeShellArg "${servicesYaml}"}
     "$AV" vault credential set --vault ${vaultName} \
       $(cat ${lib.escapeShellArg staticKeysFile})
+
+    # Ensure the injection-only proxy agent for the hermes vault exists (409 if already created —
+    # swallow it). bootstrap.sh then `agent rotate`s this agent to mint hermes's proxy token, which
+    # carries credential injection on the matched hosts but can never read/reveal a raw key. (L1.)
+    "$AV" agent create ${vaultName} --vault ${vaultName}:proxy 2>/dev/null || true
   '';
 in
 {

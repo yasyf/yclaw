@@ -128,6 +128,10 @@ collect_secrets() {
     APERTURE_STATIC_KEY="$(openssl rand -hex 32)"
     _secrets_note 'Minted a random Aperture static key (openssl rand -hex 32).'
   fi
+  # hermes's OWN cliproxy bearer: distinct from metal's aperture/static-key and rotatable
+  # independently. hermes presents it to metal:8317 (model.key_env=HERMES_CLIPROXY_KEY); metal's
+  # cliproxy accepts it (api-keys list). Always machine-minted — never an operator secret.
+  HERMES_CLIPROXY_KEY="$(openssl rand -hex 32)"
 
   # Every yclaw password lives in the dedicated yclaw keychain — ensure it exists and is
   # unlocked before any generate-or-reuse below.
@@ -219,7 +223,7 @@ collect_secrets() {
 
   export AGENT_VAULT_MASTER_PASSWORD OPENAI_API_KEY EXA_API_KEY \
          HONCHO_API_KEY GITHUB_TOKEN BLUEBUBBLES_PASSWORD APERTURE_STATIC_KEY \
-         METAL_ADMIN_PASS BLUEBUBBLES_ADMIN_PASS
+         HERMES_CLIPROXY_KEY METAL_ADMIN_PASS BLUEBUBBLES_ADMIN_PASS
 
   # One age keypair + one bundle PER HOST, each encrypted ONLY to that host's recipient and
   # holding ONLY the secrets that host owns (nixos/secrets-manifest.json). A host can decrypt

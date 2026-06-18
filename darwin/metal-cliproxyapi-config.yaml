@@ -13,11 +13,14 @@ port: 8317
 # and CLIProxyAPI must be their only holder (cliproxyapi.md §2).
 auth-dir: "/Volumes/My Shared Files/state/cli-proxy-api/auth"
 
-# The static key clients present. Aperture injects `Authorization: Bearer @@APERTURE_STATIC_KEY@@`.
+# The static keys clients present. Aperture injects `Authorization: Bearer @@APERTURE_STATIC_KEY@@`;
+# hermes bypasses Aperture and presents its OWN bearer @@HERMES_CLIPROXY_KEY@@ (a distinct value,
+# rotatable independently of the Aperture key). The wrapper renders both from their sops secrets.
 # At least one real key is REQUIRED: an empty list unregisters the key-gate, and the
 # "your-api-key-1" example trips the safe-mode guard and refuses to serve (cliproxyapi.md §1).
 api-keys:
   - "@@APERTURE_STATIC_KEY@@"
+  - "@@HERMES_CLIPROXY_KEY@@"
 
 # Management API disabled entirely (empty secret-key -> no /v0/management routes).
 remote-management:
