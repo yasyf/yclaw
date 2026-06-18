@@ -50,9 +50,12 @@ fi
 
 # Write the server config idempotently: fixed REST port, server password, the
 # authorized-sender allowlist, and the hermes webhook. BlueBubbles reads this on
-# launch; a running server also re-reads on restart.
+# launch; a running server also re-reads on restart. The config carries the server
+# password, so it is written 0600 under a 0700 dir (umask 077 on the write, mirroring
+# the host-side secrets discipline in scripts/lib/secrets.sh) — never world-readable.
 mkdir -p "${BB_CONFIG_DIR}"
-cat > "${BB_CONFIG}" <<EOF
+chmod 700 "${BB_CONFIG_DIR}"
+( umask 077; cat > "${BB_CONFIG}" <<EOF
 {
   "password": "${BB_PASSWORD}",
   "socket_port": ${BB_PORT},
@@ -64,6 +67,8 @@ cat > "${BB_CONFIG}" <<EOF
   ]
 }
 EOF
+)
+chmod 600 "${BB_CONFIG}"
 # TODO(human): confirm BlueBubbles' actual config.json key names + path on the
 # pinned server version — the catalog fixes the values (port 1234, password,
 # webhook host hermes.<tailnet>, authorized-sender allowlist) but the exact JSON
@@ -78,6 +83,30 @@ open -ga "BlueBubbles" 2>/dev/null || \
 if ! tailscale serve status 2>/dev/null | grep -q "${BB_PORT}"; then
   tailscale serve --bg --https=443 "${BB_PORT}"
 fi
+
+# `tailscale serve` only adds the :443 front door; BlueBubbles still binds the raw
+# socket_port :1234 on every interface, reachable on the bridged LAN behind only the
+# app password. Lock it down with a pf anchor (same idempotent install convention as the
+# VNC anchor below): inbound :1234 only from the tailnet CGNAT + loopback, blocked elsewhere.
+BB_PF_ANCHOR_FILE="/etc/pf.anchors/bluebubbles-rest"
+sudo mkdir -p /etc/pf.anchors
+
+sudo tee "$BB_PF_ANCHOR_FILE" > /dev/null <<EOF
+pass in quick proto tcp from 100.64.0.0/10 to any port ${BB_PORT}
+pass in quick on lo0 proto tcp to any port ${BB_PORT}
+block in quick proto tcp from any to any port ${BB_PORT}
+EOF
+
+# Wire the anchor into pf.conf if not already present
+if ! grep -q 'anchor "bluebubbles-rest"' /etc/pf.conf; then
+  sudo bash -c 'cat >> /etc/pf.conf <<CONF
+
+anchor "bluebubbles-rest"
+load anchor "bluebubbles-rest" from "/etc/pf.anchors/bluebubbles-rest"
+CONF'
+fi
+
+sudo pfctl -f /etc/pf.conf
 
 # 4. (config + webhook handled in §2 above via ${BB_CONFIG}.)
 
