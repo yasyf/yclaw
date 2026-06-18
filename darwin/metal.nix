@@ -296,10 +296,16 @@ in
   # /etc/pf.conf (includes the persisted `metal` anchor) and enable pf. The guest runs no
   # vmnet/NAT anchors, so a full `-f` reload is safe here.
   launchd.daemons.metal-boot-setup.serviceConfig = {
+    # pf is the tailnet-only default-deny gate; if it fails to come up the credential services are
+    # exposed to the vmnet LAN. Fail LOUD, not open: a reload failure is logged, and a pf-enable
+    # failure both logs and exits non-zero so launchd records it (stderr lands in the persistent
+    # StandardErrorPath below). `pfctl -e` returns non-zero when pf is ALREADY enabled, so its exit
+    # code alone is not a reliable signal — the `pfctl -s info` "Status: Enabled" check is the real
+    # gate. Wired cap keeps `|| true` (a sysctl miss is not security-relevant).
     ProgramArguments = [
       "/bin/sh"
       "-c"
-      "wired=$(( $(/usr/sbin/sysctl -n hw.memsize)/1048576 - 6144 )); /usr/sbin/sysctl iogpu.wired_limit_mb=$wired || true; /sbin/pfctl -f /etc/pf.conf 2>/dev/null || true; /sbin/pfctl -e 2>/dev/null || true"
+      "wired=$(( $(/usr/sbin/sysctl -n hw.memsize)/1048576 - 6144 )); /usr/sbin/sysctl iogpu.wired_limit_mb=$wired || true; /sbin/pfctl -f /etc/pf.conf 2>/dev/null || echo 'metal: ERROR pfctl -f /etc/pf.conf failed' >&2; /sbin/pfctl -e 2>/dev/null || true; if /sbin/pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'; then exit 0; else echo 'metal: FATAL pf not enabled after boot setup — credential services exposed to vmnet LAN' >&2; exit 1; fi"
     ];
     RunAtLoad = true;
     KeepAlive = false;
