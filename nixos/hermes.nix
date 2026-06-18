@@ -571,13 +571,41 @@ in
   # seedNodeConfig; adding renderHermesProxyEnv guarantees the proxy.env exists before it is read.
   system.activationScripts.setupSecrets.deps = [ "renderHermesProxyEnv" ];
 
-  # --- In-VM Docker sandbox (terminal.backend = "docker") ----------------------
-  virtualisation.docker.enable = true;
+  # --- In-VM Docker sandbox (terminal.backend = "docker") — gVisor-confined ----
+  # H6 (Phase 5): the agent runs UNTRUSTED input (inbound iMessages, fetched web content) with
+  # no human approval gate, so every code-exec container it spawns is a potential escape vector.
+  virtualisation.docker = {
+    enable = true;
+    # gVisor (runsc) as the daemon's DEFAULT runtime: a pure-userspace kernel that intercepts
+    # the container's syscalls, so a sandbox escape lands in runsc's emulated kernel, not the
+    # VM's. The agent's code-exec tool shells out to the `docker` CLI and passes NO `--runtime`
+    # flag (verified in hermes-agent source), so default-runtime = "runsc" sandboxes EVERY agent
+    # container transparently — nothing in the agent config selects a runtime. Kata is not viable
+    # here (needs nested virt the tart guest lacks); runsc is pure userspace and works on the
+    # aarch64-linux guest. pkgs.gvisor provides $out/bin/runsc (confirmed available on aarch64).
+    daemon.settings = {
+      runtimes.runsc.path = "${pkgs.gvisor}/bin/runsc";
+      default-runtime = "runsc";
+    };
+  };
   # The hermes-agent service runs with a restricted systemd PATH that lacks the docker CLI,
   # so the code-execution tool's `docker` lookup fails ("Docker executable not found in PATH").
   # Put the docker client on the service PATH (verified: without this, execute_code errors).
   systemd.services.hermes-agent.path = [ config.virtualisation.docker.package ];
   # The hermes-agent module's default user/group is "hermes" (nixosModules.nix createUser).
+  #
+  # TODO(security/H6): the agent still has docker-group (= root-equivalent) access. runsc as the
+  # default runtime sandboxes the WORKLOADS the agent runs, but a prompt-injected agent that
+  # reaches the docker CLI can still pass `--runtime=runc` and `-v /:/host` to escape to VM root
+  # (then read /var/lib/sops-nix/key.txt and the agent-vault proxy token). The full fix is to drop
+  # this group and run rootless docker so the agent is not root-equivalent — BLOCKED here because
+  # the hermes user is `isSystemUser = true` with a DYNAMICALLY-allocated uid (config.users.users.
+  # hermes.uid is null at eval time): the NixOS rootless module only defines a `systemd.user.
+  # services.docker` unit keyed on $XDG_RUNTIME_DIR, which a system user has no session/runtime-dir
+  # for, and the agent's DOCKER_HOST socket path can't be built without a static uid to interpolate.
+  # A docker-socket-proxy (tecnativa/docker-socket-proxy) that whitelists only the API verbs the
+  # code-exec tool needs is the viable alternative — left as follow-up. Phase-1 per-host keys bound
+  # the blast radius: a rooted hermes decrypts ONLY hermes's own bundle, never metal's secrets.
   users.users.hermes.extraGroups = [ "docker" ];
 
   # End-of-bootstrap onboarding CLI on the system PATH (merges with the hermes CLI that
