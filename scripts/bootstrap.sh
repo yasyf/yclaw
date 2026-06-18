@@ -215,28 +215,22 @@ cat <<EOF
   HUMAN GATES — these cannot be scripted. Do them in order, then verify.
 ================================================================================
 
-  [ ] 1. SIP disable on the bluebubbles VM (recovery mode).
-         tart run bluebubbles --recovery-mode  ->  Utilities > Terminal:
-           csrutil disable ; reboot
-         Verify:  csrutil status   # expect: "...status: disabled."
-         (see scripts/sip-disable.md)
-
-  [ ] 2. Apple-ID iMessage sign-in (2FA) on the bluebubbles VM.
+  [ ] 1. Apple-ID iMessage sign-in (2FA) on the bluebubbles VM.
          Sign in with the dedicated Apple ID, complete 2FA, enable iMessage.
 
-  [ ] 3. CLIProxyAPI Codex login (host, one-time browser flow):
+  [ ] 2. CLIProxyAPI Codex login (host, one-time browser flow):
            cli-proxy-api --codex-login          # ChatGPT subscription account
 
-  [ ] 4. CLIProxyAPI Gemini login (host, one-time browser flow):
+  [ ] 3. CLIProxyAPI Gemini login (host, one-time browser flow):
            cli-proxy-api --login                 # NOTE: flag is --login, NOT --gemini-login
                                                  # personal Google (free Code Assist)
 
-  [ ] 5. agent-vault Google OAuth connect (any tailnet device):
+  [ ] 4. agent-vault Google OAuth connect (any tailnet device):
            POST http://metal.$TAILNET_DOMAIN:14321/v1/credentials/oauth/connect
          Follow the browser consent; callback lands at
            https://metal.$TAILNET_DOMAIN/v1/oauth/callback
 
-  [ ] 6. Fetch the agent-vault MITM CA and commit it to the OS trust store:
+  [ ] 5. Fetch the agent-vault MITM CA and commit it to the OS trust store:
            curl -fsS http://metal.$TAILNET_DOMAIN:14321/v1/mitm/ca.pem \\
              -o nixos/agent-vault-ca.pem
          Then re-apply hermes so security.pki.certificateFiles installs it:

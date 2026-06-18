@@ -4,8 +4,10 @@
 # Nix + nix-darwin, and applies `darwinConfigurations.metal` (darwin/metal.nix) so every
 # service is declarative.
 #
+# A fresh macOS install from the pinned IPSW is SIP-ON by default (unlike the cirruslabs
+# published *-base images, which run `csrutil disable`), so metal needs no SIP step.
+#
 # The un-scriptable steps are HUMAN gates that run AFTER this image boots:
-#   - enable SIP (metal is SIP-on):       tart run metal --recovery → csrutil enable (scripts/sip-enable.md)
 #   - cliproxy Codex/Gemini logins:       device-code / VNC browser flow
 #   - Google OAuth:                       scripts/connect-google-oauth.py (VAULT_ADDR=http://metal…)
 #   - place the local model:              hf download the Qwen MLX model onto the state mount
@@ -99,8 +101,7 @@ build {
   }
 
   # HUMAN: the remaining bring-up is NOT scripted here (see the gates listed in the header):
-  #   1. enable SIP (metal is SIP-on)     — tart run metal --recovery → csrutil enable; see scripts/sip-enable.md.
-  #   2. cliproxy --codex-login/--login   — device-code / VNC browser flow.
-  #   3. scripts/connect-google-oauth.py  — VAULT_ADDR=http://metal.@@TAILNET_DOMAIN@@:14321.
-  #   4. place the Qwen MLX model         — hf download onto /Volumes/My Shared Files/state/hf.
+  #   1. cliproxy --codex-login/--login   — device-code / VNC browser flow.
+  #   2. scripts/connect-google-oauth.py  — VAULT_ADDR=http://metal.@@TAILNET_DOMAIN@@:14321.
+  #   3. place the Qwen MLX model         — hf download onto /Volumes/My Shared Files/state/hf.
 }

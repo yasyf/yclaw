@@ -4,8 +4,8 @@ set -euo pipefail
 # bluebubbles-setup.sh — idempotent, run ON the bluebubbles macOS VM (iMessage/BlueBubbles
 # only; SIP off; its OWN tailnet node; holds NO credentials). Brings up the BlueBubbles server
 # + Private API helper, exposes it on the tailnet, points its webhook at hermes, and locks VNC
-# to tailnet/LAN. One-time human gates (recovery-mode SIP off, Apple-ID 2FA, app GUI grants)
-# are flagged `HUMAN:` and the script continues with what is scriptable.
+# to tailnet/LAN. One-time human gates (Apple-ID 2FA, app GUI grants) are flagged `HUMAN:`
+# and the script continues with what is scriptable.
 
 BB_PASSWORD="@@BLUEBUBBLES_PASSWORD@@"
 AUTHORIZED_HANDLES="@@AUTHORIZED_HANDLES@@"
@@ -15,10 +15,14 @@ BB_PORT="1234"
 BB_CONFIG_DIR="${HOME}/Library/Application Support/bluebubbles-server"
 BB_CONFIG="${BB_CONFIG_DIR}/config.json"
 
-# 1. SIP must be off (see scripts/sip-disable.md) — fail loud if still enabled.
+# 1. SIP must be off for BlueBubbles' Private API helper to load — fail loud if not.
+# The SIP-off state comes from cloning the cirruslabs SIP-disabled base
+# (ghcr.io/cirruslabs/macos-tahoe-base, see packer/bluebubbles.pkr.hcl), NOT from a
+# manual recovery `csrutil disable`. A SIP-on guest here means the wrong base image.
 if ! csrutil status | grep -q 'disabled'; then
   echo "FATAL: SIP is still enabled. BlueBubbles' Private API helper cannot load." >&2
-  echo "       Boot recovery mode and run csrutil disable (see scripts/sip-disable.md)." >&2
+  echo "       This VM must be cloned from the cirruslabs SIP-disabled base" >&2
+  echo "       (ghcr.io/cirruslabs/macos-tahoe-base, see packer/bluebubbles.pkr.hcl)." >&2
   csrutil status >&2
   exit 1
 fi

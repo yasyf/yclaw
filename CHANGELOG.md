@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `packer/bluebubbles.pkr.hcl` and `packer/metal.pkr.hcl` — the macOS base images
   for the iMessage and credential/AI guests.
 - `scripts/` — `bootstrap.sh` (the destroy-and-rebuild entrypoint), `deploy-vm.sh`,
-  `bluebubbles-setup.sh`, `sip-disable.md`, and `gws-bridge.patch` (dummy-token cutover).
+  `bluebubbles-setup.sh`, and `gws-bridge.patch` (dummy-token cutover).
 - `justfile` orchestration (`bootstrap`, `build-images`, `deploy`, `smoke`, `destroy`,
   `rebuild`) and sops-nix secret wiring (`.sops.yaml`, `secrets/`).
 - `secrets/PLACEHOLDERS.md` — the human-input manifest.
@@ -37,5 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lockdown), serving as the credential + AI vault only: omlx, mlx-audio
   (`granite-speech`) STT, CLIProxyAPI, and agent-vault now run inside `metal`,
   not on the host, and no iMessage runs there.
+- Eliminated both macOS-guest SIP recovery-mode gates by choosing each guest's
+  base image so SIP is already in the desired state: `metal` is built from the
+  pinned IPSW (a fresh install is SIP-on) and `bluebubbles` is cloned from the
+  cirruslabs SIP-off base (`ghcr.io/cirruslabs/macos-tahoe-base`), so neither
+  needs a `csrutil` recovery step.
 
 [Unreleased]: ../../commits/main

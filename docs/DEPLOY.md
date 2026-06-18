@@ -10,18 +10,18 @@
 2. **Collect secrets.** The flow mints and sops-encrypts the runtime secrets into
    `~/.yclaw/state` (`age/key.txt`, `secrets.sops.yaml`); nothing secret is
    committed to the repo.
-3. **Build or pull images.** The metal (nix-darwin) guest and the bluebubbles
-   macOS base image are built locally from a pinned IPSW via Packer; the hermes
-   (NixOS) gateway image is built with `tart --nested` or in CI and pulled.
+3. **Build or pull images.** The metal (nix-darwin) guest is built locally from a
+   pinned IPSW via Packer; the bluebubbles macOS base is cloned from the cirruslabs
+   SIP-off base (`ghcr.io/cirruslabs/macos-tahoe-base`) and provisioned via Packer;
+   the hermes (NixOS) gateway image is built with `tart --nested` or in CI and pulled.
 4. **Boot the VMs.** tart launches the metal, bluebubbles, and hermes guests;
    each joins the tailnet as its own node.
 5. **Clear the human gates.** Finish the one-time interactive steps that cannot
-   be scripted: enabling SIP on the metal guest (recovery mode, see
-   [`../scripts/sip-enable.md`](../scripts/sip-enable.md)), disabling SIP on the
-   bluebubbles guest (recovery mode, see
-   [`../scripts/sip-disable.md`](../scripts/sip-disable.md)), the BlueBubbles
-   Apple-ID iMessage sign-in (2FA) on that guest, the Codex/Gemini browser logins
-   on metal, and the agent-vault Google OAuth consent on metal.
+   be scripted: the BlueBubbles Apple-ID iMessage sign-in (2FA) on the bluebubbles
+   guest, the Codex/Gemini browser logins on metal, and the agent-vault Google
+   OAuth consent on metal. Neither guest needs a SIP recovery step: metal is
+   SIP-on from its fresh IPSW install, and bluebubbles is SIP-off because it is
+   cloned from the cirruslabs SIP-disabled base.
 
 ## State layout
 

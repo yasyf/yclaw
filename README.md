@@ -42,7 +42,7 @@ Run the entrypoint from a clone of this repo:
 just bootstrap
 ```
 
-It prompts for the human-supplied values in [`secrets/PLACEHOLDERS.md`](secrets/PLACEHOLDERS.md), mints and encrypts the runtime secrets with sops into `~/.yclaw/state`, builds or pulls the VM images, boots the guests, and ends by printing the **human gates** — the interactive one-time steps that cannot be scripted (the metal SIP-enable, the bluebubbles SIP-disable and Apple-ID iMessage sign-in, the Codex/Gemini browser logins on metal, and the Google OAuth consent). Complete those, then verify:
+It prompts for the human-supplied values in [`secrets/PLACEHOLDERS.md`](secrets/PLACEHOLDERS.md), mints and encrypts the runtime secrets with sops into `~/.yclaw/state`, builds or pulls the VM images, boots the guests, and ends by printing the **human gates** — the interactive one-time steps that cannot be scripted (the bluebubbles Apple-ID iMessage sign-in, the Codex/Gemini browser logins on metal, and the Google OAuth consent). Complete those, then verify:
 
 ```bash
 just smoke

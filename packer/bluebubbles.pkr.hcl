@@ -1,15 +1,14 @@
 # Packer template: macOS base image for the bluebubbles VM (cirruslabs/tart).
 #
-# Builds a fresh macOS Tahoe install from a pinned IPSW and provisions only the
-# scriptable baseline: Homebrew + OSS Tailscale. The heavy, un-scriptable steps
-# are HUMAN gates that run AFTER this image boots:
+# Clones the cirruslabs SIP-disabled macOS Tahoe base
+# (ghcr.io/cirruslabs/macos-tahoe-base) and provisions only the scriptable
+# baseline: Homebrew + OSS Tailscale. The base ships SIP-OFF (its build runs
+# `csrutil disable`), exactly what BlueBubbles' Private API needs, so there is no
+# recovery-mode SIP step. The heavy, un-scriptable steps are HUMAN gates that run
+# AFTER this image boots:
 #
-#   - SIP disable (recovery mode):     scripts/sip-disable.md
 #   - BlueBubbles + Apple-ID/iMessage: scripts/bluebubbles-setup.sh
 #
-# HUMAN: SIP disable requires booting into macOS recovery (`tart run bluebubbles
-#   --recovery-mode` -> `csrutil disable`). Recovery mode is not reachable from a
-#   Packer provisioner — keep it in scripts/sip-disable.md.
 # HUMAN: Apple-ID iMessage sign-in is an interactive flow (2FA, trust prompts)
 #   that cannot be Packer-provisioned. Use a SEPARATE Apple ID (@@APPLE_ID@@), not
 #   your real one — see scripts/bluebubbles-setup.sh.
@@ -25,12 +24,6 @@ packer {
       version = ">= 1.12.0"
     }
   }
-}
-
-variable "ipsw_url" {
-  type        = string
-  description = "Pinned macOS Tahoe restore image (URL or local path)."
-  default     = "@@IPSW_URL@@"
 }
 
 variable "vm_name" {
@@ -69,15 +62,17 @@ variable "vm_admin_pass" {
 }
 
 source "tart-cli" "tahoe" {
-  from_ipsw    = var.ipsw_url
+  vm_base_name = "ghcr.io/cirruslabs/macos-tahoe-base:latest"
   vm_name      = var.vm_name
   cpu_count    = var.cpu_count
   memory_gb    = var.memory_gb
   disk_size_gb = var.disk_size_gb
   ssh_username = var.vm_admin_user
-  ssh_password = var.vm_admin_pass
+  # The cloned base ships admin/admin; authenticate with that default, then the
+  # first provisioner resets the password to var.vm_admin_pass (@@VM_ADMIN_PASS@@).
+  ssh_password = "admin"
   headless     = true
-  # macOS Setup Assistant + first-boot account creation need slack before SSH.
+  # Give the cloned base's guest agent + SSH a moment to come up before connecting.
   create_grace_time = "120s"
 }
 
@@ -92,6 +87,8 @@ build {
   provisioner "shell" {
     inline = [
       "set -euo pipefail",
+      # Reset the cloned base's default admin password (admin) to var.vm_admin_pass.
+      "sudo dscl . -passwd /Users/${var.vm_admin_user} '${var.vm_admin_pass}'",
       "/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"",
       "eval \"$(/opt/homebrew/bin/brew shellenv)\"",
       "brew install tailscale",
@@ -101,8 +98,7 @@ build {
   }
 
   # HUMAN: the remaining bring-up is NOT scripted here:
-  #   1. scripts/sip-disable.md      — disable SIP in recovery mode.
-  #   2. scripts/bluebubbles-setup.sh — sign into iMessage (@@APPLE_ID@@), install
+  #   1. scripts/bluebubbles-setup.sh — sign into iMessage (@@APPLE_ID@@), install
   #      BlueBubbles + the Private API helper, `tailscale up`, then
   #      `tailscale serve --bg --https=443 1234` to expose the REST API at
   #      https://bluebubbles.@@TAILNET_DOMAIN@@.

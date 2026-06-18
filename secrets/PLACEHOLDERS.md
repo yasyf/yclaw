@@ -18,7 +18,7 @@ prompt at run time. See [Architecture § Credential custody](../docs/ARCHITECTUR
 | `@@HOST_NAME@@` | Which Mac (hostname) the host config targets | `darwin/host.nix`, packer | prompt |
 | `@@HOST_USER@@` | macOS login user on the host (home dir, launchd log paths) | `darwin/host.nix` | prompt |
 | `@@HOST_RAM@@` | Host RAM tier (GB) for VM sizing | `darwin/host.nix` | prompt |
-| `@@IPSW_URL@@` | Pinned macOS Tahoe IPSW URL for the macOS guests | `packer/metal.pkr.hcl`, `packer/bluebubbles.pkr.hcl` | prompt |
+| `@@IPSW_URL@@` | Pinned macOS Tahoe IPSW URL for the metal guest | `packer/metal.pkr.hcl` | prompt |
 | `@@GITHUB_OWNER@@` | GitHub owner the metal VM clones the repo from at build | `packer/metal.pkr.hcl` | prompt |
 | `@@APPLE_ID@@` | Dedicated Apple ID for iMessage (on the bluebubbles VM) | `scripts/bluebubbles-setup.sh` iMessage sign-in | **interactive (human gate)** |
 | `@@APPLE_ID_PW@@` | Password for the dedicated Apple ID | `scripts/bluebubbles-setup.sh` iMessage sign-in | **interactive (human gate)** |
@@ -41,9 +41,7 @@ These leave a `HUMAN:` note in the relevant script and the run continues elsewhe
 - `cli-proxy-api --gemini-login` — **personal** Google (free Code Assist) (metal, one-time browser flow).
 - agent-vault **Google OAuth consent** — `POST /v1/credentials/oauth/connect` → browser, callback to
   `https://metal.<tailnet>.ts.net/v1/oauth/callback` from any tailnet device.
-- **SIP enable** on the metal VM (recovery mode) — see [`../scripts/sip-enable.md`](../scripts/sip-enable.md).
 - **Apple-ID iMessage sign-in** (2FA) on the bluebubbles VM.
-- **SIP disable** on the bluebubbles VM (recovery mode) — see [`../scripts/sip-disable.md`](../scripts/sip-disable.md).
 
 ## Encrypted material
 
