@@ -1,0 +1,17 @@
+# Secret guard for commits. Install once (contributors only):
+#   brew install pre-commit && pre-commit install
+# The local pygrep hook is self-contained (no pinned external rev) and fails the commit if a
+# secret-shaped string is staged — the same high-precision patterns the CI genericity guard uses
+# (.github/workflows/build-images.yml). Real secrets live only in ~/.yclaw/state + the yclaw
+# keychain, never the repo. To also run the full gitleaks scanner, add its hosted hook below.
+repos:
+  - repo: local
+    hooks:
+      - id: no-secret-shaped-strings
+        name: block secret-shaped strings
+        language: pygrep
+        types: [text]
+        # Exclude the files that legitimately carry the patterns themselves (this config + the CI
+        # guard) and the example secrets template (EXAMPLE placeholders, never real values).
+        exclude: '^(\.pre-commit-config\.yaml|\.github/workflows/build-images\.yml|secrets/secrets\.sops\.yaml\.example)$'
+        entry: '(tskey-(auth|api)-[A-Za-z0-9]|sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9]{20}|AKIA[0-9A-Z]{16}|AGE-SECRET-KEY-1|-----BEGIN [A-Z ]*PRIVATE KEY-----)'

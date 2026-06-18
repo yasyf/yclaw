@@ -1,11 +1,11 @@
-# Build the GENERIC hermes gateway image in CI so the host can PULL it (the host is being
-# de-Nix'd — no nix on it). Native aarch64-linux, raw-efi for tart. vault is being RETIRED
-# (folded into the metal VM), so ONLY hermes is built here.
+# Build the GENERIC hermes gateway image in CI so the host can PULL it (the host runs no Nix).
+# Native aarch64-linux, raw-efi for tart. Only hermes is built here (metal + bluebubbles are
+# macOS guests built locally by packer).
 #
-# The image carries NO per-machine identity: every @@PLACEHOLDER@@ in nixos/** is substituted
-# on the HOST at bootstrap, and per-user secrets/config are injected at first boot via the
-# tart virtiofs share (nixos/common.nix `seedNodeConfig`). The genericity guard below fails
-# the build if any author-specific string leaks into the closure or the image.
+# The image carries NO per-machine identity: configs use bare Tailscale MagicDNS names, and
+# per-user secrets/config are injected at first boot via the tart virtiofs share
+# (nixos/common.nix `seedNodeConfig`: age key, sops blob, node.env, CA). The genericity guard
+# below fails the build if a secret-shaped string leaks into the closure or the image.
 name: build-images
 
 on:
@@ -63,14 +63,20 @@ jobs:
           fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
-      - name: Genericity guard (no author-specific strings in the closure or image)
+      - name: Genericity guard (no leaked secrets in the closure or image)
         env:
           RAW: ${{ steps.img.outputs.raw }}
+          EXTRA_BLOCKLIST: ${{ vars.GENERICITY_BLOCKLIST }}
         run: |
           set -uo pipefail
-          # A clean CI build contains only the literal @@…@@ tokens — never these real values.
-          # The raw image is ext4 plaintext, so a byte-grep scans the entire baked store.
-          pattern='tail71af5d|yasyf-home|yasyfm@gmail.com|6176316733|169bebe8'
+          # A clean build is GENERIC — per-user identity is injected at first boot, never baked.
+          # Fail if a high-precision secret pattern leaks into the closure or the ext4 image
+          # (plaintext, so a byte-grep scans the whole baked store). These patterns don't
+          # false-positive on nixpkgs maintainer metadata. Operators can add their own host facts
+          # (tailnet id, hostname, email) via the GENERICITY_BLOCKLIST repo variable, keeping
+          # those strings OUT of this public file.
+          pattern='tskey-(auth|api)-[A-Za-z0-9]|sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9]{20}|AKIA[0-9A-Z]{16}|AGE-SECRET-KEY-1|BEGIN [A-Z ]*PRIVATE KEY'
+          [ -n "${EXTRA_BLOCKLIST:-}" ] && pattern="$pattern|$EXTRA_BLOCKLIST"
           fail=0
           echo "== scanning image-closure store-path names =="
           ph="$(nix path-info -r ./result | grep -E "$pattern" || true)"

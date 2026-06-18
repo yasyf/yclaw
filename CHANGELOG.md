@@ -7,52 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Initial scaffolding.
-- Hermes Home Server IaC: a Nix flake defining the `hermes` and `vault` NixOS VMs,
-  the nix-darwin host, and the `agent-vault` + `cli-proxy-api` Go derivations.
-- `nixos/hermes.nix` — the hermes gateway with the full declarative `config.yaml`
-  (model fallback chain, Docker sandbox, Exa/Honcho/Parakeet/Piper, autonomy), the
-  agent-vault MITM CA in the OS trust store, and a BlueBubbles readiness gate.
-- `nixos/vault.nix` + `nixos/vault-services.yaml` — agent-vault service, static-key
-  injection rules, and Google OAuth provisioning.
-- `nixos/ai.nix` — a rendered Tailscale Aperture providers-config artifact.
-- `darwin/host.nix` + `darwin/cliproxyapi-config.yaml` — Homebrew (`tart`, Tailscale),
-  launchd agents for MLX/Parakeet/CLIProxyAPI and the tart VMs, and the `pf` anchor.
-- `packer/bluebubbles.pkr.hcl` and `packer/metal.pkr.hcl` — the macOS base images
-  for the iMessage and credential/AI guests.
-- `scripts/` — `bootstrap.sh` (the destroy-and-rebuild entrypoint), `deploy-vm.sh`,
-  `bluebubbles-setup.sh`, and `gws-bridge.patch` (dummy-token cutover).
-- `justfile` orchestration (`bootstrap`, `build-images`, `deploy`, `smoke`, `destroy`,
-  `rebuild`) and sops-nix secret wiring (`.sops.yaml`, `secrets/`).
-- `secrets/PLACEHOLDERS.md` — the human-input manifest.
+- `LICENSE` — the project is now MIT-licensed.
+- A pre-commit secret guard (`.pre-commit-config.yaml`): a self-contained `pygrep`
+  hook that blocks staged secret-shaped strings (Tailscale keys, OpenAI/GitHub
+  tokens, AWS access keys, age and PEM private keys), matching the patterns the CI
+  genericity guard already enforces. Install with `brew install pre-commit && pre-commit install`.
+- Hermes agent state is externalized to the host. `honcho` memory, sessions, and
+  the rest of `/var/lib/hermes` live in `~/.yclaw/state/hermes` over virtiofs, so
+  conversation history survives a VM rebuild and is captured by backups.
+- `just backup` — a `restic` backup of `~/.yclaw/state` that excludes the
+  regenerable model caches (`hf/`, `omlx/`, `mlx-audio/`). Point it at a repo with
+  `YCLAW_RESTIC_REPO` and `RESTIC_PASSWORD`; restore with `restic restore latest
+  --target ~/.yclaw/state` followed by `just setup`.
+- A dedicated `yclaw` keychain (`~/Library/Keychains/yclaw.keychain-db`) holding
+  every generated password (agent-vault master, per-VM admin, BlueBubbles server),
+  siloed from your login keychain and auto-unlocked via one
+  `yclaw-keychain-password` entry.
 
 ### Changed
-- BlueBubbles un-folded back into its own `bluebubbles` macOS guest — a separate
-  SIP-off tailnet node that runs only the iMessage channel and holds no
-  credentials — reversing the earlier consolidation into `metal`. This keeps the
-  Apple two-concurrent-macOS-guest budget at metal + bluebubbles (hermes is Linux).
-- `metal` kept SIP **on** and locked down to the maximum (pf/app-firewall network
-  lockdown), serving as the credential + AI vault only: omlx, mlx-audio
-  (`granite-speech`) STT, CLIProxyAPI, and agent-vault now run inside `metal`,
-  not on the host, and no iMessage runs there.
-- Eliminated both macOS-guest SIP recovery-mode gates by choosing each guest's
-  base image so SIP is already in the desired state: `metal` is built from the
-  pinned IPSW (a fresh install is SIP-on) and `bluebubbles` is cloned from the
-  cirruslabs SIP-off base (`ghcr.io/cirruslabs/macos-tahoe-base`), so neither
-  needs a `csrutil` recovery step.
+- Deploy is now a single wizard. `just bootstrap` runs end to end: preflight
+  tooling, prompt for the non-secret values (tailnet, GitHub owner, IPSW URL, host
+  RAM, authorized handles), mint the age key and generate per-VM passwords, encrypt
+  state with sops, then build and boot all images. The agent-vault CA fetch from
+  `metal` is automated; the remaining human gates (Apple-ID iMessage sign-in,
+  `cliproxy` OAuth logins, agent-vault Google OAuth) are printed at the end.
+- VM images are generic and reusable across tailnets. Nodes are addressed by bare
+  Tailscale MagicDNS names (`metal`, `bluebubbles`, `hermes`, `ai`) and configured
+  on first boot from an injected `node.env`, so a published image carries no
+  site-specific identifiers. The `hermes` image's canonical source is CI; the wizard
+  builds it locally as a fallback.
+- Model ids have one source of truth, `nixos/models.nix`, consumed by
+  `nixos/hermes.nix`, `nixos/ai.nix`, and `darwin/metal.nix`.
+- Speech-to-text now lazy-loads and idle-unloads. `mlx-audio` STT on `metal` loads
+  `granite-speech` on first use and unloads after an idle period, matching the omlx
+  per-model idle TTL (1800s).
+- Tailscale on the NixOS nodes is bumped to current (overlaid from
+  `nixpkgs-unstable`).
+
+### Removed
+- The `vault` VM. `agent-vault` (the credential broker and MITM forward proxy) now
+  runs on `metal`, the sole credential custodian, so there is no separate vault node.
+- Host Nix. The macOS host no longer runs nix-darwin; `darwin/host.nix` and the host
+  flake output are gone, and the host is provisioned by `scripts/setup.sh` (Homebrew
+  `tart`, Tailscale, `gum`, `packer`, `restic`) alone. In-guest `metal` is still
+  configured by nix-darwin (`darwinConfigurations.metal`).
 
 ### Security
-- The macOS guest admin passwords and the BlueBubbles server password are now
-  random-generated by `scripts/lib/secrets.sh` and reused on re-run — matching the existing
-  agent-vault master-password pattern. No yclaw-chosen password is hardcoded, placeholder, or
-  prompted: packer reads the guest admin password from the keychain via `PKR_VAR_vm_admin_pass`,
-  and the BlueBubbles password flows through sops `hermes/env`.
-- All yclaw-generated passwords (agent-vault master, the per-VM admin passwords, BlueBubbles
-  server) live in a **dedicated** `yclaw` keychain
-  (`$HOME/Library/Keychains/yclaw.keychain-db`) instead of the login keychain, siloing them
-  from the user's personal credentials. The dedicated keychain is auto-unlocked via a single
-  `yclaw-keychain-password` entry in the login keychain. The guest admin password is split
-  into **per-VM** passwords (`yclaw-metal-admin-pass`, `yclaw-bluebubbles-admin-pass`), each
-  sourced into its own packer build via `PKR_VAR_vm_admin_pass`.
+- `metal` is hardened to SIP-on and tailnet-only. It is the sole credential
+  custodian (omlx, `granite-speech` STT, CLIProxyAPI, and agent-vault all run
+  inside it), locked down with a `pf` anchor plus the application firewall, with
+  Remote Login off (reachable only via Tailscale SSH). Real secrets never enter
+  `hermes`; agent-vault injects static keys and OAuth bearers on the wire, and
+  `cliproxy` holds the Codex/Gemini subscription OAuth.
+- BlueBubbles runs in its own SIP-off `bluebubbles` guest — a separate tailnet node
+  that holds no credentials beyond the BlueBubbles server password it needs locally.
+- Generated passwords are random and reused on re-run, never hardcoded, placeholder,
+  or prompted. Packer reads each guest's admin password from the `yclaw` keychain via
+  `PKR_VAR_vm_admin_pass`; the BlueBubbles password flows through sops.
 
 [Unreleased]: ../../commits/main
