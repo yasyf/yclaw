@@ -7,10 +7,11 @@ set -euo pipefail
 # to tailnet/LAN. One-time human gates (Apple-ID 2FA, app GUI grants) are flagged `HUMAN:`
 # and the script continues with what is scriptable.
 
-# @@BLUEBUBBLES_PASSWORD@@ is resolved by the setup flow from the generated,
-# Keychain-backed value (scripts/lib/secrets.sh, service yclaw-bluebubbles-password) —
-# never prompted, never hardcoded. This guest holds no host Keychain, so the value
-# arrives via the same token-substitution the other @@…@@ tokens use here.
+# @@BLUEBUBBLES_PASSWORD@@ is resolved by the setup flow from the generated, dedicated-yclaw-
+# keychain-backed value (scripts/lib/secrets.sh, service yclaw-bluebubbles-server-pass in
+# $HOME/Library/Keychains/yclaw.keychain-db) — never prompted, never hardcoded. This guest holds
+# no host Keychain, so the value arrives via the same token-substitution the other @@…@@ tokens
+# use here.
 BB_PASSWORD="@@BLUEBUBBLES_PASSWORD@@"
 AUTHORIZED_HANDLES="@@AUTHORIZED_HANDLES@@"
 TAILNET_DOMAIN="@@TAILNET_DOMAIN@@"

@@ -15,13 +15,21 @@
    SIP-off base (`ghcr.io/cirruslabs/macos-tahoe-base`) and provisioned via Packer;
    the hermes (NixOS) gateway image is built with `tart --nested` or in CI and pulled.
 
-   The macOS guests bake an admin password that step 2 random-generated into the login
-   Keychain (`yclaw-vm-admin-pass`). Source it from the Keychain into the env before each
-   Packer build so the password is never prompted or hardcoded:
+   Each macOS guest bakes a per-VM admin password that step 2 random-generated into the
+   dedicated yclaw keychain (`$HOME/Library/Keychains/yclaw.keychain-db`): `yclaw-metal-admin-pass`
+   for metal and `yclaw-bluebubbles-admin-pass` for bluebubbles. Unlock the dedicated keychain
+   (its password lives in the login keychain under `yclaw-keychain-password`), then source each
+   per-VM password from it into the env before that VM's Packer build so the password is never
+   prompted or hardcoded:
 
    ```sh
-   export PKR_VAR_vm_admin_pass="$(security find-generic-password -a "$USER" -s yclaw-vm-admin-pass -w)"
+   KC="$HOME/Library/Keychains/yclaw.keychain-db"
+   security unlock-keychain -p "$(security find-generic-password -a "$USER" -s yclaw-keychain-password -w)" "$KC"
+
+   export PKR_VAR_vm_admin_pass="$(security find-generic-password -a "$USER" -s yclaw-metal-admin-pass -w "$KC")"
    packer build packer/metal.pkr.hcl
+
+   export PKR_VAR_vm_admin_pass="$(security find-generic-password -a "$USER" -s yclaw-bluebubbles-admin-pass -w "$KC")"
    packer build packer/bluebubbles.pkr.hcl
    ```
 

@@ -11,16 +11,26 @@
 #   sops.yaml             resolved sops creation rules (from the committed .sops.yaml)
 #   vm-secrets/key.txt    age key staged for the VMs (virtiofs mount)
 #
-# Three passwords are GENERATED here and stored in the login Keychain, then reused on
-# re-run (retrieve any with `security find-generic-password -s <service> -w`):
-#   yclaw-agent-vault-master    agent-vault master password
-#   yclaw-vm-admin-pass         admin account baked into both macOS guest images (packer)
-#   yclaw-bluebubbles-password  BlueBubbles server password (also rendered into sops hermes/env)
+# Every yclaw-generated password lives in a DEDICATED macOS keychain — never the login
+# keychain — so the credentials are siloed from the user's personal keychain:
+#   $HOME/Library/Keychains/yclaw.keychain-db
+# Its unlock password is stored ONCE in the LOGIN keychain under `yclaw-keychain-password`,
+# so the scripts can auto-unlock the dedicated keychain non-interactively. The dedicated
+# keychain holds these items (account `-a "$USER"` on each), GENERATED here and reused on
+# re-run (retrieve any with
+# `security find-generic-password -s <service> -w "$HOME/Library/Keychains/yclaw.keychain-db"`):
+#   yclaw-agent-vault-master        agent-vault master password
+#   yclaw-metal-admin-pass          admin account baked into the metal guest image (packer)
+#   yclaw-bluebubbles-admin-pass    admin account baked into the bluebubbles guest image (packer)
+#   yclaw-bluebubbles-server-pass   BlueBubbles server password (also rendered into sops hermes/env)
 
 YCLAW_STATE="${YCLAW_STATE:-$HOME/.yclaw/state}"
+YCLAW_KEYCHAIN="$HOME/Library/Keychains/yclaw.keychain-db"
+KC_SERVICE_KEYCHAIN_PASS="yclaw-keychain-password"
 KC_SERVICE="yclaw-agent-vault-master"
-KC_SERVICE_VM_ADMIN="yclaw-vm-admin-pass"
-KC_SERVICE_BLUEBUBBLES="yclaw-bluebubbles-password"
+KC_SERVICE_METAL_ADMIN="yclaw-metal-admin-pass"
+KC_SERVICE_BLUEBUBBLES_ADMIN="yclaw-bluebubbles-admin-pass"
+KC_SERVICE_BLUEBUBBLES_SERVER="yclaw-bluebubbles-server-pass"
 SECRETS_LIB_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 _secrets_ask()  { gum input --password --prompt "  $1 ❯ "; }
@@ -28,10 +38,31 @@ _secrets_note() { gum style --foreground 244 "  $*"; }
 _secrets_ok()   { gum style --foreground 84  "  $*"; }
 _secrets_fail() { gum style --foreground 196 "  $*"; exit 1; }
 
-# Prompt for the external API secrets, generate/reuse the age key + the three Keychain
-# passwords (vault master, VM admin, BlueBubbles), and write the sops-encrypted blob to
-# ~/.yclaw/state. Idempotent: reuses an existing age key and the Keychain-stored
-# passwords; re-prompts the external API keys. The caller must run under `set -euo pipefail`.
+# Ensure the dedicated yclaw keychain exists and is unlocked. On first run it is created with
+# a freshly-generated unlock password that is persisted in the LOGIN keychain under
+# `yclaw-keychain-password`; thereafter the unlock password is read back from the login
+# keychain and used to unlock the dedicated keychain non-interactively. set-keychain-settings
+# (no -t) disables the auto-lock timeout so the keychain stays unlocked for the run. Call this
+# before any yclaw-secret access.
+_yclaw_keychain_unlock() {
+  local kc_pass
+  if [ ! -f "$YCLAW_KEYCHAIN" ]; then
+    kc_pass="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32)"
+    security create-keychain -p "$kc_pass" "$YCLAW_KEYCHAIN"
+    security set-keychain-settings "$YCLAW_KEYCHAIN"
+    security add-generic-password -U -a "$USER" -s "$KC_SERVICE_KEYCHAIN_PASS" \
+      -l 'yclaw dedicated keychain unlock password' -w "$kc_pass"
+    _secrets_ok "Created dedicated yclaw keychain → $YCLAW_KEYCHAIN (unlock pw → login Keychain $KC_SERVICE_KEYCHAIN_PASS)."
+  fi
+  kc_pass="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_KEYCHAIN_PASS" -w)"
+  security unlock-keychain -p "$kc_pass" "$YCLAW_KEYCHAIN"
+}
+
+# Prompt for the external API secrets, generate/reuse the age key + the dedicated-keychain
+# passwords (vault master, the two per-VM admin passwords, BlueBubbles server), and write the
+# sops-encrypted blob to ~/.yclaw/state. Idempotent: reuses an existing age key and the
+# yclaw-keychain-stored passwords; re-prompts the external API keys. The caller must run under
+# `set -euo pipefail`.
 collect_secrets() {
   local t age_key vm_key sops_out sops_rendered sops_template pub plain
 
@@ -68,41 +99,54 @@ collect_secrets() {
     _secrets_note 'Minted a random Aperture static key (openssl rand -hex 32).'
   fi
 
-  # Vault master password: generate once, persist in the login Keychain, reuse thereafter.
-  if AGENT_VAULT_MASTER_PASSWORD="$(security find-generic-password -a "$USER" -s "$KC_SERVICE" -w 2>/dev/null)"; then
-    _secrets_note "Reusing vault master password from Keychain ($KC_SERVICE)."
+  # Every yclaw password lives in the dedicated yclaw keychain — ensure it exists and is
+  # unlocked before any generate-or-reuse below.
+  _yclaw_keychain_unlock
+
+  # Vault master password: generate once, persist in the dedicated yclaw keychain, reuse thereafter.
+  if AGENT_VAULT_MASTER_PASSWORD="$(security find-generic-password -a "$USER" -s "$KC_SERVICE" -w "$YCLAW_KEYCHAIN" 2>/dev/null)"; then
+    _secrets_note "Reusing vault master password from yclaw keychain ($KC_SERVICE)."
   else
-    AGENT_VAULT_MASTER_PASSWORD="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9')"
-    AGENT_VAULT_MASTER_PASSWORD="${AGENT_VAULT_MASTER_PASSWORD:0:40}"
+    AGENT_VAULT_MASTER_PASSWORD="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32)"
     security add-generic-password -U -a "$USER" -s "$KC_SERVICE" \
-      -l 'yclaw agent-vault master password' -w "$AGENT_VAULT_MASTER_PASSWORD"
-    _secrets_ok "Generated vault master password → Keychain ($KC_SERVICE)."
+      -l 'yclaw agent-vault master password' -w "$AGENT_VAULT_MASTER_PASSWORD" "$YCLAW_KEYCHAIN"
+    _secrets_ok "Generated vault master password → yclaw keychain ($KC_SERVICE)."
   fi
 
-  # VM admin password: generate once, persist in the login Keychain, reuse thereafter.
-  # NOT a sops/runtime secret — packer reads it from the Keychain as PKR_VAR_vm_admin_pass
-  # at image-build time (see docs/DEPLOY.md and packer/*.pkr.hcl).
-  if VM_ADMIN_PASS="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_VM_ADMIN" -w 2>/dev/null)"; then
-    _secrets_note "Reusing VM admin password from Keychain ($KC_SERVICE_VM_ADMIN)."
+  # metal admin password: generate once, persist in the dedicated yclaw keychain, reuse thereafter.
+  # NOT a sops/runtime secret — packer reads it from the yclaw keychain as PKR_VAR_vm_admin_pass
+  # for the metal build (see docs/DEPLOY.md and packer/metal.pkr.hcl).
+  if METAL_ADMIN_PASS="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_METAL_ADMIN" -w "$YCLAW_KEYCHAIN" 2>/dev/null)"; then
+    _secrets_note "Reusing metal admin password from yclaw keychain ($KC_SERVICE_METAL_ADMIN)."
   else
-    VM_ADMIN_PASS="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9')"
-    VM_ADMIN_PASS="${VM_ADMIN_PASS:0:40}"
-    security add-generic-password -U -a "$USER" -s "$KC_SERVICE_VM_ADMIN" \
-      -l 'yclaw VM admin password' -w "$VM_ADMIN_PASS"
-    _secrets_ok "Generated VM admin password → Keychain ($KC_SERVICE_VM_ADMIN)."
+    METAL_ADMIN_PASS="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32)"
+    security add-generic-password -U -a "$USER" -s "$KC_SERVICE_METAL_ADMIN" \
+      -l 'yclaw metal admin password' -w "$METAL_ADMIN_PASS" "$YCLAW_KEYCHAIN"
+    _secrets_ok "Generated metal admin password → yclaw keychain ($KC_SERVICE_METAL_ADMIN)."
   fi
 
-  # BlueBubbles server password: generate once, persist in the login Keychain, reuse
+  # bluebubbles admin password: generate once, persist in the dedicated yclaw keychain, reuse
+  # thereafter. NOT a sops/runtime secret — packer reads it from the yclaw keychain as
+  # PKR_VAR_vm_admin_pass for the bluebubbles build (see docs/DEPLOY.md and packer/bluebubbles.pkr.hcl).
+  if BLUEBUBBLES_ADMIN_PASS="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_BLUEBUBBLES_ADMIN" -w "$YCLAW_KEYCHAIN" 2>/dev/null)"; then
+    _secrets_note "Reusing bluebubbles admin password from yclaw keychain ($KC_SERVICE_BLUEBUBBLES_ADMIN)."
+  else
+    BLUEBUBBLES_ADMIN_PASS="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32)"
+    security add-generic-password -U -a "$USER" -s "$KC_SERVICE_BLUEBUBBLES_ADMIN" \
+      -l 'yclaw bluebubbles admin password' -w "$BLUEBUBBLES_ADMIN_PASS" "$YCLAW_KEYCHAIN"
+    _secrets_ok "Generated bluebubbles admin password → yclaw keychain ($KC_SERVICE_BLUEBUBBLES_ADMIN)."
+  fi
+
+  # BlueBubbles server password: generate once, persist in the dedicated yclaw keychain, reuse
   # thereafter. Rendered into the sops hermes/env below so the hermes VM carries it; the
   # bluebubbles VM's setup flow resolves @@BLUEBUBBLES_PASSWORD@@ from this same value.
-  if BLUEBUBBLES_PASSWORD="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_BLUEBUBBLES" -w 2>/dev/null)"; then
-    _secrets_note "Reusing BlueBubbles password from Keychain ($KC_SERVICE_BLUEBUBBLES)."
+  if BLUEBUBBLES_PASSWORD="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_BLUEBUBBLES_SERVER" -w "$YCLAW_KEYCHAIN" 2>/dev/null)"; then
+    _secrets_note "Reusing BlueBubbles server password from yclaw keychain ($KC_SERVICE_BLUEBUBBLES_SERVER)."
   else
-    BLUEBUBBLES_PASSWORD="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9')"
-    BLUEBUBBLES_PASSWORD="${BLUEBUBBLES_PASSWORD:0:40}"
-    security add-generic-password -U -a "$USER" -s "$KC_SERVICE_BLUEBUBBLES" \
-      -l 'yclaw BlueBubbles server password' -w "$BLUEBUBBLES_PASSWORD"
-    _secrets_ok "Generated BlueBubbles password → Keychain ($KC_SERVICE_BLUEBUBBLES)."
+    BLUEBUBBLES_PASSWORD="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32)"
+    security add-generic-password -U -a "$USER" -s "$KC_SERVICE_BLUEBUBBLES_SERVER" \
+      -l 'yclaw BlueBubbles server password' -w "$BLUEBUBBLES_PASSWORD" "$YCLAW_KEYCHAIN"
+    _secrets_ok "Generated BlueBubbles server password → yclaw keychain ($KC_SERVICE_BLUEBUBBLES_SERVER)."
   fi
 
   if [ ! -s "$age_key" ]; then
@@ -123,7 +167,8 @@ open(dst, "w").write(s.replace("@@AGE_PUBLIC_KEY@@", pub))
 PY
 
   export TS_AUTHKEY AGENT_VAULT_MASTER_PASSWORD OPENAI_API_KEY EXA_API_KEY \
-         HONCHO_API_KEY GITHUB_TOKEN BLUEBUBBLES_PASSWORD APERTURE_STATIC_KEY VM_ADMIN_PASS
+         HONCHO_API_KEY GITHUB_TOKEN BLUEBUBBLES_PASSWORD APERTURE_STATIC_KEY \
+         METAL_ADMIN_PASS BLUEBUBBLES_ADMIN_PASS
   plain="$(mktemp)"; trap 'rm -f "$plain"' EXIT
   # Built in Python so secret values are written literally (no shell/YAML interpolation).
   # BLUEBUBBLES_PASSWORD is always generated above, so the hermes/env block is always rendered.

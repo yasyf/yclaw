@@ -27,8 +27,8 @@ NONSECRET_TOKENS=(TAILNET_DOMAIN HOST_NAME HOST_USER HOST_RAM AUTHORIZED_HANDLES
 # Secret token NAMES that appear in apply-tree comments/configs (e.g. nixos/common.nix
 # references @@TS_AUTHKEY@@; nixos/ai.nix references @@APERTURE_STATIC_KEY@@; darwin/metal.nix
 # references @@VM_ADMIN_PASS@@). The VALUES are generated/collected by scripts/lib/secrets.sh
-# into ~/.yclaw/state (sops) or the login Keychain, never the tree — these names are exempted
-# from the residue guard below so their placeholders may survive the apply.
+# into ~/.yclaw/state (sops) or the dedicated yclaw keychain (yclaw.keychain-db), never the tree —
+# these names are exempted from the residue guard below so their placeholders may survive the apply.
 SECRET_TOKENS=(
   TS_AUTHKEY
   BLUEBUBBLES_PASSWORD
