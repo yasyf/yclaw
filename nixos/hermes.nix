@@ -34,8 +34,9 @@ let
     # Authorization header with the real, custody-held key on the wire — even if the
     # client sends Authorization: Bearer dummy, the broker replaces it.
     # api.openai.com / api.exa.ai / api.honcho.dev are NOT in NO_PROXY, so they route
-    # through the vault proxy and get injected. The dummy also harmlessly rides the
-    # custom-provider call to http://ai (Aperture ignores inbound auth, injects per-upstream).
+    # through the vault proxy and get injected. The model (custom provider) call no longer
+    # rides a dummy: it goes to metal's cliproxy directly with the real APERTURE_STATIC_KEY
+    # (model.key_env below).
     # TODO(human): confirm each SDK honors HTTPS_PROXY (so vault can intercept) — Exa/Honcho/OpenAI.
     OPENAI_API_KEY=__openai__
     EXA_API_KEY=__exa__
@@ -166,25 +167,30 @@ in
     # Full declarative config.yaml. Nix attrset,
     # deep-merged + rendered to ~/.hermes/config.yaml. No secrets here.
     settings = {
-      # ── Model plane (all three models route through Aperture at http://ai/v1) ──
+      # ── Model plane (direct to metal — Aperture bypassed to cut ~0.5s TTFB/call) ──
+      # The hosted `ai` (Aperture) node sits ~150ms WAN away; routing every model call
+      # through it added a measured ~0.5s TTFB per call (paid again on each tool round).
+      # We now hit metal's upstreams directly: gpt-5.5 + gemini → cliproxy :8317,
+      # Qwen → omlx :8000. Bare `metal` resolves via MagicDNS and is in NO_PROXY, so these
+      # stay DIRECT (no agent-vault MITM hop). cliproxy gates :8317 with a static bearer that
+      # Aperture used to inject — hermes now presents it via key_env. omlx :8000 needs no key.
       model = {
         provider = "custom";
         default = "gpt-5.5";
-        base_url = "http://ai/v1";
-        # api_key/key_env UNSET — Aperture authenticates by tailnet identity (the source
-        # node), not a presented bearer (verified: requests with a dummy `Bearer -` route
-        # fine). The cliproxy upstream's real key is injected by Aperture, not by hermes.
+        base_url = "http://metal:8317/v1";
+        key_env = "APERTURE_STATIC_KEY";
       };
       fallback_providers = [
         {
           provider = "custom";
           model = "gemini-3-pro-preview";
-          base_url = "http://ai/v1";
+          base_url = "http://metal:8317/v1";
+          key_env = "APERTURE_STATIC_KEY";
         }
         {
           provider = "custom";
           model = models.qwen;
-          base_url = "http://ai/v1";
+          base_url = "http://metal:8000/v1";
         }
       ];
 
@@ -192,7 +198,10 @@ in
       agent = {
         max_turns = 90;
         api_max_retries = 1;
-        reasoning_effort = "medium";
+        # "low" (was "medium"): replies are sent only after the FULL reasoning+generation
+        # completes (no streaming on the iMessage path), so reasoning effort is the single
+        # biggest perceived-latency lever. "low" keeps most answer quality for a chat bot.
+        reasoning_effort = "low";
         verbose = false;
         image_input_mode = "auto";
       };
@@ -223,7 +232,7 @@ in
         # Deny-by-default per the locked §10 ledger ("Private URLs | deny by default,
         # allowlist internal hosts | 🔒"). This is the SSRF guard on the agent's
         # URL-fetching tools (web_fetch/web_extract/browser) — it does NOT gate the
-        # configured model (http://ai) or STT (host:8765) provider endpoints, so the
+        # configured model (http://metal:8317) or STT (metal:8765) provider endpoints, so the
         # core stack still works. Allowlist specific internal hosts as you need them.
         # TODO(human): the per-setting code-reading recommended `true`;
         #   the §10 ledger says deny-by-default. Following the
@@ -307,7 +316,7 @@ in
       };
 
       # ── Auxiliary slot routing ──
-      # compression → main (= http://ai); vision + web_extract → openai key (via vault).
+      # compression → main (= http://metal:8317); vision + web_extract → openai key (via vault).
       auxiliary = {
         compression.provider = "main";
         vision.provider = "openai";
@@ -375,12 +384,16 @@ in
     };
   };
 
-  # BLUEBUBBLES_PASSWORD is the one real secret that lands in the hermes VM by
-  # design: BlueBubbles is in NO_PROXY, so agent-vault cannot inject its credential
-  # on the wire. The encrypted sops "hermes/env" carries it (BLUEBUBBLES_PASSWORD=
-  # @@BLUEBUBBLES_PASSWORD@@) and is appended last into ~/.hermes/.env.
-  # TODO(human): confirm this is acceptable vs the DoD "no real secret in hermes VM"
-  #   stance — if not, route BlueBubbles through the proxy or a non-NO_PROXY path.
+  # Two real secrets land in the hermes VM by design, both carried by the encrypted sops
+  # "hermes/env" file (appended last into ~/.hermes/.env, so neither hits the world-readable
+  # Nix store):
+  #   * BLUEBUBBLES_PASSWORD (BLUEBUBBLES_PASSWORD=@@BLUEBUBBLES_PASSWORD@@) — BlueBubbles is
+  #     in NO_PROXY, so agent-vault cannot inject it on the wire.
+  #   * APERTURE_STATIC_KEY (APERTURE_STATIC_KEY=@@APERTURE_STATIC_KEY@@) — the bearer cliproxy
+  #     requires on metal:8317. With Aperture bypassed (model.key_env above), hermes presents it
+  #     directly instead of Aperture injecting it. Same value as metal's sops `aperture/static-key`;
+  #     tailnet ACLs already gate :8317 to hermes, so holding it here is acceptable.
+  # TODO(human): confirm this is acceptable vs the DoD "no real secret in hermes VM" stance.
   sops.secrets."hermes/env" = { };
 
   # --- agent-vault MITM CA → OS trust store ------------------------------------
@@ -413,4 +426,11 @@ in
   # List-wrapped so a future second ExecStartPre appends cleanly (a bare scalar
   # would merge awkwardly with a later list def).
   systemd.services.hermes-agent.serviceConfig.ExecStartPre = [ waitForBlueBubbles ];
+
+  # --- Graceful-drain headroom on stop -----------------------------------------
+  # The agent drains in-flight work on shutdown (drain_timeout ~180s). The module's
+  # default TimeoutStopSec (90s) SIGKILLs it mid-drain → dropped/replayed messages and
+  # BlueBubbles reconnect storms (effectively infinite latency while it flaps). Give stop
+  # enough headroom to finish the drain.
+  systemd.services.hermes-agent.serviceConfig.TimeoutStopSec = "210s";
 }

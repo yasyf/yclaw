@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `yclaw-keychain-password` entry.
 
 ### Changed
+- Lower iMessage reply latency. hermes now calls metal's model upstreams directly
+  (cliproxy `:8317`, omlx `:8000`) instead of routing through the hosted Aperture
+  node, removing a ~0.5 s WAN round-trip per call; it presents cliproxy's static
+  bearer itself (`APERTURE_STATIC_KEY`, now also rendered into sops `hermes/env`).
+  Reasoning effort drops `medium` → `low` (replies are sent only after the full
+  completion, so reasoning time dominates perceived latency). The hermes-agent
+  systemd unit gains `TimeoutStopSec=210s` so a graceful drain is not SIGKILLed
+  mid-flight.
 - Deploy is now a single wizard. `just bootstrap` runs end to end: preflight
   tooling, prompt for the non-secret values (tailnet, GitHub owner, IPSW URL, host
   RAM, authorized handles), mint the age key and generate per-VM passwords, encrypt

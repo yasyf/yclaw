@@ -176,7 +176,13 @@ PY
 import os, sys, json
 e = os.environ
 parts = [f'tailscale:\n  authkey: {json.dumps(e["TS_AUTHKEY"])}\n']
-parts.append(f'hermes:\n  env: |\n    BLUEBUBBLES_PASSWORD={e["BLUEBUBBLES_PASSWORD"]}\n')
+parts.append(
+    'hermes:\n  env: |\n'
+    f'    BLUEBUBBLES_PASSWORD={e["BLUEBUBBLES_PASSWORD"]}\n'
+    # hermes bypasses Aperture and hits cliproxy on metal:8317 directly, so it must present
+    # the same static bearer Aperture used to inject (model.key_env=APERTURE_STATIC_KEY).
+    f'    APERTURE_STATIC_KEY={e["APERTURE_STATIC_KEY"]}\n'
+)
 parts.append(
     'vault:\n'
     f'  master-password: |\n    AGENT_VAULT_MASTER_PASSWORD={e["AGENT_VAULT_MASTER_PASSWORD"]}\n'

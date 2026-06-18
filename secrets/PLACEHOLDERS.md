@@ -24,7 +24,7 @@ These literal tokens appear in committed configs and scripts and must be resolve
 | `@@APPLE_ID@@` | Dedicated Apple ID for iMessage (on the bluebubbles VM) | `scripts/bluebubbles-setup.sh` | **interactive (human gate)** |
 | `@@APPLE_ID_PW@@` | Password for the dedicated Apple ID | `scripts/bluebubbles-setup.sh` | **interactive (human gate)** |
 | `@@BLUEBUBBLES_PASSWORD@@` | BlueBubbles server password | `nixos/hermes.nix`, `scripts/bluebubbles-setup.sh` | generated into the yclaw keychain, rendered into sops `hermes/env` (see below) |
-| `@@APERTURE_STATIC_KEY@@` | Static key Aperture presents to CLIProxyAPI | `darwin/metal-cliproxyapi-config.yaml`, `darwin/metal.nix`, `nixos/ai.nix` | `secrets.sh` mints `openssl rand -hex 32` if unset, into sops `aperture/static-key` |
+| `@@APERTURE_STATIC_KEY@@` | Static bearer CLIProxyAPI requires on metal:8317 (Aperture used to inject it; hermes now presents it directly) | `darwin/metal-cliproxyapi-config.yaml`, `darwin/metal.nix`, `nixos/ai.nix`, `nixos/hermes.nix` | `secrets.sh` mints `openssl rand -hex 32` if unset, into sops `aperture/static-key` **and** `hermes/env` |
 | `@@AGE_PUBLIC_KEY@@` | Public half of the sops age key | `.sops.yaml` (template only) | `secrets.sh` mints the age key, renders the public half into `~/.yclaw/state/sops.yaml`; the committed `.sops.yaml` keeps the placeholder |
 | `@@AGENT_VAULT_CA_PEM@@` | agent-vault MITM CA the hermes VM trusts | `nixos/agent-vault-ca.pem`, `nixos/hermes.nix` | bootstrap fetches the real public CA from metal and overwrites the file (CA is public; safe to commit) |
 
@@ -43,7 +43,7 @@ age-encrypted blob. Nothing here is committed in plaintext.
 | `AGENT_VAULT_MASTER_PASSWORD` | agent-vault encryption | `vault/master-password` | generated into the yclaw keychain, rendered into sops |
 | `TS_AUTHKEY` | resolves `@@TS_AUTHKEY@@` (above) | `tailscale/authkey` | bootstrap prompt |
 | `BLUEBUBBLES_PASSWORD` | resolves `@@BLUEBUBBLES_PASSWORD@@` (above) | `hermes/env` | generated into the yclaw keychain |
-| `APERTURE_STATIC_KEY` | resolves `@@APERTURE_STATIC_KEY@@` (above) | `aperture/static-key` | minted by `secrets.sh` if unset |
+| `APERTURE_STATIC_KEY` | resolves `@@APERTURE_STATIC_KEY@@` (above) | `aperture/static-key`, `hermes/env` | minted by `secrets.sh` if unset |
 
 ## Bootstrap inputs without an in-tree token
 

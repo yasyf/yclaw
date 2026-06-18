@@ -42,17 +42,21 @@ of host-specific identity and lets the same artifact serve any tailnet.
 - **hermes** — a NixOS Linux gateway running `hermes-agent` in a Docker sandbox.
   It holds **no** API credentials and reaches the internet only through
   agent-vault's MITM proxy on metal (`HTTPS_PROXY=http://metal:14322`), trusting
-  its CA. The one real secret it carries by design is `BLUEBUBBLES_PASSWORD`,
-  because BlueBubbles sits in `NO_PROXY` and cannot be wire-injected. Agent state
+  its CA. It carries two tailnet-internal credentials by design —
+  `BLUEBUBBLES_PASSWORD` (BlueBubbles sits in `NO_PROXY` and cannot be
+  wire-injected) and `APERTURE_STATIC_KEY` (hermes calls metal's cliproxy directly,
+  so it presents the bearer itself rather than having Aperture inject it). Agent state
   in `/var/lib/hermes` (honcho memory, sessions) is externalized to the host's
   `~/.yclaw/state/hermes` over virtiofs, so it survives a VM rebuild and is backed
   up.
-- **ai** — a hosted Tailscale Aperture node, not a VM. It routes `http://ai/v1` by
-  model id to the metal upstreams: `gpt-5.5` and `gemini-3-pro-preview` via
-  cliproxy (`http://metal:8317`), and the local Qwen via omlx (`http://metal:8000`).
-  Aperture authenticates by tailnet identity, not a presented bearer, and routes
-  by model id alone; the fallback chain lives in hermes. Its config is rendered by
-  `nixos/ai.nix` and pasted into the Aperture dashboard via `just deploy-ai`.
+- **ai** — a hosted Tailscale Aperture node, not a VM, that routes `http://ai/v1` by
+  model id to the metal upstreams. hermes does **not** route model calls through it:
+  the hosted node is a WAN round-trip (~150 ms) away and added ~0.5 s of TTFB per
+  call, so hermes instead calls cliproxy (`http://metal:8317`, for `gpt-5.5` and
+  `gemini-3-pro-preview`) and omlx (`http://metal:8000`, for the local Qwen) directly
+  over the tailnet, presenting cliproxy's static bearer itself. Aperture is retained
+  for the dashboard-managed routing config (`nixos/ai.nix`, `just deploy-ai`) but is
+  out of the hot path. The fallback chain lives in hermes.
 
 The model ids are not guessed anywhere — `nixos/models.nix` is the single source
 for the Qwen and STT ids, and hermes' default plus fallback providers
@@ -64,16 +68,17 @@ not count against it.
 
 ## Credential custody
 
-Real secrets never enter hermes. hermes points `HTTPS_PROXY` at agent-vault and
+Real upstream secrets never enter hermes. hermes points `HTTPS_PROXY` at agent-vault and
 trusts its CA; agent-vault injects static keys (OpenAI, Exa, Honcho, GitHub) and
 OAuth bearers (Gmail, Calendar) onto the wire. The LLM-subscription OAuth (Codex,
 Gemini) is held only by cliproxy — those refresh tokens are single-use and
 rotate, so a second holder would mutually revoke them.
 
-Model traffic to `http://ai` is the deliberate `NO_PROXY` exclusion and goes
-direct, since Aperture authenticates by tailnet identity rather than a bearer
-that would need injecting. BlueBubbles is the other `NO_PROXY` case, which is why
-hermes carries `BLUEBUBBLES_PASSWORD` directly — it cannot be wire-injected.
+Model traffic is a deliberate `NO_PROXY` exclusion and goes direct: hermes calls
+metal's cliproxy (`http://metal:8317`) and omlx (`http://metal:8000`) without the
+agent-vault hop, presenting cliproxy's `APERTURE_STATIC_KEY` bearer itself. That
+key and `BLUEBUBBLES_PASSWORD` (BlueBubbles is the other `NO_PROXY` case) are the
+two tailnet-internal credentials hermes holds — neither is an upstream API key.
 
 Enforcement is cooperative, not a hard firewall: hermes respects `HTTPS_PROXY`,
 and a secret-needing request that bypasses the proxy has no credential, so the
