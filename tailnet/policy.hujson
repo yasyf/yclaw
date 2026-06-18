@@ -1,0 +1,55 @@
+// tailnet/policy.hujson — the SOURCE OF TRUTH for the yclaw tailnet ACL.
+//
+// This file defines the `tag:hermes`, `tag:metal`, and `tag:bluebubbles` tags that the rest of
+// the repo RELIES ON: scripts/lib/secrets.sh mints per-node keys tagged `tag:<host>`, the nodes
+// advertise those tags at join (nixos/common.nix extraUpFlags, darwin/metal.nix `tailscale up`,
+// the manual bluebubbles `tailscale up`), and this policy is what makes those tags exist and
+// grants the only east-west reachability between them. Advertising a tag that is NOT owned here
+// fails `tailscale up`, so this file must land (and apply) before/with any tag advertisement.
+//
+// Applied to the tailnet by .github/workflows/tailscale-acl.yml: `test` on PRs that touch this
+// file, `apply` on push to the default branch. HuJSON — comments and trailing commas are allowed.
+//
+// Posture: DEFAULT-DENY east-west. There is no broad `autogroup:member` ACL; the only node->node
+// flows are the explicit grants below. pf on metal (darwin/metal.nix) is a host-local backstop —
+// it cannot see tags (only CGNAT), so the tag-level source restriction lives HERE.
+{
+  // Each node owns its own tag (self-tag) so it can re-advertise on re-join without an admin in
+  // the loop; admins own them too so the OAuth bootstrap client (an admin actor) can mint keys
+  // carrying these tags.
+  "tagOwners": {
+    "tag:hermes":      ["autogroup:admin", "tag:hermes"],
+    "tag:metal":       ["autogroup:admin", "tag:metal"],
+    "tag:bluebubbles": ["autogroup:admin", "tag:bluebubbles"],
+  },
+
+  // East-west reachability (modern `grants` syntax). hermes is the only node that initiates:
+  //   * hermes -> metal: the credential/AI service ports (cli-proxy 8317, agent-vault 14321/14322,
+  //     omlx 8000, STT 8765) — mirrors the metal pf anchor's allowed port set.
+  //   * hermes -> bluebubbles: the BlueBubbles REST API, served over tailnet HTTPS on :443.
+  // Nothing reaches back the other way; metal and bluebubbles never initiate east-west.
+  "grants": [
+    {
+      "src": ["tag:hermes"],
+      "dst": ["tag:metal"],
+      "ip":  ["tcp:8317", "tcp:14321", "tcp:14322", "tcp:8000", "tcp:8765"],
+    },
+    {
+      "src": ["tag:hermes"],
+      "dst": ["tag:bluebubbles"],
+      "ip":  ["tcp:443"],
+    },
+  ],
+
+  // Admin SSH to every tagged node. REQUIRED: tagged nodes have no user owner, so without an
+  // explicit `ssh` rule admins lose `tailscale ssh` to them — and OpenSSH is disabled on these
+  // hosts (tailscale ssh is the ONLY admin path). `check` re-verifies admin identity periodically.
+  "ssh": [
+    {
+      "action": "check",
+      "src":    ["autogroup:admin"],
+      "dst":    ["tag:hermes", "tag:metal", "tag:bluebubbles"],
+      "users":  ["autogroup:nonroot", "root"],
+    },
+  ],
+}

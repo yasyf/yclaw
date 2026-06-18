@@ -24,6 +24,8 @@
 #   yclaw-metal-admin-pass          admin account baked into the metal guest image (packer)
 #   yclaw-bluebubbles-admin-pass    admin account baked into the bluebubbles guest image (packer)
 #   yclaw-bluebubbles-server-pass   BlueBubbles server password (also rendered into sops hermes/env)
+#   yclaw-ts-oauth-client-id        Tailscale OAuth client id (mints per-node ephemeral tagged keys)
+#   yclaw-ts-oauth-client-secret    Tailscale OAuth client secret (mints per-node ephemeral tagged keys)
 
 YCLAW_STATE="${YCLAW_STATE:-$HOME/.yclaw/state}"
 YCLAW_KEYCHAIN="$HOME/Library/Keychains/yclaw.keychain-db"
@@ -32,6 +34,8 @@ KC_SERVICE="yclaw-agent-vault-master"
 KC_SERVICE_METAL_ADMIN="yclaw-metal-admin-pass"
 KC_SERVICE_BLUEBUBBLES_ADMIN="yclaw-bluebubbles-admin-pass"
 KC_SERVICE_BLUEBUBBLES_SERVER="yclaw-bluebubbles-server-pass"
+KC_SERVICE_TS_OAUTH_ID="yclaw-ts-oauth-client-id"
+KC_SERVICE_TS_OAUTH_SECRET="yclaw-ts-oauth-client-secret"
 SECRETS_LIB_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 _secrets_ask()  { gum input --password --prompt "  $1 ❯ "; }
@@ -59,6 +63,35 @@ _yclaw_keychain_unlock() {
   security unlock-keychain -p "$kc_pass" "$YCLAW_KEYCHAIN"
 }
 
+# Mint ONE ephemeral, single-use, pre-authorized, TAGGED tailnet auth key for $1 (host short
+# name, e.g. `hermes` → tag:hermes) via the Tailscale keys API. Reads the global TS_ACCESS_TOKEN
+# (the OAuth access token exchanged in collect_secrets). The JSON body is built with python3
+# json.dumps and the response parsed with json.load — never shell interpolation — so a tag or
+# host name can never break out of the request. FATAL on an empty/garbled response or a key that
+# is not a `tskey-…` string. Echoes the minted key on stdout.
+_ts_mint_key() {
+  local host="$1" body resp key
+  body="$(python3 - "$host" <<'PY'
+import json, sys
+host = sys.argv[1]
+print(json.dumps({
+    "capabilities": {"devices": {"create": {
+        "reusable": False, "ephemeral": True, "preauthorized": True,
+        "tags": [f"tag:{host}"],
+    }}},
+    "expirySeconds": 7200,
+    "description": f"yclaw bootstrap {host}",
+}))
+PY
+)"
+  resp="$(curl -fsS -H "Authorization: Bearer $TS_ACCESS_TOKEN" -H 'Content-Type: application/json' \
+    -d "$body" https://api.tailscale.com/api/v2/tailnet/-/keys)" \
+    || _secrets_fail "Tailscale key mint failed for $host (POST /keys)."
+  key="$(printf '%s' "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("key",""))')"
+  [ "${key:0:6}" = "tskey-" ] || _secrets_fail "Tailscale key mint for $host did not return a tskey-… key."
+  printf '%s' "$key"
+}
+
 # Prompt for the external API secrets, generate/reuse the age key + the dedicated-keychain
 # passwords (vault master, the two per-VM admin passwords, BlueBubbles server), and write the
 # sops-encrypted blob to ~/.yclaw/state. Idempotent: reuses an existing age key and the
@@ -66,8 +99,9 @@ _yclaw_keychain_unlock() {
 # `set -euo pipefail`.
 collect_secrets() {
   local t manifest sops_rendered host age_key pub plain recipients
+  local TS_OAUTH_ID TS_OAUTH_SECRET TS_ACCESS_TOKEN ts_authkey
 
-  for t in sops age-keygen gum security openssl python3; do
+  for t in sops age-keygen gum security openssl python3 curl; do
     command -v "$t" >/dev/null || { printf 'FATAL: %s not on PATH.\n' "$t" >&2; exit 1; }
   done
 
@@ -80,8 +114,6 @@ collect_secrets() {
     'yclaw · runtime secret collection' \
     'Values are read locally and sops-encrypted. Nothing is printed or sent.'
 
-  TS_AUTHKEY="$(_secrets_ask 'Tailscale auth key (tskey-auth-…, reusable)')"
-  [ -n "$TS_AUTHKEY" ] || _secrets_fail 'Tailscale auth key is required.'
   OPENAI_API_KEY="$(_secrets_ask 'OpenAI API key (sk-…)')"
   EXA_API_KEY="$(_secrets_ask 'Exa API key')"
   HONCHO_API_KEY="$(_secrets_ask 'Honcho API key')"
@@ -100,6 +132,44 @@ collect_secrets() {
   # Every yclaw password lives in the dedicated yclaw keychain — ensure it exists and is
   # unlocked before any generate-or-reuse below.
   _yclaw_keychain_unlock
+
+  # Tailscale OAuth client: the operator supplies it ONCE (an admin-tagged client with the
+  # `auth_keys` write scope and the device tags it may mint), persisted in the yclaw keychain and
+  # reused thereafter. We exchange it for a short-lived access token, then mint ONE ephemeral,
+  # single-use, tagged key per tailnet-joining host that owns `tailscale/authkey` — so no reusable
+  # fleet-wide key ever exists. REQUIRED: there is no fallback to a shared key (per-node is the point).
+  if TS_OAUTH_ID="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_TS_OAUTH_ID" -w "$YCLAW_KEYCHAIN" 2>/dev/null)"; then
+    _secrets_note "Reusing Tailscale OAuth client id from yclaw keychain ($KC_SERVICE_TS_OAUTH_ID)."
+  else
+    TS_OAUTH_ID="$(_secrets_ask 'Tailscale OAuth client id')"
+    [ -n "$TS_OAUTH_ID" ] || _secrets_fail 'Tailscale OAuth client id is required (mints per-node keys).'
+    security add-generic-password -U -a "$USER" -s "$KC_SERVICE_TS_OAUTH_ID" \
+      -l 'yclaw Tailscale OAuth client id' -w "$TS_OAUTH_ID" "$YCLAW_KEYCHAIN"
+    _secrets_ok "Stored Tailscale OAuth client id → yclaw keychain ($KC_SERVICE_TS_OAUTH_ID)."
+  fi
+  if TS_OAUTH_SECRET="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_TS_OAUTH_SECRET" -w "$YCLAW_KEYCHAIN" 2>/dev/null)"; then
+    _secrets_note "Reusing Tailscale OAuth client secret from yclaw keychain ($KC_SERVICE_TS_OAUTH_SECRET)."
+  else
+    TS_OAUTH_SECRET="$(_secrets_ask 'Tailscale OAuth client secret')"
+    [ -n "$TS_OAUTH_SECRET" ] || _secrets_fail 'Tailscale OAuth client secret is required (mints per-node keys).'
+    security add-generic-password -U -a "$USER" -s "$KC_SERVICE_TS_OAUTH_SECRET" \
+      -l 'yclaw Tailscale OAuth client secret' -w "$TS_OAUTH_SECRET" "$YCLAW_KEYCHAIN"
+    _secrets_ok "Stored Tailscale OAuth client secret → yclaw keychain ($KC_SERVICE_TS_OAUTH_SECRET)."
+  fi
+  TS_ACCESS_TOKEN="$(curl -fsS \
+    -d "client_id=$TS_OAUTH_ID" -d "client_secret=$TS_OAUTH_SECRET" \
+    https://api.tailscale.com/api/v2/oauth/token \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')" \
+    || _secrets_fail 'Tailscale OAuth token exchange failed (POST /oauth/token).'
+  [ -n "$TS_ACCESS_TOKEN" ] || _secrets_fail 'Tailscale OAuth token exchange returned no access_token.'
+  for host in $(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print("\n".join(h for h,v in m["hosts"].items() if "tailscale/authkey" in v["secrets"]))' "$manifest"); do
+    # Assign-then-export, NOT `export VAR=$(_ts_mint_key …)`: `export` always succeeds, so it would
+    # mask a mint failure under `set -e` and silently export an empty key. A bare assignment lets
+    # set -e abort on a failed mint (and _ts_mint_key itself _secrets_fails before returning empty).
+    ts_authkey="$(_ts_mint_key "$host")"
+    export "TS_AUTHKEY_$(printf '%s' "$host" | tr a-z A-Z)=$ts_authkey"
+    _secrets_ok "Minted ephemeral tag:$host auth key for $host (single-use, 2h)."
+  done
 
   # Vault master password: generate once, persist in the dedicated yclaw keychain, reuse thereafter.
   if AGENT_VAULT_MASTER_PASSWORD="$(security find-generic-password -a "$USER" -s "$KC_SERVICE" -w "$YCLAW_KEYCHAIN" 2>/dev/null)"; then
@@ -147,7 +217,7 @@ collect_secrets() {
     _secrets_ok "Generated BlueBubbles server password → yclaw keychain ($KC_SERVICE_BLUEBUBBLES_SERVER)."
   fi
 
-  export TS_AUTHKEY AGENT_VAULT_MASTER_PASSWORD OPENAI_API_KEY EXA_API_KEY \
+  export AGENT_VAULT_MASTER_PASSWORD OPENAI_API_KEY EXA_API_KEY \
          HONCHO_API_KEY GITHUB_TOKEN BLUEBUBBLES_PASSWORD APERTURE_STATIC_KEY \
          METAL_ADMIN_PASS BLUEBUBBLES_ADMIN_PASS
 
@@ -187,6 +257,9 @@ for top, leaves in groups.items():
     for leaf, spec in leaves:
         if spec["kind"] == "scalar":
             parts.append(f"  {leaf}: {json.dumps(e[spec['var']])}\n")
+        elif spec["kind"] == "perhost":
+            perhost_var = "{}_{}".format(spec["var"], host.upper())
+            parts.append(f"  {leaf}: {json.dumps(e[perhost_var])}\n")
         else:
             parts.append(f"  {leaf}: |\n")
             for v in spec["vars"]:

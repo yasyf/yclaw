@@ -349,6 +349,9 @@ in
       # 127.0.0.1:14321). Allow ONLY the tailnet CGNAT to the five service ports; every other
       # source — including the sibling guests sharing the host's vmnet LAN bridge — is dropped.
       # RFC-1918 is deliberately NOT allowed: these credential/AI services are tailnet-only.
+      # The PRIMARY restriction is now the tailnet ACL (tailnet/policy.hujson), which limits the
+      # source to tag:hermes — pf cannot see tags, only the CGNAT range, so this anchor is the
+      # host-local backstop that holds even if the ACL is wrong or a non-hermes tailnet node probes.
       pass in quick on lo0 all
       pass in quick proto tcp from 100.64.0.0/10 to any port { 8000, 8765, 8317, 14321, 14322 }
       block in quick proto tcp from any to any port { 8000, 8765, 8317, 14321, 14322 }
@@ -460,9 +463,10 @@ in
     ''
     # Tailscale: join the tailnet as `metal` with SSH. mkAfter so it runs AFTER sops-nix installs
     # the authkey secret (sops appends its install with mkAfter to this same hook). Idempotent —
-    # skip if already up. NO --shields-up (it would block hermes->metal inbound) and NO
-    # --advertise-tags (advertising an undefined tag fails `tailscale up`); least-privilege
-    # reachability is enforced separately by a tag:metal ACL on the tailnet.
+    # skip if already up. NO --shields-up (it would block hermes->metal inbound). --advertise-tags
+    # =tag:metal binds this node to the tag:metal ACL grants in tailnet/policy.hujson — that file
+    # now OWNS tag:metal (the source of truth the per-node minted key is also tagged against), so
+    # advertising it succeeds; it is what enforces least-privilege east-west reachability.
     (lib.mkAfter ''
       # Ensure BOTH the tailnet join and the SSH server, idempotently. The SSH assertion must NOT
       # be gated on tailscale being down: OpenSSH Remote Login is disabled above, so if tailscaled
@@ -474,7 +478,7 @@ in
       elif [ -s ${lib.escapeShellArg tailscaleAuthkeyFile} ]; then
         /opt/homebrew/bin/tailscale up \
           --authkey "$(cat ${lib.escapeShellArg tailscaleAuthkeyFile})" \
-          --hostname metal --ssh || true
+          --hostname metal --ssh --advertise-tags=tag:metal || true
       fi
     '')
   ];

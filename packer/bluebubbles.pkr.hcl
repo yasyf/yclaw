@@ -94,8 +94,10 @@ build {
   # Install Homebrew, then the OSS Tailscale build (the App Store build does NOT
   # support `tailscale ssh`). Drop the daemon symlink where
   # `tailscaled install-system-daemon` expects it. Joining the tailnet
-  # (`tailscale up`) is a HUMAN gate — it needs interactive auth and is done in
-  # scripts/bluebubbles-setup.sh.
+  # (`tailscale up --advertise-tags=tag:bluebubbles`) is a HUMAN gate — it needs
+  # interactive auth and is done in scripts/bluebubbles-setup.sh. The operator
+  # authenticates; tailnet/policy.hujson owns tag:bluebubbles, so advertising it
+  # succeeds and binds this node to its ACL grant (hermes -> bluebubbles :443).
   provisioner "shell" {
     inline = [
       "set -euo pipefail",
@@ -111,7 +113,8 @@ build {
 
   # HUMAN: the remaining bring-up is NOT scripted here:
   #   1. scripts/bluebubbles-setup.sh — sign into iMessage (a SEPARATE Apple ID),
-  #      install BlueBubbles + the Private API helper, `tailscale up`, then
+  #      install BlueBubbles + the Private API helper,
+  #      `tailscale up --advertise-tags=tag:bluebubbles`, then
   #      `tailscale serve --bg --https=443 1234` to expose the REST API at
   #      https://bluebubbles (MagicDNS; on your-tailnet it becomes bluebubbles.<tailnet>.ts.net).
 }

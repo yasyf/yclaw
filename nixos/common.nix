@@ -58,10 +58,14 @@
     authKeyFile = config.sops.secrets."tailscale/authkey".path;
     useRoutingFeatures = "client";
     # TODO(human): on nixos-25.05 confirm `extraUpFlags` (current) vs `extraUpArgs` (older).
+    # --advertise-tags=tag:hermes: the per-node key minted in scripts/lib/secrets.sh is already
+    # tagged, but advertising the tag is what binds this node to the tag:hermes ACL grants in
+    # tailnet/policy.hujson (the source of truth that owns the tag, so advertising it succeeds).
     extraUpFlags = [
       "--ssh"
       "--accept-dns"
       "--accept-routes"
+      "--advertise-tags=tag:hermes"
     ];
   };
 

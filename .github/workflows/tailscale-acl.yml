@@ -1,0 +1,39 @@
+# Apply the tailnet ACL as code. tailnet/policy.hujson is the source of truth for the
+# `tag:hermes`/`tag:metal`/`tag:bluebubbles` tags and the east-west grants the rest of the repo
+# relies on (per-node keys, advertise-tags, the metal pf backstop). This workflow keeps the live
+# tailnet in lockstep with the file:
+#   * PR touching the policy  -> `test`  (dry-run the parse + diff, never apply)
+#   * push to the default branch -> `apply` (push the policy to the tailnet)
+#
+# Credentials come from repo secrets (a Tailscale OAuth client with the `policy_file` write scope;
+# distinct from the bootstrap key-mint client in scripts/lib/secrets.sh): TS_API_CLIENT_ID /
+# TS_API_CLIENT_SECRET / TS_TAILNET.
+name: tailscale-acl
+
+on:
+  pull_request:
+    paths:
+      - tailnet/policy.hujson
+  push:
+    branches: [main]
+    paths:
+      - tailnet/policy.hujson
+
+permissions:
+  contents: read
+
+jobs:
+  acl:
+    name: ${{ github.event_name == 'pull_request' && 'Test' || 'Apply' }} tailnet ACL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ${{ github.event_name == 'pull_request' && 'Test' || 'Apply' }} policy.hujson
+        uses: tailscale/gitops-acl-action@v1
+        with:
+          action: ${{ github.event_name == 'pull_request' && 'test' || 'apply' }}
+          policy-file: tailnet/policy.hujson
+          oauth-client-id: ${{ secrets.TS_API_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_API_CLIENT_SECRET }}
+          tailnet: ${{ secrets.TS_TAILNET }}
