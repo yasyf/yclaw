@@ -6,28 +6,53 @@ valid: mlx-audio's own `mlx_audio.server` multi-threaded adapter crashes
 granite-speech with "RuntimeError: There is no Stream(gpu, 1) in current thread"
 (MLX streams are per-thread). The single-threaded `mlx_audio.stt.generate` code
 path is correct, so this wrapper drives it directly. The model lazy-loads on the
-first request.
+first request and unloads after STT_IDLE_TTL seconds of inactivity to free unified
+memory — both load and unload run on the same worker thread that owns the GPU
+stream, mirroring omlx's idle-TTL behaviour on :8000.
 """
 import concurrent.futures
+import gc
 import os
 import tempfile
+import threading
+import time
 
+import mlx.core as mx
 import uvicorn
 from fastapi import FastAPI, Form, UploadFile
 from mlx_audio.stt.utils import load_model
 
 MODEL_ID = os.environ.get("STT_MODEL", "ibm-granite/granite-speech-4.1-2b")
 PORT = int(os.environ.get("STT_PORT", "8765"))
+IDLE_TTL = int(os.environ.get("STT_IDLE_TTL", "1800"))
 
 _pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 _model = None
+_last_use = time.monotonic()
 
 
 def _transcribe(path: str) -> str:
-    global _model
+    global _model, _last_use
     if _model is None:
         _model = load_model(MODEL_ID)
-    return _model.generate(path).text
+    text = _model.generate(path).text
+    _last_use = time.monotonic()
+    return text
+
+
+def _unload_if_idle() -> None:
+    global _model
+    if _model is not None and time.monotonic() - _last_use >= IDLE_TTL:
+        _model = None
+        gc.collect()
+        mx.clear_cache()
+
+
+def _idle_watchdog() -> None:
+    interval = max(30, min(IDLE_TTL, 300))
+    while True:
+        time.sleep(interval)
+        _pool.submit(_unload_if_idle).result()
 
 
 app = FastAPI()
@@ -53,4 +78,5 @@ async def transcriptions(file: UploadFile, model: str = Form(default=MODEL_ID)):
 
 
 if __name__ == "__main__":
+    threading.Thread(target=_idle_watchdog, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=PORT)

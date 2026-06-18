@@ -26,22 +26,27 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Re-lock hermes-agent
-        run: nix flake update hermes-agent
+      - name: Re-lock hermes-agent + nixpkgs-unstable
+        # nixpkgs-unstable is re-locked too so the VMs' Tailscale (overlaid from unstable in
+        # flake.nix) tracks current upstream — nixos-25.05 pins an old release the dashboard flags.
+        run: nix flake update hermes-agent nixpkgs-unstable
 
       - name: Open PR with the lock bump
         uses: peter-evans/create-pull-request@v7
         with:
           add-paths: flake.lock
-          branch: ci/bump-hermes-agent
+          branch: ci/bump-upstream
           delete-branch: true
-          commit-message: "chore(deps): bump hermes-agent flake input"
-          title: "chore(deps): bump hermes-agent"
+          commit-message: "chore(deps): bump hermes-agent + nixpkgs-unstable flake inputs"
+          title: "chore(deps): bump hermes-agent + nixpkgs-unstable"
           body: |
-            Automated weekly `nix flake update hermes-agent`.
+            Automated weekly `nix flake update hermes-agent nixpkgs-unstable`.
+
+            hermes-agent tracks the upstream agent; nixpkgs-unstable carries the current
+            Tailscale (overlaid onto the NixOS VMs in `flake.nix`) and the Go toolchain.
 
             Merging triggers `build-images.yml` to rebuild + republish the hermes image on
-            the new upstream rev.
+            the new revs.
 
             If the build fails on a `substituteInPlace --replace-fail` anchor in
             `nixos/hermes.nix`, upstream moved the patched lines — re-roll the

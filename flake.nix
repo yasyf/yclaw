@@ -80,6 +80,11 @@
           src = inputs.cliproxyapi-src;
           buildGoModule = unstable.buildGoModule;
         };
+        # Track a CURRENT Tailscale: nixos-25.05 pins an old release, so the VMs' dashboard
+        # flags them out of date. services.tailscale.package defaults to pkgs.tailscale, so
+        # overriding it here bumps every NixOS node without per-module plumbing. Bumped weekly
+        # by .github/workflows/bump-upstream.yml re-locking nixpkgs-unstable.
+        tailscale = unstable.tailscale;
       };
       overlayLinux = mkOverlay (mkUnstable linuxSystem);
       overlayDarwin = mkOverlay (mkUnstable darwinSystem);
