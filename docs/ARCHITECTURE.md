@@ -89,16 +89,18 @@ secrets), not the routing.
 
 All persistent state and secrets live in `~/.yclaw/state`, never in the repo:
 
-- `age/key.txt` — the age key that decrypts everything else.
-- `secrets.sops.yaml` — the sops-encrypted secret bundle.
+- `hosts/<host>/key.txt` — that host's private age key, one per host.
+- `hosts/<host>/secrets.sops.yaml` — that host's sops-encrypted bundle, encrypted only
+  to that host's recipient and holding only its own secrets (per `nixos/secrets-manifest.json`),
+  so each VM decrypts only what it owns. `hermes` and `metal` get bundles; `bluebubbles` owns none.
 - `agent-vault/` — the broker's credential store.
 - `cli-proxy-api/auth/` — the cliproxy OAuth tokens.
 - `hf/` and `omlx/` — the model caches (~20–25 GB), regenerable on demand.
 - `mlx-audio/` — the STT venv.
 - `hermes/` — the externalized agent state (honcho memory, sessions).
 
-The irreplaceable set is `age/key.txt`, `secrets.sops.yaml`, and `agent-vault/`:
-lose those and you cannot decrypt or re-broker anything. `just backup` runs a
+The irreplaceable set is everything under `hosts/` (every per-host key and bundle) plus
+`agent-vault/`: lose those and you cannot decrypt or re-broker anything. `just backup` runs a
 `restic` backup of `~/.yclaw/state`, excluding the regenerable `hf/`, `omlx/`, and
 `mlx-audio/` caches. Restore is `restic restore latest`, then `just setup` to
 rebuild the caches and re-boot the guests. Secrets decrypt at runtime; nothing

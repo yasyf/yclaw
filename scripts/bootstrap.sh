@@ -16,8 +16,6 @@ cd "$REPO_ROOT"
 
 RUNTIME_DIR="$REPO_ROOT/secrets/runtime"
 VALUES_FILE="$RUNTIME_DIR/values.env"            # resolved non-secret values; gitignored
-AGE_KEY_FILE="$HOME/.yclaw/state/age/key.txt"    # private age key minted by scripts/lib/secrets.sh
-HOST_AGE_KEY="/var/lib/sops-nix/key.txt"         # where sops-nix expects the private key on the host
 
 # The hermes node-config share source: setup.sh mounts this dir into the hermes guest as the
 # virtiofs `sops` tag, and common.nix's seedNodeConfig installs key.txt → /var/lib/sops-nix,
@@ -109,19 +107,14 @@ prompt_var AUTHORIZED_HANDLES "iMessage allowlist (comma-separated handles; firs
 
 # --- 2. age key + sops-encrypted secrets (single secrets module) -------------
 
-# scripts/lib/secrets.sh is the ONE path that prompts for secrets, mints/reuses the age key,
-# mints the Aperture static key, the per-VM admin passwords, and the BlueBubbles server password
-# into the dedicated yclaw keychain, renders ~/.yclaw/state/sops.yaml, and writes the encrypted
-# ~/.yclaw/state/secrets.sops.yaml. Real secrets never touch the repo. Sourcing it also exposes
+# scripts/lib/secrets.sh is the ONE path that prompts for secrets, mints/reuses a per-host age
+# keypair, mints the Aperture static key, the per-VM admin passwords, and the BlueBubbles server
+# password into the dedicated yclaw keychain, renders ~/.yclaw/state/sops.yaml, and writes one
+# encrypted per-host bundle at ~/.yclaw/state/hosts/<host>/secrets.sops.yaml (each scoped to only
+# that host's manifest secrets). Real secrets never touch the repo. Sourcing it also exposes
 # YCLAW_KEYCHAIN + the KC_SERVICE_* names used by the packer builds below.
 source "$REPO_ROOT/scripts/lib/secrets.sh"
 collect_secrets
-
-# Stage the private key where sops-nix reads it on this host. Needs root; admin has passwordless sudo.
-if [[ ! -s "$HOST_AGE_KEY" ]]; then
-  log "Installing private age key to $HOST_AGE_KEY (sops-nix key path) ..."
-  sudo install -D -m 600 "$AGE_KEY_FILE" "$HOST_AGE_KEY"
-fi
 
 # Record the resolved non-secret values so `just deploy <node>` re-runs reproduce them.
 ( umask 077; : > "$VALUES_FILE" )
@@ -139,8 +132,8 @@ done
 # 127.0.0.2 via /etc/hosts, binding the webhook to loopback). node.env overrides hermesEnvFile.
 log "Assembling hermes node-config share at $NODE_CONFIG_DIR ..."
 install -d -m 700 "$NODE_CONFIG_DIR"
-install -m 600 "$AGE_KEY_FILE"                       "$NODE_CONFIG_DIR/key.txt"
-install -m 600 "$HOME/.yclaw/state/secrets.sops.yaml" "$NODE_CONFIG_DIR/secrets.sops.yaml"
+install -m 600 "$HOME/.yclaw/state/hosts/hermes/key.txt"           "$NODE_CONFIG_DIR/key.txt"
+install -m 600 "$HOME/.yclaw/state/hosts/hermes/secrets.sops.yaml" "$NODE_CONFIG_DIR/secrets.sops.yaml"
 
 BLUEBUBBLES_HOME_CHANNEL="${AUTHORIZED_HANDLES%%,*}"
 ( umask 077
@@ -302,7 +295,8 @@ cat <<EOF
 
   [ ] 5. Place the Qwen MLX model on metal:
            hf download $(rg -o 'qwen = "[^"]+"' nixos/models.nix | sed -E 's/qwen = "(.*)"/\1/')
-         onto the metal `state` share (/Volumes/My Shared Files/state/hf).
+         into the host's ~/.yclaw/state/hf (metal mounts it as the narrow `hf` share at
+         /Volumes/My Shared Files/hf, which the omlx wrapper sets as HF_HOME).
 
 ================================================================================
   Bootstrap finished the autonomous steps. Stopping cleanly at the gates above.

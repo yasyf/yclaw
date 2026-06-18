@@ -5,11 +5,12 @@
 # for the runtime secrets, and writes the sops-encrypted blob.
 #
 # ALL output lands under ~/.yclaw/state (override with $YCLAW_STATE), never the
-# repo:
-#   age/key.txt          private age key (also staged to vm-secrets/key.txt)
-#   secrets.sops.yaml     sops/age-encrypted secrets (canonical schema below)
-#   sops.yaml             resolved sops creation rules (from the committed .sops.yaml)
-#   vm-secrets/key.txt    age key staged for the VMs (virtiofs mount)
+# repo. Each host gets its OWN age keypair and its OWN bundle, encrypted only to
+# that host's recipient and holding only the secrets it owns per
+# nixos/secrets-manifest.json — so a host can decrypt only its own secrets:
+#   hosts/<host>/key.txt            private age key for <host> (staged into <host>'s share)
+#   hosts/<host>/secrets.sops.yaml  sops/age-encrypted bundle for <host> (its keys only)
+#   sops.yaml                       resolved per-host sops creation rules (for `sops edit`)
 #
 # Every yclaw-generated password lives in a DEDICATED macOS keychain — never the login
 # keychain — so the credentials are siloed from the user's personal keychain:
@@ -64,19 +65,16 @@ _yclaw_keychain_unlock() {
 # yclaw-keychain-stored passwords; re-prompts the external API keys. The caller must run under
 # `set -euo pipefail`.
 collect_secrets() {
-  local t age_key vm_key sops_out sops_rendered sops_template pub plain
+  local t manifest sops_rendered host age_key pub plain recipients
 
   for t in sops age-keygen gum security openssl python3; do
     command -v "$t" >/dev/null || { printf 'FATAL: %s not on PATH.\n' "$t" >&2; exit 1; }
   done
 
-  age_key="$YCLAW_STATE/age/key.txt"
-  vm_key="$YCLAW_STATE/vm-secrets/key.txt"
-  sops_out="$YCLAW_STATE/secrets.sops.yaml"
+  manifest="$SECRETS_LIB_REPO/nixos/secrets-manifest.json"
   sops_rendered="$YCLAW_STATE/sops.yaml"
-  sops_template="$SECRETS_LIB_REPO/.sops.yaml"
-  mkdir -p "$YCLAW_STATE/age" "$YCLAW_STATE/vm-secrets"
-  chmod 700 "$YCLAW_STATE/age" "$YCLAW_STATE/vm-secrets"
+  [ -s "$manifest" ] || _secrets_fail "secrets manifest not found: $manifest"
+  mkdir -p "$YCLAW_STATE"
 
   gum style --border rounded --padding "1 2" --margin "1 0" --border-foreground 212 \
     'yclaw · runtime secret collection' \
@@ -149,57 +147,77 @@ collect_secrets() {
     _secrets_ok "Generated BlueBubbles server password → yclaw keychain ($KC_SERVICE_BLUEBUBBLES_SERVER)."
   fi
 
-  if [ ! -s "$age_key" ]; then
-    (umask 077; age-keygen -o "$age_key" 2>/dev/null)
-    _secrets_ok "Minted age key → $age_key"
-  fi
-  pub="$(age-keygen -y "$age_key")"
-  [ "${pub:0:4}" = "age1" ] || _secrets_fail 'could not derive age public key.'
-  _secrets_note "age public key: $pub"
-
-  # Render the resolved sops creation rules to state from the committed template.
-  # Read fully BEFORE writing — open(w) truncates, so a one-liner would clobber it.
-  python3 - "$sops_template" "$sops_rendered" "$pub" <<'PY'
-import sys
-src, dst, pub = sys.argv[1], sys.argv[2], sys.argv[3]
-s = open(src).read()
-open(dst, "w").write(s.replace("@@AGE_PUBLIC_KEY@@", pub))
-PY
-
   export TS_AUTHKEY AGENT_VAULT_MASTER_PASSWORD OPENAI_API_KEY EXA_API_KEY \
          HONCHO_API_KEY GITHUB_TOKEN BLUEBUBBLES_PASSWORD APERTURE_STATIC_KEY \
          METAL_ADMIN_PASS BLUEBUBBLES_ADMIN_PASS
-  plain="$(mktemp)"; trap 'rm -f "$plain"' EXIT
-  # Built in Python so secret values are written literally (no shell/YAML interpolation).
-  # BLUEBUBBLES_PASSWORD is always generated above, so the hermes/env block is always rendered.
-  python3 - "$plain" <<'PY'
+
+  # One age keypair + one bundle PER HOST, each encrypted ONLY to that host's recipient and
+  # holding ONLY the secrets that host owns (nixos/secrets-manifest.json). A host can decrypt
+  # only its own bundle, so VM isolation is enforced at the crypto layer. Hosts that own no
+  # secrets (bluebubbles) get no key and no bundle.
+  recipients=""
+  for host in $(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print("\n".join(h for h,v in m["hosts"].items() if v["secrets"]))' "$manifest"); do
+    age_key="$YCLAW_STATE/hosts/$host/key.txt"
+    mkdir -p "$YCLAW_STATE/hosts/$host"
+    chmod 700 "$YCLAW_STATE/hosts/$host"
+    if [ ! -s "$age_key" ]; then
+      (umask 077; age-keygen -o "$age_key" 2>/dev/null)
+      _secrets_ok "Minted age key for $host → $age_key"
+    fi
+    pub="$(age-keygen -y "$age_key")"
+    [ "${pub:0:4}" = "age1" ] || _secrets_fail "could not derive age public key for $host."
+    recipients="$recipients$host $pub"$'\n'
+
+    plain="$(mktemp)"; trap 'rm -f "$plain"' EXIT
+    # Built in Python so secret values are written literally (no shell/YAML interpolation),
+    # and the YAML key paths stay byte-identical to what sops-nix navigates.
+    python3 - "$manifest" "$host" "$plain" <<'PY'
 import os, sys, json
-e = os.environ
-parts = [f'tailscale:\n  authkey: {json.dumps(e["TS_AUTHKEY"])}\n']
-parts.append(
-    'hermes:\n  env: |\n'
-    f'    BLUEBUBBLES_PASSWORD={e["BLUEBUBBLES_PASSWORD"]}\n'
-    # hermes bypasses Aperture and hits cliproxy on metal:8317 directly, so it must present
-    # the same static bearer Aperture used to inject (model.key_env=APERTURE_STATIC_KEY).
-    f'    APERTURE_STATIC_KEY={e["APERTURE_STATIC_KEY"]}\n'
-)
-parts.append(
-    'vault:\n'
-    f'  master-password: |\n    AGENT_VAULT_MASTER_PASSWORD={e["AGENT_VAULT_MASTER_PASSWORD"]}\n'
-    '  static-keys: |\n'
-    f'    OPENAI_API_KEY={e["OPENAI_API_KEY"]}\n'
-    f'    EXA_API_KEY={e["EXA_API_KEY"]}\n'
-    f'    HONCHO_API_KEY={e["HONCHO_API_KEY"]}\n'
-    f'    GITHUB_TOKEN={e["GITHUB_TOKEN"]}\n'
-)
-parts.append(f'aperture:\n  static-key: {json.dumps(e["APERTURE_STATIC_KEY"])}\n')
-open(sys.argv[1], "w").write("".join(parts))
+from collections import OrderedDict
+manifest = json.load(open(sys.argv[1]))
+host, out = sys.argv[2], sys.argv[3]
+e, catalog = os.environ, manifest["catalog"]
+groups = OrderedDict()
+for key in manifest["hosts"][host]["secrets"]:
+    top, leaf = key.split("/", 1)
+    groups.setdefault(top, []).append((leaf, catalog[key]))
+parts = []
+for top, leaves in groups.items():
+    parts.append(f"{top}:\n")
+    for leaf, spec in leaves:
+        if spec["kind"] == "scalar":
+            parts.append(f"  {leaf}: {json.dumps(e[spec['var']])}\n")
+        else:
+            parts.append(f"  {leaf}: |\n")
+            for v in spec["vars"]:
+                parts.append(f"    {v}={e[v]}\n")
+open(out, "w").write("".join(parts))
 PY
 
-  # --input-type/--output-type yaml are REQUIRED: the mktemp file has no .yaml extension, so
-  # sops would otherwise treat it as binary and wrap the document in a `data:` blob that
-  # sops-nix cannot navigate (it extracts secrets by key path like tailscale/authkey).
-  sops --encrypt --input-type yaml --output-type yaml --age "$pub" "$plain" > "$sops_out"
-  rm -f "$plain"; trap - EXIT
-  install -m 600 "$age_key" "$vm_key"
+    # --input-type/--output-type yaml are REQUIRED: the mktemp file has no .yaml extension, so
+    # sops would otherwise treat it as binary and wrap the document in a `data:` blob that
+    # sops-nix cannot navigate (it extracts secrets by key path like tailscale/authkey).
+    # --config /dev/null ignores any ambient .sops.yaml (e.g. the repo's, when collect_secrets
+    # runs from the repo root): the explicit --age recipient is the single authoritative key.
+    sops --encrypt --config /dev/null --input-type yaml --output-type yaml --age "$pub" "$plain" \
+      > "$YCLAW_STATE/hosts/$host/secrets.sops.yaml"
+    rm -f "$plain"; trap - EXIT
+    _secrets_ok "Encrypted $host bundle → hosts/$host/secrets.sops.yaml"
+  done
+
+  # Resolved per-host sops creation rules for `sops edit hosts/<host>/secrets.sops.yaml`.
+  # The bundles themselves are encrypted above via the explicit --age recipient (which
+  # overrides creation_rules), so this file is only for interactive edits.
+  printf '%s' "$recipients" | python3 - "$sops_rendered" <<'PY'
+import sys
+out, rules = sys.argv[1], ["creation_rules:"]
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    host, pub = line.split(" ", 1)
+    rules += [f"  - path_regex: hosts/{host}/secrets\\.sops\\.yaml$",
+              "    key_groups:", "      - age:", f"          - {pub}"]
+open(out, "w").write("\n".join(rules) + "\n")
+PY
 }

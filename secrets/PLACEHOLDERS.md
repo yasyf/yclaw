@@ -30,9 +30,11 @@ These literal tokens appear in committed configs and scripts and must be resolve
 
 ## sops-encrypted secret values
 
-`scripts/lib/secrets.sh` is the single writer of `~/.yclaw/state/secrets.sops.yaml`. It prompts for
-the external API keys, mints or reuses the keychain passwords, and renders them into the
-age-encrypted blob. Nothing here is committed in plaintext.
+`scripts/lib/secrets.sh` is the single writer of the per-host bundles under
+`~/.yclaw/state/hosts/<host>/secrets.sops.yaml`. It prompts for the external API keys, mints or
+reuses the keychain passwords, and renders each host's slice into its own age-encrypted bundle —
+encrypted only to that host's recipient. `nixos/secrets-manifest.json` is the source of truth for
+which host owns which secret. Nothing here is committed in plaintext.
 
 | Value | What | sops path | How the human supplies it |
 |---|---|---|---|
@@ -78,7 +80,9 @@ stops; the operator completes each:
 ## Encrypted material
 
 `secrets/*.sops.yaml` would hold sops-encrypted values for unattended rebuilds, but the canonical
-encrypted blob lives at `~/.yclaw/state/secrets.sops.yaml`, never in the repo. `bootstrap.sh` (via
-`scripts/lib/secrets.sh`) is the single writer of runtime secret material; nothing here is committed
-in plaintext. The private age key lands at `/var/lib/sops-nix/key.txt` on each VM and is never
-committed.
+encrypted bundles live one per host at `~/.yclaw/state/hosts/<host>/secrets.sops.yaml`, never in
+the repo, each encrypted only to that host's recipient and carrying only that host's secrets per
+`nixos/secrets-manifest.json` (`hermes` and `metal` get bundles; `bluebubbles` owns none).
+`bootstrap.sh` (via `scripts/lib/secrets.sh`) is the single writer of runtime secret material;
+nothing here is committed in plaintext. Each host's private age key lands at
+`~/.yclaw/state/hosts/<host>/key.txt` and is never committed.

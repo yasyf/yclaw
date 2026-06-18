@@ -9,9 +9,11 @@
 #   cliproxy    :8317   CLIProxyAPI, Codex/Gemini OAuth -> static key
 #   agent-vault :14321  credential broker API  + :14322 transparent MITM proxy
 #
-# Persistent state lives on a virtiofs share at "/Volumes/My Shared Files/state" (the host
-# shares ~/.yclaw/state); the repo is shared read-only at "/Volumes/My Shared Files/repo".
-# The guest admin user is `admin` (home /Users/admin).
+# Persistent state lives on NARROW per-need virtiofs shares (the host shares only the slices of
+# ~/.yclaw/state that metal owns): "/Volumes/My Shared Files/metalsecrets" (metal's age key + its
+# own secrets bundle), plus agentvault / hf / mlxaudio / cliproxy for the runtime dirs. metal
+# never sees hosts/hermes/ or state/hermes/. The repo is shared read-only at
+# "/Volumes/My Shared Files/repo". The guest admin user is `admin` (home /Users/admin).
 #
 # metal runs NO iMessage and NO BlueBubbles: those live on the separate `bluebubbles` guest,
 # which keeps SIP OFF (its Private API needs it) precisely so metal can stay SIP-ON and maximally
@@ -34,20 +36,26 @@
   ...
 }:
 let
+  manifest = builtins.fromJSON (builtins.readFile ../nixos/secrets-manifest.json);
+
   adminUser = "admin";
   home = "/Users/${adminUser}";
   logs = "${home}/Library/Logs";
-  state = "/Volumes/My Shared Files/state";
+
+  # Narrow per-need virtiofs shares (scripts/setup.sh mounts each at /Volumes/My Shared Files/<name>):
+  # metalsecrets holds ONLY metal's age key + its own secrets bundle, so metal never sees
+  # hosts/hermes/ or state/hermes/. The runtime dirs are the only other state metal owns.
+  metalSecrets = "/Volumes/My Shared Files/metalsecrets";
 
   # The broker's logical vault NAME (vault.nix: the `vault:` key is "hermes").
   vaultName = "hermes";
-  vaultHome = "${state}/agent-vault";
+  vaultHome = "/Volumes/My Shared Files/agentvault";
   servicesYaml = ../nixos/vault-services.yaml;
 
-  hfHome = "${state}/hf";
+  hfHome = "/Volumes/My Shared Files/hf";
 
   # mlx-audio runs from a python venv (system python3 is 3.14); the wrapper builds it once.
-  sttVenv = "${state}/mlx-audio/venv";
+  sttVenv = "/Volumes/My Shared Files/mlxaudio/venv";
 
   # Decrypted sops secret paths (sops-nix installs to /run/secrets/<name>).
   masterPasswordFile = config.sops.secrets."vault/master-password".path;
@@ -94,7 +102,7 @@ let
   # Render the cliproxy config from the committed template, substituting the sops static-key
   # into a runtime path the admin agent can read (the real key never enters the Nix store).
   cliproxyConfigTemplate = ./metal-cliproxyapi-config.yaml;
-  cliproxyConfigRendered = "${state}/cli-proxy-api/config.yaml";
+  cliproxyConfigRendered = "/Volumes/My Shared Files/cliproxy/config.yaml";
   cliproxyWrapper = pkgs.writeShellScript "metal-cliproxy" ''
     set -euo pipefail
     # Wait for sops-nix to decrypt the key. /run/secrets is tmpfs (empty on a cold boot) and this
@@ -102,7 +110,7 @@ let
     # `cat` fails under `set -e` and the service crash-loops until kicked.
     for _ in $(seq 1 60); do [ -s ${lib.escapeShellArg apertureKeyFile} ] && break; sleep 1; done
     KEY=$(cat ${lib.escapeShellArg apertureKeyFile})
-    mkdir -p ${lib.escapeShellArg "${state}/cli-proxy-api/auth"}
+    mkdir -p ${lib.escapeShellArg "/Volumes/My Shared Files/cliproxy/auth"}
     ${pkgs.gnused}/bin/sed "s|@@APERTURE_STATIC_KEY@@|$KEY|g" \
       ${lib.escapeShellArg "${cliproxyConfigTemplate}"} > ${lib.escapeShellArg cliproxyConfigRendered}
     chmod 600 ${lib.escapeShellArg cliproxyConfigRendered}
@@ -150,6 +158,14 @@ let
   '';
 in
 {
+  # Evaluate-only manifest sanity: every secret metal owns must exist in the catalog (the single
+  # source of truth that scripts/lib/secrets.sh also reads), so an ownership/catalog drift fails
+  # `nix flake check` instead of producing an undecryptable bundle at runtime.
+  assertions = map (key: {
+    assertion = manifest.catalog ? ${key};
+    message = "metal: secret '${key}' is in hosts.metal.secrets but missing from manifest.catalog";
+  }) manifest.hosts.metal.secrets;
+
   networking.hostName = "metal";
   nixpkgs.hostPlatform = "aarch64-darwin";
   system.stateVersion = 5;
@@ -190,7 +206,7 @@ in
   };
 
   # --- Secrets (sops-nix) ------------------------------------------------------
-  # defaultSopsFile is a RUNTIME STRING path on the virtiofs state share, NOT a `../…` path
+  # defaultSopsFile is a RUNTIME STRING path on the narrow metalsecrets share, NOT a `../…` path
   # literal: a literal would import the encrypted blob into the world-readable Nix store.
   # validateSopsFiles=false is what lets a non-store path evaluate (see nixos/common.nix).
   # The age key is copied from the share to /var/lib/sops-nix/key.txt by copyAgeKey (below),
@@ -199,23 +215,12 @@ in
   # The cliproxy/omlx/STT/agent-vault wrappers run as the `admin` GUI user, so the secrets they
   # source are owned by admin (the default 0400 root-only would be unreadable by a user agent).
   sops = {
-    defaultSopsFile = "${state}/secrets.sops.yaml";
+    defaultSopsFile = "${metalSecrets}/secrets.sops.yaml";
     validateSopsFiles = false;
     age.keyFile = "/var/lib/sops-nix/key.txt";
-    secrets = {
-      "vault/master-password" = {
-        owner = adminUser;
-      };
-      "vault/static-keys" = {
-        owner = adminUser;
-      };
-      "aperture/static-key" = {
-        owner = adminUser;
-      };
-      "tailscale/authkey" = {
-        owner = adminUser;
-      };
-    };
+    # Derived from the manifest (nixos/secrets-manifest.json) — the single source of truth for
+    # host->secret ownership — so this set can never drift from the encryption scope.
+    secrets = lib.genAttrs manifest.hosts.metal.secrets (_: { owner = adminUser; });
   };
 
   # --- launchd user agents -----------------------------------------------------
@@ -297,11 +302,11 @@ in
   # the share key is absent — a node with no age key cannot decrypt any secret.
   system.activationScripts.preActivation.text = ''
     if [ ! -s /var/lib/sops-nix/key.txt ]; then
-      if [ -s ${lib.escapeShellArg "${state}/age/key.txt"} ]; then
+      if [ -s ${lib.escapeShellArg "${metalSecrets}/key.txt"} ]; then
         mkdir -p /var/lib/sops-nix
-        install -m 600 ${lib.escapeShellArg "${state}/age/key.txt"} /var/lib/sops-nix/key.txt
+        install -m 600 ${lib.escapeShellArg "${metalSecrets}/key.txt"} /var/lib/sops-nix/key.txt
       else
-        echo "metal: FATAL no age key at ${state}/age/key.txt" >&2
+        echo "metal: FATAL no age key at ${metalSecrets}/key.txt" >&2
         exit 1
       fi
     fi

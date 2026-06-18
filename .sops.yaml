@@ -1,12 +1,23 @@
-# sops creation rules TEMPLATE. scripts/lib/secrets.sh mints the age key and renders the
-# RESOLVED rules to ~/.yclaw/state/sops.yaml (replacing @@AGE_PUBLIC_KEY@@ with the public key);
-# this committed file keeps the placeholder and is never mutated. The PRIVATE key lands on each
-# VM at /var/lib/sops-nix/key.txt (never committed).
+# Documentary ONLY — sops does NOT read this file during encryption. scripts/lib/secrets.sh
+# encrypts each host's bundle with `--config /dev/null` and generates the RESOLVED per-host
+# creation rules itself, writing them to ~/.yclaw/state/sops.yaml (so `sops edit
+# hosts/<host>/secrets.sops.yaml` works against the right recipient).
+#
+# Per-host scheme: secrets.sh mints ONE age keypair per host and encrypts that host's bundle to
+# ONLY that host's recipient, containing ONLY the secrets nixos/secrets-manifest.json assigns to
+# it (hosts.<host>.secrets). There is NO single global recipient — hermes cannot decrypt metal's
+# bundle and vice versa. bluebubbles owns no secrets (no age key, no bundle).
+#
+# The placeholder below is a per-host EXAMPLE of the resolved shape; the real public keys are
+# rendered into ~/.yclaw/state/sops.yaml at bootstrap time, never committed. Each host's PRIVATE
+# key lands on its VM at /var/lib/sops-nix/key.txt (never committed).
 keys:
-  # Quoted: an unquoted scalar cannot start with `@` (a reserved YAML indicator).
-  - &host "@@AGE_PUBLIC_KEY@@" # scripts/lib/secrets.sh renders the public key into ~/.yclaw/state/sops.yaml.
+  # Quoted: an unquoted scalar cannot start with `@` (a reserved YAML indicator). One such key
+  # per host in the resolved ~/.yclaw/state/sops.yaml; this committed file keeps the placeholder.
+  - &hermes "@@HERMES_AGE_PUBLIC_KEY@@" # rendered per host into ~/.yclaw/state/sops.yaml.
 creation_rules:
-  - path_regex: secrets/[^/]+\.sops\.yaml$
+  # Resolved form (per host): a rule scoping hosts/<host>/secrets.sops.yaml to <host>'s recipient.
+  - path_regex: hosts/hermes/secrets\.sops\.yaml$
     key_groups:
       - age:
-          - *host
+          - *hermes

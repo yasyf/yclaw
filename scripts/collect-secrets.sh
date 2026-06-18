@@ -23,8 +23,8 @@ source "$REPO/scripts/lib/secrets.sh"
 collect_secrets
 
 gum style --border rounded --padding "1 2" --margin "1 0" --border-foreground 84 \
-  "✓ secrets encrypted → $YCLAW_STATE/secrets.sops.yaml" \
-  "✓ age key staged for the VMs → $YCLAW_STATE/vm-secrets/key.txt" \
+  "✓ per-host secrets encrypted → $YCLAW_STATE/hosts/<host>/secrets.sops.yaml" \
+  "✓ per-host age keys staged for the VMs → $YCLAW_STATE/hosts/<host>/key.txt" \
   "✓ dedicated yclaw keychain → $YCLAW_KEYCHAIN (unlock pw in login Keychain: $KC_SERVICE_KEYCHAIN_PASS)" \
   "✓ vault master password in yclaw keychain ($KC_SERVICE)" \
   "✓ metal admin password in yclaw keychain ($KC_SERVICE_METAL_ADMIN)" \

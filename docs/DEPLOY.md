@@ -39,16 +39,19 @@ The wizard runs these stages autonomously:
    asks for `IPSW_URL` (HEAD-checked for reachability — a warning, not a hard
    fail), `HOST_RAM` (the GB tier for VM sizing), and `AUTHORIZED_HANDLES` (the
    comma-separated iMessage allowlist; the first handle is the home channel).
-3. **Mint the age key and encrypt the secrets.** `collect_secrets` mints (or
-   reuses) the master age key, generates the Aperture static key plus the per-VM
+3. **Mint the per-host age keys and encrypt the secrets.** `collect_secrets` mints
+   (or reuses) one age key per host, generates the Aperture static key plus the per-VM
    admin passwords and the BlueBubbles server password into the dedicated yclaw
-   keychain (`~/Library/Keychains/yclaw.keychain-db`), and writes the encrypted
-   `~/.yclaw/state/secrets.sops.yaml`. It also stages the private key at
-   `/var/lib/sops-nix/key.txt` (via `sudo install`) so sops-nix can read it.
+   keychain (`~/Library/Keychains/yclaw.keychain-db`), and writes each host's own
+   encrypted bundle at `~/.yclaw/state/hosts/<host>/secrets.sops.yaml` — encrypted
+   only to that host's recipient and carrying only that host's secrets, per
+   `nixos/secrets-manifest.json`. The host persists no age key of its own; each VM
+   decrypts only what it owns.
 4. **Assemble the hermes node-config share** at `~/.config/yclaw/vm-secrets`:
-   `key.txt`, `secrets.sops.yaml`, and a `node.env` carrying the non-secret
-   BlueBubbles allowlist and home channel. `seedNodeConfig` installs these into
-   the guest on first boot.
+   hermes's `hosts/hermes/{key.txt,secrets.sops.yaml}` staged in as `key.txt` and
+   `secrets.sops.yaml`, plus a `node.env` carrying the non-secret BlueBubbles
+   allowlist and home channel. `seedNodeConfig` installs these into the guest on
+   first boot. metal reads its own `hosts/metal/` over a narrow read-only share.
 5. **Apply the host config** by running `scripts/setup.sh` — Homebrew tooling,
    `~/.yclaw/state`, and the `com.yclaw.tart-*` launchd runners.
 6. **Build the macOS guests** (`metal`, then `bluebubbles`) with Packer, feeding
@@ -119,16 +122,16 @@ destroying and rebuilding a VM.
 
 | Path | Holds | Replaceable? |
 |------|-------|--------------|
-| `age/key.txt` | master age decryption key | **No** — lose it and every secret is unrecoverable |
-| `secrets.sops.yaml` | the encrypted secret blob | **No** (without the age key) |
+| `hosts/<host>/key.txt` | that host's private age decryption key (one per host) | **No** — lose it and that host's secrets are unrecoverable |
+| `hosts/<host>/secrets.sops.yaml` | that host's encrypted bundle (only its own secrets, per `nixos/secrets-manifest.json`) | **No** (without that host's key) |
 | `agent-vault/` | credential-broker DB: owner account, static keys, the Google OAuth refresh token, minted agent tokens | **No** — re-provisioning re-mints tokens hermes would need re-injected |
 | `cli-proxy-api/auth/` | Codex/Gemini OAuth sessions | Yes — re-run the `--login` flows |
 | `hf/`, `omlx/` | model weights + KV cache (~20–25 GB) | Yes — re-downloaded on demand |
 | `mlx-audio/` | the STT server venv | Yes — rebuilt on first STT start |
 | `hermes/` | hermes agent state (honcho memory, sessions), externalized from the VM's `/var/lib/hermes` | **No** — agent memory and sessions survive only via this share |
 
-The **irreplaceable** set is small: `age/key.txt`, `secrets.sops.yaml`, and
-`agent-vault/`.
+The **irreplaceable** set is small: everything under `hosts/` (every per-host key
+and bundle) and `agent-vault/`.
 
 ## Back up and restore
 

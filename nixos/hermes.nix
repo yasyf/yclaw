@@ -11,11 +11,17 @@
 # (BlueBubbles is in NO_PROXY, so it cannot be wire-injected — see env section).
 {
   config,
+  lib,
   pkgs,
   inputs,
   ...
 }:
 let
+  # Single source of truth for host->secret ownership (nixos/secrets-manifest.json). The
+  # sops.secrets read-selectors below derive from it, so they can never drift from the
+  # encryption scope scripts/lib/secrets.sh applies.
+  manifest = builtins.fromJSON (builtins.readFile ./secrets-manifest.json);
+
   # --- Non-secret .env (proxy + CA trust + BlueBubbles wiring) ------------------
   # Rendered to the Nix store (world-readable) — safe because it holds NO secret.
   # BLUEBUBBLES_PASSWORD is the one secret and lives in the sops "hermes/env" file,
@@ -229,6 +235,14 @@ let
   };
 in
 {
+  # Evaluate-only manifest sanity: every secret hermes owns must exist in the catalog (the single
+  # source of truth scripts/lib/secrets.sh also reads), so an ownership/catalog drift fails
+  # `nix flake check` instead of producing an undecryptable bundle at runtime.
+  assertions = map (key: {
+    assertion = manifest.catalog ? ${key};
+    message = "hermes: secret '${key}' is in hosts.hermes.secrets but missing from manifest.catalog";
+  }) manifest.hosts.hermes.secrets;
+
   networking.hostName = "hermes";
 
   # --- Persistent agent state externalized to the host -------------------------
@@ -500,7 +514,12 @@ in
   #     directly instead of Aperture injecting it. Same value as metal's sops `aperture/static-key`;
   #     tailnet ACLs already gate :8317 to hermes, so holding it here is acceptable.
   # TODO(human): confirm this is acceptable vs the DoD "no real secret in hermes VM" stance.
-  sops.secrets."hermes/env" = { };
+  #
+  # Derived from the manifest's hosts.hermes.secrets (single source of truth), minus
+  # tailscale/authkey — that universal secret is already declared by nixos/common.nix, so we
+  # subtract it here rather than relying on attrset merge. Hermes's per-host bundle is encrypted
+  # to ONLY hermes's age recipient and contains ONLY these keys (no cross-host secrets).
+  sops.secrets = lib.genAttrs (lib.subtractLists [ "tailscale/authkey" ] manifest.hosts.hermes.secrets) (_: { });
 
   # --- agent-vault MITM CA → OS trust store ------------------------------------
   # Rust/rustls clients (the `gws` Google CLI) IGNORE SSL_CERT_FILE and read only

@@ -34,8 +34,9 @@ LAUNCH_AGENTS_DIR="$HOME_DIR/Library/LaunchAgents"
 TART_BIN="/opt/homebrew/bin/tart"
 LOGS_DIR="$HOME_DIR/Library/Logs/Tart"
 
-# State subdirs the VMs read/write over the virtiofs `state` share (metal.nix mounts them).
-STATE_SUBDIRS=(age vm-secrets cli-proxy-api/auth agent-vault hf mlx-audio hermes)
+# State subdirs the VMs read/write over the virtiofs shares (metal mounts narrow per-need shares,
+# hermes mounts its own hosts/hermes bundle + hermes/ runtime state).
+STATE_SUBDIRS=(hosts/hermes hosts/metal cli-proxy-api/auth agent-vault hf mlx-audio hermes)
 
 # pf VNC anchor: OFF by default. The host runs no VNC-exposed model services anymore, so there
 # is nothing to gate. Set ENABLE_VNC_ANCHOR=1 only if a VNC service is reintroduced on the host.
@@ -131,7 +132,7 @@ mkdir -p "$STATE_DIR"
 for sub in "${STATE_SUBDIRS[@]}"; do
   mkdir -p "$STATE_DIR/$sub"
 done
-chmod 700 "$STATE_DIR/age" "$STATE_DIR/vm-secrets"
+chmod 700 "$STATE_DIR/hosts/hermes" "$STATE_DIR/hosts/metal"
 mkdir -p "$LOGS_DIR" "$LAUNCH_AGENTS_DIR"
 
 # hermes node-config share source: the dir the tart-hermes runner mounts (--dir=sops:...:ro) so
@@ -145,9 +146,10 @@ chmod 700 "$NODE_CONFIG_DIR"
 # --- 3. LaunchAgents for the VM runners --------------------------------------
 
 # tart auto-mounts the `name:path` --dir form to /Volumes/My Shared Files/<name> inside macOS
-# guests (verified); the `tag=` form does NOT auto-mount. metal reads everything (age key,
-# secrets.sops.yaml, model cache, vault/cliproxy state) from the single `state` share —
-# metal.nix's preActivation + sops.defaultSopsFile both point under /Volumes/My Shared Files/state.
+# guests (verified); the `tag=` form does NOT auto-mount. metal gets NARROW per-need shares — its
+# own secrets bundle (hosts/metal, read-only) plus only the runtime dirs it owns — instead of the
+# whole state tree, so it can NEVER see hosts/hermes/ or state/hermes/ (hermes's age key + state).
+# metal.nix's preActivation + sops.defaultSopsFile point under /Volumes/My Shared Files/metalsecrets.
 #
 # metal runs HEADLESS (--no-graphics): it holds ONLY the credential + AI services and NO
 # iMessage, so it needs no host-side GUI window. omlx's Metal GPU works headless because
@@ -157,7 +159,11 @@ chmod 700 "$NODE_CONFIG_DIR"
 write_agent metal \
   run metal \
   --no-graphics \
-  "--dir=state:$STATE_DIR" \
+  "--dir=metalsecrets:$STATE_DIR/hosts/metal:ro" \
+  "--dir=agentvault:$STATE_DIR/agent-vault" \
+  "--dir=hf:$STATE_DIR/hf" \
+  "--dir=mlxaudio:$STATE_DIR/mlx-audio" \
+  "--dir=cliproxy:$STATE_DIR/cli-proxy-api" \
   "--dir=repo:$HOME_DIR/Code/yclaw:ro"
 
 # bluebubbles is the SIP-off iMessage node — its OWN tailnet node, holds NO credentials, so no
