@@ -47,20 +47,35 @@ _secrets_fail() { gum style --foreground 196 "  $*"; exit 1; }
 # a freshly-generated unlock password that is persisted in the LOGIN keychain under
 # `yclaw-keychain-password`; thereafter the unlock password is read back from the login
 # keychain and used to unlock the dedicated keychain non-interactively. set-keychain-settings
-# (no -t) disables the auto-lock timeout so the keychain stays unlocked for the run. Call this
-# before any yclaw-secret access.
+# -l -t 300 re-locks the keychain on sleep and after 300s idle, so the same-user exposure
+# window (any process can read every yclaw secret while unlocked) is bounded; the timeout is
+# (re)applied on EVERY unlock so pre-existing keychains pick it up too. collect_secrets also
+# re-locks explicitly when done (see _yclaw_keychain_lock). The items keep the DEFAULT ACL by
+# design — same-user repo scripts (bootstrap.sh, collect-secrets.sh, connect-google-oauth.py,
+# packer) must read them, and scoping with -T/set-key-partition-list to /usr/bin/security is
+# fragile across macOS versions and would lock those callers out — so the auto-lock timeout
+# plus the explicit re-lock are the mitigation, not an ACL restriction. Call this before any
+# yclaw-secret access.
 _yclaw_keychain_unlock() {
   local kc_pass
   if [ ! -f "$YCLAW_KEYCHAIN" ]; then
     kc_pass="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32)"
     security create-keychain -p "$kc_pass" "$YCLAW_KEYCHAIN"
-    security set-keychain-settings "$YCLAW_KEYCHAIN"
+    security set-keychain-settings -l -t 300 "$YCLAW_KEYCHAIN"
     security add-generic-password -U -a "$USER" -s "$KC_SERVICE_KEYCHAIN_PASS" \
       -l 'yclaw dedicated keychain unlock password' -w "$kc_pass"
     _secrets_ok "Created dedicated yclaw keychain → $YCLAW_KEYCHAIN (unlock pw → login Keychain $KC_SERVICE_KEYCHAIN_PASS)."
   fi
   kc_pass="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_KEYCHAIN_PASS" -w)"
   security unlock-keychain -p "$kc_pass" "$YCLAW_KEYCHAIN"
+  security set-keychain-settings -l -t 300 "$YCLAW_KEYCHAIN"
+}
+
+# Re-lock the dedicated yclaw keychain so secrets are not readable after collect_secrets
+# finishes (the -t 300 auto-lock timeout would eventually do this; this makes it immediate).
+# Call this AFTER the last keychain read.
+_yclaw_keychain_lock() {
+  security lock-keychain "$YCLAW_KEYCHAIN"
 }
 
 # Mint ONE ephemeral, single-use, pre-authorized, TAGGED tailnet auth key for $1 (host short
@@ -297,4 +312,9 @@ for line in sys.stdin:
               "    key_groups:", "      - age:", f"          - {pub}"]
 open(out, "w").write("\n".join(rules) + "\n")
 PY
+
+  # All yclaw-secret reads are done (the per-host bundle encryption above reads the keychain
+  # passwords from the exported env, and _ts_mint_key read TS_ACCESS_TOKEN earlier) — re-lock
+  # the dedicated keychain so nothing else can read it for the rest of the run.
+  _yclaw_keychain_lock
 }

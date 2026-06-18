@@ -74,7 +74,12 @@ variable "vm_admin_pass" {
 }
 
 source "tart-cli" "tahoe" {
-  vm_base_name = "ghcr.io/cirruslabs/macos-tahoe-base:latest"
+  # Pinned by immutable digest (audit M8): a mutable :latest tag let a registry-side
+  # change silently mutate this SIP-off, credential-bearing iMessage VM on rebuild.
+  # Resolved 2026-06-18 via:
+  #   docker manifest inspect --verbose ghcr.io/cirruslabs/macos-tahoe-base:latest | jq -r '.Descriptor.digest'
+  # Re-run that command and update the digest below on an intentional base bump.
+  vm_base_name = "ghcr.io/cirruslabs/macos-tahoe-base@sha256:a8e1c8305758643f513fdccdd829c2243687c60791083dea42f73f0b7aeb435c"
   vm_name      = var.vm_name
   cpu_count    = var.cpu_count
   memory_gb    = var.memory_gb

@@ -25,9 +25,15 @@ set -euo pipefail
 REPO="${YCLAW_BUILD_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 TART_BIN="${TART_BIN:-/opt/homebrew/bin/tart}"
 BUILDER_VM="${BUILDER_VM:-hermes-image-builder}"
-BUILDER_IMAGE="${BUILDER_IMAGE:-ghcr.io/cirruslabs/ubuntu:latest}"
+# Pinned by immutable digest (audit M7): a mutable :latest tag let a registry-side change
+# silently mutate the builder OS. Still env-overridable for ad-hoc bumps. Resolved 2026-06-18 via:
+#   docker manifest inspect --verbose ghcr.io/cirruslabs/ubuntu:latest | jq -r '.Descriptor.digest'
+# Re-run that command and update the digest below on an intentional base bump.
+BUILDER_IMAGE="${BUILDER_IMAGE:-ghcr.io/cirruslabs/ubuntu@sha256:e90dfc9e6dffb742809f32e61ee03daf5fa6ee30e24ee05c105beffa3b7c9540}"
 BUILDER_DISK_GB="${BUILDER_DISK_GB:-40}"
 SSH_USER="${BUILDER_SSH_USER:-admin}"
+# admin/admin + StrictHostKeyChecking=no below are the cirruslabs base default on a THROWAWAY
+# local NAT builder VM that holds no secrets (audit M7, documented residual, lower priority).
 SSH_PASS="${BUILDER_SSH_PASS:-admin}" # cirruslabs Linux base-image default credentials
 OUT_LINK="$REPO/result-hermes"
 
@@ -80,7 +86,13 @@ echo "[build-hermes-image] building inside $BUILDER_VM ..."
 ssh_guest bash -euo pipefail <<'GUEST'
 test -e /dev/kvm || { echo "FATAL: /dev/kvm missing — --nested did not expose nested virt." >&2; exit 1; }
 if ! command -v nix >/dev/null; then
-  curl -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm
+  # UNPINNED INSTALLER (audit M7): `curl … | sh` of the rolling Determinate installer; a
+  # registry/CDN-side change is executed unverified. Hardened the transport (--proto '=https'
+  # --tlsv1.2) but the installer itself is not version-pinned. To pin, swap to a tagged
+  # nix-installer release, e.g. https://github.com/DeterminateSystems/nix-installer/releases —
+  # download nix-installer-<arch>-linux for a fixed tag, verify its sha256, then run it. Runs
+  # on the throwaway builder, so transport hardening is the floor, not the ceiling.
+  curl --proto '=https' --tlsv1.2 -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm
 fi
 . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 sudo mkdir -p /mnt/repo
