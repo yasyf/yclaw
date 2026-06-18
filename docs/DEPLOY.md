@@ -59,6 +59,15 @@ The wizard runs these stages autonomously:
    into a gitignored `.build/` copy of the repo, builds the image from there
    (the tracked tree stays clean), and disk-replaces it into the `hermes` tart VM.
 8. **Boot hermes** by kickstarting `com.yclaw.tart-hermes`.
+9. **Onboard.** Once `hermes` answers over `tailscale ssh`, the wizard launches the
+   interactive `hermes-onboard` (as the `hermes` user): it seeds your profile
+   (`USER.md`), the agent persona (`SOUL.md`), and the Honcho peer identity — the
+   user-specific context the declarative build can't supply. It only writes files that
+   are absent, so re-running is safe:
+
+   ```sh
+   tailscale ssh -t admin@hermes -- sudo -u hermes -H hermes-onboard
+   ```
 
 When the autonomous steps finish, the wizard prints the human gates and stops
 cleanly.

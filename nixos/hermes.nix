@@ -77,19 +77,29 @@ let
     echo "BlueBubbles is reachable."
   '';
 
-  # --- Honcho activation file (~/.honcho/config.json) --------------------------
-  # Honcho is NOT configured via config.yaml's `memory:` block — it reads its own
-  # ~/.honcho/config.json (doctor.py: "set enabled: true … to activate"). HOME for
-  # the hermes user is stateDir, so the path is ${stateDir}/.honcho/config.json.
-  # The HONCHO_API_KEY env (dummy) satisfies the api_key requirement; vault injects
-  # the real key on api.honcho.dev. Cadence values are the architecture's starting
-  # point (hybrid / depth 1 / context 2 / dialectic 3 / low).
+  # --- Honcho global config (~/.honcho/config.json) — REMOTE cloud -------------
+  # Honcho is the memory provider (memory.provider = "honcho" in settings below).
+  # The plugin's config chain is $HERMES_HOME/honcho.json → ~/.honcho/config.json →
+  # env. HOME for the hermes user is stateDir, so this seeds ${stateDir}/.honcho/config.json.
+  #
+  # REMOTE, not self-hosted: `environment = "production"` selects the Honcho cloud and
+  # `base_url` is deliberately UNSET (base_url is the self-hosted override — setting it
+  # would point the SDK away from the cloud). The HONCHO_API_KEY env (dummy `__honcho__`)
+  # satisfies the api_key requirement to initialize the client; agent-vault's MITM proxy
+  # injects the REAL key on api.honcho.dev (not in NO_PROXY), so the hermes VM never holds it.
+  #
+  # Seeded as a WRITABLE copy once (tmpfiles `C`, below) rather than a read-only `L+`
+  # symlink: the agent/CLI shallow-merge into this file, and an immutable store symlink
+  # would make those writes fail AND be re-created on every rebuild, wiping the state.
+  # Cadence values are the architecture's starting point (hybrid / depth 1 / context 2 /
+  # dialectic 3 / low).
   # TODO(human): the cadence mapping has an unresolved value conflict between the §10
   #   ledger (positional) and the catalog's per-setting recs — confirm the intended
   #   (key → value) mapping, and confirm the full honcho config.json schema (the
   #   verified keys are enabled/recallMode/writeFrequency/sessionStrategy).
   honchoConfig = pkgs.writeText "honcho-config.json" (builtins.toJSON {
     enabled = true;
+    environment = "production";
     recallMode = "hybrid";
     dialecticDepth = 1;
     contextCadence = 2;
@@ -137,11 +147,86 @@ let
     inherit (ha.inputs) uv2nix pyproject-nix pyproject-build-systems;
     npm-lockfile-fix = ha.inputs.npm-lockfile-fix.packages.${haSystem}.default;
     rev = ha.rev or null;
+    # Bake the `honcho` optional-dependency extra (honcho-ai==2.0.1) into the wheel.
+    # Upstream dropped honcho from `[all]` (lazy pip-install at first use) — which fails
+    # in this Nix-managed Python with no runtime pip. Baking it here is what makes the
+    # remote Honcho memory provider actually load. uv2nix resolves the upstream-pinned ver.
+    extraDependencyGroups = [ "honcho" ];
   };
 
   models = import ./models.nix;
 
   cfg = config.services.hermes-agent;
+
+  # --- End-of-bootstrap onboarding --------------------------------------------
+  # bootstrap.sh auto-launches this over `tailscale ssh -t admin@hermes -- sudo -u hermes -H
+  # hermes-onboard` once the VM is reachable. It collects the identity that yclaw's declarative
+  # provisioning can't: the user profile (USER.md) and the agent persona (SOUL.md) — written
+  # ONLY when absent, so the agent's own later edits are never clobbered — then confirms the
+  # Honcho (remote) memory wiring and seeds the Honcho peer identity from SOUL.md. The Honcho
+  # provider + remote config are declared in Nix (memory.provider + honchoConfig), so they
+  # cannot be flipped to self-hosted here. Runs as the hermes user so files land with the
+  # ownership/perms the service expects. Idempotent: re-running only fills what is missing.
+  hermesOnboard = pkgs.writeShellApplication {
+    name = "hermes-onboard";
+    runtimeInputs = [ pkgs.coreutils ];
+    text = ''
+      export HOME=${cfg.stateDir}
+      export HERMES_HOME=${cfg.stateDir}/.hermes
+      hermes=${patchedHermesAgent}/bin/hermes
+      workspace=${cfg.workingDirectory}
+      memdir="$HERMES_HOME/memories"
+      usermd="$memdir/USER.md"
+      soulmd="$workspace/SOUL.md"
+
+      mkdir -p "$memdir" "$workspace"
+
+      echo "hermes onboarding — seeds your identity, confirms Honcho (remote), seeds the peer identity."
+      echo
+
+      echo "── Identity (USER.md) ────────────────────────────────────"
+      if [ ! -s "$usermd" ]; then
+        printf 'Your name: '
+        read -r name
+        printf 'A sentence or two about you (the agent remembers this): '
+        read -r about
+        {
+          printf '# User profile\n\n'
+          printf -- '- **Name:** %s\n\n' "$name"
+          printf '%s\n' "$about"
+        } > "$usermd"
+        echo "Wrote $usermd"
+      else
+        echo "USER.md already present ($usermd) — leaving it untouched."
+      fi
+
+      echo
+      echo "── Agent persona (SOUL.md) ───────────────────────────────"
+      if [ ! -s "$soulmd" ]; then
+        printf 'Agent persona in one line (blank for a sensible default): '
+        read -r persona
+        [ -n "$persona" ] || persona="You are a helpful, concise personal assistant."
+        printf '%s\n' "$persona" > "$soulmd"
+        echo "Wrote $soulmd"
+      else
+        echo "SOUL.md already present ($soulmd) — leaving it untouched."
+      fi
+
+      echo
+      echo "── Memory: Honcho (remote cloud) ─────────────────────────"
+      echo "Configured declaratively (provider=honcho, environment=production, no base_url);"
+      echo "the agent-vault proxy injects the real API key on api.honcho.dev."
+      "$hermes" memory status || true
+
+      echo
+      echo "── Seeding the Honcho peer identity from SOUL.md ─────────"
+      "$hermes" honcho identity "$soulmd" \
+        || echo "(peer-identity seeding skipped — non-fatal; rerun once metal/vault is up)"
+
+      echo
+      echo "Onboarding complete. Start a new session to activate."
+    '';
+  };
 in
 {
   networking.hostName = "hermes";
@@ -164,6 +249,13 @@ in
 
     # Rebuilt from patched source — see patchedHermesAgent above (DM-reply routing fix).
     package = patchedHermesAgent;
+
+    # Put the `hermes` CLI on the system PATH and export HERMES_HOME = ${cfg.stateDir}/.hermes
+    # so `tailscale ssh admin@hermes -- hermes …` (e.g. `just smoke`'s `hermes doctor`) and the
+    # end-of-bootstrap onboarding act on the SERVICE state, not a private ~/.hermes. Also flips
+    # config.yaml to group-writable 0660. The onboarding runs the CLI as the hermes user (sudo),
+    # so files land with the ownership the service expects (the honcho plugin writes mode 0600).
+    addToSystemPackages = true;
 
     # Appended into ~/.hermes/.env in order: non-secret first, sops secret last.
     # environmentFiles is `listOf str`, so coerce the writeText derivation to its
@@ -280,12 +372,16 @@ in
       # ── Web search & extract (Exa; EXA_API_KEY injected by vault) ──
       web.backend = "exa";
 
-      # ── Memory: built-in curated notes (MEMORY.md/USER.md) ──
-      # These are the ONLY valid keys in the `memory:` block (cli-config.yaml.example).
-      # Honcho is a SEPARATE plugin: it is NOT `memory.provider` (no such key) — it is
-      # activated by `enabled: true` in ${HERMES_HOME-sibling}/.honcho/config.json,
-      # provisioned below, plus the HONCHO_API_KEY env (dummy; vault injects the real key).
+      # ── Memory: built-in curated notes (MEMORY.md/USER.md) + Honcho provider ──
+      # Built-in memory (memory_enabled/user_profile_enabled → MEMORY.md/USER.md) stays
+      # always-on. Honcho is the external memory PROVIDER (v0.16.0: plugins/memory/honcho)
+      # and runs ALONGSIDE the built-in notes (additive, not a replacement). `provider =
+      # "honcho"` is exactly what `hermes memory setup honcho` writes; declaring it here points
+      # the node at Honcho deterministically (deep-merge keeps Nix authoritative on rebuild).
+      # Honcho's REMOTE/enabled wiring lives in ~/.honcho/config.json (seeded above, no
+      # base_url → cloud) + the HONCHO_API_KEY env (dummy; vault injects the real key).
       memory = {
+        provider = "honcho";
         memory_enabled = true;
         user_profile_enabled = true;
         memory_char_limit = 2200;
@@ -421,15 +517,23 @@ in
   # so the code-execution tool's `docker` lookup fails ("Docker executable not found in PATH").
   # Put the docker client on the service PATH (verified: without this, execute_code errors).
   systemd.services.hermes-agent.path = [ config.virtualisation.docker.package ];
-  # The hermes-agent module's default user is "hermes".
-  # TODO(human): confirm the module's user name is "hermes" before relying on this group.
+  # The hermes-agent module's default user/group is "hermes" (nixosModules.nix createUser).
   users.users.hermes.extraGroups = [ "docker" ];
 
-  # --- Honcho config provisioning (symlink to the flake-rendered file) ---------
-  # L+ keeps it always matching the flake (managed mode → config is declarative).
+  # End-of-bootstrap onboarding CLI on the system PATH (merges with the hermes CLI that
+  # addToSystemPackages installs). bootstrap.sh launches `sudo -u hermes -H hermes-onboard`.
+  environment.systemPackages = [ hermesOnboard ];
+
+  # --- Honcho config provisioning (seed-once WRITABLE copy) --------------------
+  # `C` copies the flake-rendered default ONLY when the target is absent, so the node's
+  # honcho config (which `hermes memory setup` / the plugin shallow-merge into, and which
+  # the end-of-bootstrap onboarding touches) persists across rebuilds. NOT `L+`: a
+  # read-only store symlink would block those writes and get re-created on every rebuild,
+  # silently reverting the user's honcho setup. Mode 0600 owned by the hermes service user
+  # matches what the plugin writes (atomic_json_write mode=0o600).
   systemd.tmpfiles.rules = [
     "d ${cfg.stateDir}/.honcho 0750 ${cfg.user} ${cfg.group} - -"
-    "L+ ${cfg.stateDir}/.honcho/config.json - - - - ${honchoConfig}"
+    "C ${cfg.stateDir}/.honcho/config.json 0600 ${cfg.user} ${cfg.group} - ${honchoConfig}"
   ];
 
   # --- BlueBubbles readiness gate ----------------------------------------------

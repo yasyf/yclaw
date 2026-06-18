@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every generated password (agent-vault master, per-VM admin, BlueBubbles server),
   siloed from your login keychain and auto-unlocked via one
   `yclaw-keychain-password` entry.
+- End-of-bootstrap onboarding. Once `hermes` is reachable, `just bootstrap`
+  auto-launches an interactive `hermes-onboard` over `tailscale ssh` that seeds the
+  user-specific context the declarative build can't supply: your profile (`USER.md`),
+  the agent persona (`SOUL.md`), and the Honcho peer identity. It runs as the `hermes`
+  user, only writes files that are absent (so the agent's own later edits are never
+  overwritten), and is re-runnable: `tailscale ssh -t admin@hermes -- sudo -u hermes -H
+  hermes-onboard`.
 
 ### Changed
 - Lower iMessage reply latency. hermes now calls metal's model upstreams directly
@@ -39,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state with sops, then build and boot all images. The agent-vault CA fetch from
   `metal` is automated; the remaining human gates (Apple-ID iMessage sign-in,
   `cliproxy` OAuth logins, agent-vault Google OAuth) are printed at the end.
+- Honcho memory loads and targets the remote cloud. The `honcho` extra (`honcho-ai`)
+  is baked into the hermes image — upstream dropped it from the eager-install set, so
+  it would otherwise fail to lazy-install in the network-less Nix Python. The provider
+  is declared (`memory.provider = "honcho"`, `environment = "production"`, no
+  `base_url` → cloud, real key injected by agent-vault on `api.honcho.dev`), and
+  `~/.honcho/config.json` is seeded as a writable copy rather than a read-only symlink,
+  so the agent's own memory writes survive a rebuild.
 - VM images are generic and reusable across tailnets. Nodes are addressed by bare
   Tailscale MagicDNS names (`metal`, `bluebubbles`, `hermes`, `ai`) and configured
   on first boot from an injected `node.env`, so a published image carries no

@@ -255,6 +255,28 @@ log "Reloading launchd agent com.yclaw.tart-hermes ..."
 launchctl kickstart -k "gui/$(id -u)/com.yclaw.tart-hermes" 2>/dev/null \
   || log "  (agent com.yclaw.tart-hermes not yet loaded — ./scripts/setup.sh bootstraps it on next run)"
 
+# --- 8b. hermes onboarding (identity + Honcho peer) --------------------------
+
+# Seed the identity yclaw's declarative provisioning can't: USER.md (profile) + SOUL.md
+# (persona), then the Honcho peer identity. Honcho itself is configured declaratively
+# (remote cloud — see nixos/hermes.nix), so this only fills user-specific gaps. Runs as
+# the hermes user (sudo) so writes get service-correct ownership; admin is passwordless
+# wheel. Idempotent. If hermes isn't reachable yet, print the one-liner instead of blocking.
+ONBOARD_CMD="tailscale ssh -t admin@hermes -- sudo -u hermes -H hermes-onboard"
+log "Waiting for hermes to be reachable for onboarding (tailscale ssh admin@hermes) ..."
+hermes_up=0
+for _ in $(seq 1 60); do
+  if tailscale ssh admin@hermes -- true 2>/dev/null; then hermes_up=1; break; fi
+  sleep 5
+done
+if [[ "$hermes_up" == 1 ]]; then
+  log "Launching hermes onboarding (interactive) ..."
+  $ONBOARD_CMD || log "  (onboarding exited non-zero; re-run any time: $ONBOARD_CMD)"
+else
+  log "  hermes not reachable yet — skipping auto-onboarding. Run it once hermes is up:"
+  log "    $ONBOARD_CMD"
+fi
+
 # --- 9. human gates ----------------------------------------------------------
 
 cat <<EOF
