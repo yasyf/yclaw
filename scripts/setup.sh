@@ -151,18 +151,23 @@ chmod 700 "$NODE_CONFIG_DIR"
 #
 # metal runs HEADLESS (--no-graphics): it holds ONLY the credential + AI services and NO
 # iMessage, so it needs no host-side GUI window. omlx's Metal GPU works headless because
-# in-guest auto-login creates the aqua session GPU access requires (verified).
+# in-guest auto-login creates the aqua session GPU access requires (verified). The repo is shared
+# read-only at /Volumes/My Shared Files/repo so the in-guest nix-darwin can rebuild itself
+# (`darwin-rebuild switch --flake "/Volumes/My Shared Files/repo#metal"`, see darwin/metal.nix).
 write_agent metal \
   run metal \
   --no-graphics \
-  "--dir=state:$STATE_DIR"
+  "--dir=state:$STATE_DIR" \
+  "--dir=repo:$HOME_DIR/Code/yclaw:ro"
 
 # bluebubbles is the SIP-off iMessage node — its OWN tailnet node, holds NO credentials, so no
-# state share. It runs WITH graphics (no --no-graphics): the one-time GUI gates (Apple-ID 2FA,
-# Full Disk Access / Accessibility grants, the Private API toggle in Messages.app) and Screen
-# Sharing need a live aqua session, which in-guest auto-login provides.
+# state share. Runs HEADLESS + suspendable: in-guest auto-login provides the aqua session that
+# Messages.app and Screen Sharing need, and the one-time GUI gates (Apple-ID 2FA, Full Disk
+# Access, the Private API toggle) are driven over the guest's VNC, not a host-side tart window.
 write_agent bluebubbles \
-  run bluebubbles
+  run bluebubbles \
+  --no-graphics \
+  --suspendable
 
 # hermes is a Linux guest: --no-graphics, and the serial console MUST be drained or a headless
 # boot hangs once the virtio console ring fills. The `sops` share (ro) seeds the age key +
