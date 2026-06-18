@@ -33,7 +33,7 @@
     # job runs `nix flake update hermes-agent` and opens a PR. The `--replace-fail` patch
     # anchors in nixos/hermes.nix make a bump FAIL LOUD at build time if upstream moved the
     # patched lines — the intended signal for a human to re-roll the patch before merging.
-    # Brings its own nixpkgs closure for the package (see docs/build-notes/hermes-nixos-module.md).
+    # Brings its own nixpkgs closure for the package.
     hermes-agent.url = "github:NousResearch/hermes-agent";
 
     # Build-from-source inputs for the two Go services (no upstream Nix packaging).
@@ -136,17 +136,6 @@
       };
 
       # --- Apple-Silicon host (nix-darwin) ---------------------------------------
-      # Apply with `darwin-rebuild switch --flake .#host`. hostName is set inside
-      # darwin/host.nix (@@HOST_NAME@@), so the attr name stays static.
-      darwinConfigurations.host = nix-darwin.lib.darwinSystem {
-        system = darwinSystem;
-        specialArgs = { inherit inputs; };
-        modules = [
-          overlayModuleDarwin
-          ./darwin/host.nix
-        ];
-      };
-
       # The metal macOS guest VM. Applies IN-GUEST with `darwin-rebuild switch --flake .#metal`.
       # The SIP-on, max-locked credential/AI vault node — runs ONLY omlx, mlx-audio STT,
       # CLIProxyAPI, and agent-vault; sops-nix provides the credential decryption. It runs NO

@@ -1,8 +1,6 @@
 # Shared base for every NixOS Linux VM (just hermes now). Booted by tart from a
 # nixos-generators `raw-efi` image. NOT imported by ai.nix (Aperture is a hosted
 # Tailscale service, not a VM — see nixos/ai.nix).
-#
-# Sources: docs/build-notes/tart-nixos-darwin.md §1.3, §3.
 {
   config,
   lib,
@@ -49,7 +47,7 @@
   networking.useDHCP = lib.mkDefault true;
 
   # Credential custody is cooperative (HTTPS_PROXY), not a hard firewall — the
-  # architecture deliberately does NOT require default-DROP (hermes-home-server.md §5).
+  # architecture deliberately does NOT require default-DROP.
   # Each VM opens only the tailnet-facing ports it serves.
   networking.firewall.enable = lib.mkDefault false;
 

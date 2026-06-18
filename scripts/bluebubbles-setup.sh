@@ -78,7 +78,7 @@ fi
 # 4. (config + webhook handled in §2 above via ${BB_CONFIG}.)
 
 # 5. VNC: Screen Sharing + pf anchor (locked to tailnet CGNAT + RFC1918).
-# Reproduced VERBATIM from openclaw.md / tart-nixos-darwin.md §4.2 — do NOT "fix".
+# Do NOT "fix" the block below; it is load-bearing exactly as written.
 
 # Enable Screen Sharing
 sudo launchctl enable system/com.apple.screensharing

@@ -1,6 +1,6 @@
 # CLIProxyAPI — the host-side OAuth→static-key proxy (Codex + Gemini-personal).
 # Runs on the macOS host (aarch64-darwin) under launchd; built via buildGoModule.
-# Source pinned via the flake input `cliproxyapi-src`; see docs/build-notes/cliproxyapi.md.
+# Source pinned via the flake input `cliproxyapi-src`.
 {
   lib,
   buildGoModule,

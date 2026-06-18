@@ -18,7 +18,6 @@ GUI_DOMAIN="gui/$UID_NUM"
 # nix-darwin labels every user agent it owned `org.nixos.<name>`.
 NIXOS_AGENTS=(
   org.nixos.tart-hermes
-  org.nixos.tart-vault
   org.nixos.mlx-qwen
   org.nixos.parakeet-stt
   org.nixos.cliproxyapi

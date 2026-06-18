@@ -2,8 +2,7 @@
 #
 # Replaces local OAuth token refresh with a dummy bearer (DUMMY_TOKEN). agent-vault,
 # reached via the proxy env vars inherited by os.environ.copy(), rewrites the real
-# Authorization header on the wire for *.googleapis.com. See
-# docs/build-notes/gws-bridge-patch.md for the full BEFORE/AFTER spec.
+# Authorization header on the wire for *.googleapis.com.
 #
 # TODO(human): Confirm the patch base dir / -p level. The reference copy lives under
 # /tmp/hermes-agent-ref/. The Nix build must apply this patch against whatever path

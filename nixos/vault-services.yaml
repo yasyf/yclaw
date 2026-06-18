@@ -1,6 +1,6 @@
 # agent-vault service rules (broker.Config) for the `hermes` vault.
 # Pushed at provisioning via `agent-vault vault service set -f` (replace-all).
-# Schema: broker.Config — see docs/build-notes/agent-vault.md §2.
+# Schema: broker.Config.
 # `token`/`key`/`username` are credential KEY references (UPPER_SNAKE_CASE), not
 # the secret values; the real secrets are stored separately (sops -> credential set).
 # Injected auth headers use Set (not Add), so a dummy Authorization from hermes is

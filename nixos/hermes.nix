@@ -1,7 +1,7 @@
 # hermes VM — the agent gateway (NixOS). Adds to nixos/common.nix; do NOT redefine
 # the base it already provides (boot, tailscale, sops base, admin user, nix, stateVersion).
 #
-# Two config surfaces (docs/build-notes/hermes-config-values.md):
+# Two config surfaces:
 #   * services.hermes-agent.settings  → ~/.hermes/config.yaml  (NO secrets; managed-mode declarative)
 #   * services.hermes-agent.environmentFiles → ~/.hermes/.env   (runtime proxy/CA/BlueBubbles wiring)
 #
@@ -31,8 +31,8 @@ let
     GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
     # Dummy API keys. The SDKs refuse to send a request with an empty key, so each
     # must be non-empty to initialize; agent-vault's MITM proxy OVERWRITES the
-    # Authorization header with the real, custody-held key on the wire (agent-vault.md
-    # §2: "even if the client sends Authorization: Bearer dummy, the broker replaces it").
+    # Authorization header with the real, custody-held key on the wire — even if the
+    # client sends Authorization: Bearer dummy, the broker replaces it.
     # api.openai.com / api.exa.ai / api.honcho.dev are NOT in NO_PROXY, so they route
     # through the vault proxy and get injected. The dummy also harmlessly rides the
     # custom-provider call to http://ai (Aperture ignores inbound auth, injects per-upstream).
@@ -50,7 +50,7 @@ let
     BLUEBUBBLES_HOME_CHANNEL=@@AUTHORIZED_HANDLES@@
   '';
 
-  # --- BlueBubbles readiness gate (race-fix, tart-nixos-darwin.md §4.3) ---------
+  # --- BlueBubbles readiness gate (race-fix) -----------------------------------
   # The hermes-agent module has NO built-in readiness poll. BlueBubbles runs on a
   # separate macOS VM reached via `tailscale serve https`; if hermes starts first
   # the gateway crash-loops on connect. ExecStartPre blocks until BB answers.
@@ -150,7 +150,7 @@ in
       config.sops.secrets."hermes/env".path
     ];
 
-    # Full declarative config.yaml (hermes-config-values.md Part A). Nix attrset,
+    # Full declarative config.yaml. Nix attrset,
     # deep-merged + rendered to ~/.hermes/config.yaml. No secrets here.
     settings = {
       # ── Model plane (all three models route through Aperture at http://ai/v1) ──
@@ -212,8 +212,8 @@ in
         # URL-fetching tools (web_fetch/web_extract/browser) — it does NOT gate the
         # configured model (http://ai) or STT (host:8765) provider endpoints, so the
         # core stack still works. Allowlist specific internal hosts as you need them.
-        # TODO(human): the catalog's per-setting code-reading (hermes-config-values.md)
-        #   recommended `true`; the §10 ledger says deny-by-default. Following the
+        # TODO(human): the per-setting code-reading recommended `true`;
+        #   the §10 ledger says deny-by-default. Following the
         #   ledger. Confirm — and if the agent must browse internal hosts, add them to
         #   the allowlist rather than flipping this global flag.
         allow_private_urls = false;
@@ -385,7 +385,7 @@ in
   # so the code-execution tool's `docker` lookup fails ("Docker executable not found in PATH").
   # Put the docker client on the service PATH (verified: without this, execute_code errors).
   systemd.services.hermes-agent.path = [ config.virtualisation.docker.package ];
-  # The hermes-agent module's default user is "hermes" (hermes-nixos-module.md §2).
+  # The hermes-agent module's default user is "hermes".
   # TODO(human): confirm the module's user name is "hermes" before relying on this group.
   users.users.hermes.extraGroups = [ "docker" ];
 

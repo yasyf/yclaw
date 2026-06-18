@@ -25,8 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `justfile` orchestration (`bootstrap`, `build-images`, `deploy`, `smoke`, `destroy`,
   `rebuild`) and sops-nix secret wiring (`.sops.yaml`, `secrets/`).
 - `secrets/PLACEHOLDERS.md` — the human-input manifest.
-- `docs/build-notes/` — authoritative source extractions for hermes-agent, agent-vault,
-  CLIProxyAPI, Aperture, and tart/Nix.
 
 ### Changed
 - BlueBubbles un-folded back into its own `bluebubbles` macOS guest — a separate

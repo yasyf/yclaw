@@ -97,7 +97,6 @@ need openssl
 need jq
 need gum
 need python3
-need darwin-rebuild
 need nix
 need tart
 mkdir -p "$RUNTIME_DIR"
@@ -169,12 +168,12 @@ log "Placeholder guard passed: only known secret/undecided @@TOKEN@@ remain in t
 
 # --- 5. apply the host config ------------------------------------------------
 
-log "Applying host config: darwin-rebuild switch --flake .#host ..."
-darwin-rebuild switch --flake "$REPO_ROOT#host"
+log "Applying host config: ./scripts/setup.sh ..."
+./scripts/setup.sh
 
-# --- 6. build raw-efi images + disk-replace into tart (tart-nixos-darwin.md §5) ---
+# --- 6. build raw-efi images + disk-replace into tart -------------------------
 
-# TODO(human): the aarch64-linux build host is undecided (tart spec §1.2 BLOCKER). These
+# TODO(human): the aarch64-linux build host is undecided (BLOCKER). These
 #   `nix build` invocations assume a reachable aarch64-linux builder (nix.linux-builder VM,
 #   the VM itself, or a remote builder). Wire the chosen builder into nix.conf before this
 #   step, or the image builds fail. Until decided, the loop below builds from the flake.
@@ -183,7 +182,7 @@ build_and_replace() {
   log "Building $image_attr ..."
   local img
   img="$(nix build --no-link --print-out-paths "$REPO_ROOT#packages.aarch64-linux.$image_attr")/nixos.img"
-  # TODO(human): confirm the raw-efi result filename is nixos.img (tart spec §1.4) before trusting this.
+  # TODO(human): confirm the raw-efi result filename is nixos.img before trusting this.
   [[ -f "$img" ]] || die "expected raw-efi image at $img — check the nixos-generators result layout."
 
   if ! tart list --format json 2>/dev/null | jq -re --arg n "$node" '.[]? | select(.Name==$n)' >/dev/null; then
@@ -199,14 +198,14 @@ build_and_replace hermes hermes-image
 
 # --- 7. load the launchd agents ---------------------------------------------
 
-# nix-darwin owns the tart launchd agents (darwin/host.nix launchd.user.agents."tart-*").
-# `darwin-rebuild switch` above bootstraps them; nudge them so a fresh disk is picked up.
-for node in hermes vault; do
-  # nix-darwin prefixes user-agent labels with `org.nixos.` (agent name `tart-<node>`).
-  label="org.nixos.tart-$node"
+# scripts/setup.sh owns the tart launchd agents (com.yclaw.tart-*).
+# The setup.sh run above bootstraps them; nudge them so a fresh disk is picked up.
+for node in hermes; do
+  # scripts/setup.sh prefixes user-agent labels with `com.yclaw.` (agent name `tart-<node>`).
+  label="com.yclaw.tart-$node"
   log "Reloading launchd agent $label ..."
   launchctl kickstart -k "gui/$(id -u)/$label" 2>/dev/null \
-    || log "  (agent $label not yet loaded — darwin-rebuild will bootstrap it on next switch)"
+    || log "  (agent $label not yet loaded — ./scripts/setup.sh will bootstrap it on next run)"
 done
 
 # --- 8. human gates ----------------------------------------------------------
