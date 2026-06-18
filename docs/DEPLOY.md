@@ -145,5 +145,5 @@ just setup
 
 - **Rotate the Tailscale API key** kept in the gitignored `.env` before going
   public.
-- **Remove host Nix once the de-Nix'd stack is proven** by running
+- **Remove host Nix once the stack is proven** by running
   `scripts/uninstall-nix.sh` (destructive — it reboots the host).

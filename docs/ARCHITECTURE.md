@@ -7,7 +7,7 @@ test, and the agent is isolated in a Linux VM that never holds a credential.
 ## Topology
 
 A bare macOS host boots three `tart` guests on one tailnet; a hosted node fronts
-the model plane. The host runs no Nix — Homebrew provides `tart`, Tailscale,
+the model plane. The host stays minimal: Homebrew provides `tart`, Tailscale,
 `gum`, `packer`, and `restic`, and `scripts/setup.sh` supervises the guests via
 `com.yclaw.tart-*` launchd agents. All persistent state and secrets live outside
 the repo in `~/.yclaw/state`; generated passwords live in a dedicated keychain at
