@@ -133,7 +133,10 @@ done
 
 # seedNodeConfig (nixos/common.nix) reads key.txt + secrets.sops.yaml (REQUIRED) and node.env +
 # agent-vault-ca.pem (OPTIONAL) from this share on first boot. node.env carries the per-user,
-# NON-SECRET BlueBubbles wiring: the allowlist plus the home channel (the first handle).
+# NON-SECRET BlueBubbles wiring: the allowlist, the home channel (the first handle), and the two
+# endpoints that must be the node FQDN rather than a bare MagicDNS name — the BlueBubbles server
+# URL (tailscale-serve's TLS cert is FQDN-only) and the webhook host (bare `hermes` resolves to
+# 127.0.0.2 via /etc/hosts, binding the webhook to loopback). node.env overrides hermesEnvFile.
 log "Assembling hermes node-config share at $NODE_CONFIG_DIR ..."
 install -d -m 700 "$NODE_CONFIG_DIR"
 install -m 600 "$AGE_KEY_FILE"                       "$NODE_CONFIG_DIR/key.txt"
@@ -144,6 +147,8 @@ BLUEBUBBLES_HOME_CHANNEL="${AUTHORIZED_HANDLES%%,*}"
   cat > "$NODE_CONFIG_DIR/node.env" <<EOF
 BLUEBUBBLES_ALLOWED_USERS=$AUTHORIZED_HANDLES
 BLUEBUBBLES_HOME_CHANNEL=$BLUEBUBBLES_HOME_CHANNEL
+BLUEBUBBLES_SERVER_URL=https://bluebubbles.$TAILNET_DOMAIN
+BLUEBUBBLES_WEBHOOK_HOST=hermes.$TAILNET_DOMAIN
 EOF
 )
 chmod 644 "$NODE_CONFIG_DIR/node.env"

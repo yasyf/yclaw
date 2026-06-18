@@ -57,7 +57,7 @@ the guests as packer vars at build time or the runtime `node.env` share on first
 | `vm_admin_pass` | Per-VM admin password (resolves `@@VM_ADMIN_PASS@@`) | `packer/metal.pkr.hcl`, `packer/bluebubbles.pkr.hcl` as `PKR_VAR_vm_admin_pass` | generated per-VM into the yclaw keychain (`yclaw.keychain-db`, services `yclaw-metal-admin-pass` / `yclaw-bluebubbles-admin-pass`), unlocked via `yclaw-keychain-password` in the login keychain, reused on re-run |
 | `AUTHORIZED_HANDLES` | iMessage allowlist (comma-separated; first handle is the home channel) | hermes VM via the runtime `node.env` share (`BLUEBUBBLES_ALLOWED_USERS` / `BLUEBUBBLES_HOME_CHANNEL`) | prompt (list) |
 | `HOST_RAM` | Host RAM tier (GB) for VM sizing | recorded in `~/.yclaw/state` for `just deploy` re-runs | prompt |
-| `TAILNET_DOMAIN` | MagicDNS suffix, e.g. `tailXXXX.ts.net` | **not in any config** — the guests use bare MagicDNS names (`metal`, `bluebubbles`, `hermes`); used only to print the human-facing gate URLs at the end of bootstrap | auto-detect via `tailscale status --json`, else prompt |
+| `TAILNET_DOMAIN` | MagicDNS suffix, e.g. `tailXXXX.ts.net` | rendered into `node.env` as the two BlueBubbles FQDN endpoints (`BLUEBUBBLES_SERVER_URL`/`BLUEBUBBLES_WEBHOOK_HOST` — tailscale-serve's TLS cert is FQDN-only and the webhook can't bind to bare `hermes`→127.0.0.2); every other guest endpoint stays a bare MagicDNS name; also prints the human-facing gate URLs at the end of bootstrap | auto-detect via `tailscale status --json`, else prompt |
 
 The admin **username** is no longer a token: `packer/metal.pkr.hcl` and `packer/bluebubbles.pkr.hcl`
 default `vm_admin_user` to `admin` (matching `darwin/metal.nix` `adminUser`), overridable via
