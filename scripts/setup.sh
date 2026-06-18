@@ -168,13 +168,19 @@ write_agent bluebubbles \
 # boot hangs once the virtio console ring fills. The `sops` share (ro) seeds the age key +
 # secrets for first-boot node-config seeding; the `hermesstate` share (rw) externalizes the
 # agent's persistent state (/var/lib/hermes — honcho memory, sessions) onto ~/.yclaw/state so it
-# survives a VM rebuild and is covered by `just backup` (nixos/hermes.nix mounts the matching tag).
+# survives a VM rebuild and is covered by `just backup`.
+#
+# Unlike metal (a macOS guest, which auto-mounts the `name:path` form at /Volumes/My Shared
+# Files/<name>), a Linux guest mounts each share by its EXPLICIT virtiofs tag — so these MUST use
+# the `path:[ro,]tag=<tag>` form. The `name:path` form would leave them on tart's default
+# `com.apple.virtio-fs.automount` tag, and common.nix's seedNodeConfig (tag `sops`) + nixos/hermes.nix's
+# fstab (tag `hermesstate`) would find no such device and the agent's stateDir mount would fail.
 write_agent hermes \
   run hermes \
   --no-graphics \
   --serial-path=/dev/null \
-  "--dir=sops:$HOME_DIR/.config/yclaw/vm-secrets:ro" \
-  "--dir=hermesstate:$STATE_DIR/hermes"
+  "--dir=$HOME_DIR/.config/yclaw/vm-secrets:ro,tag=sops" \
+  "--dir=$STATE_DIR/hermes:tag=hermesstate"
 
 # --- 4. pf VNC anchor (optional, OFF by default) -----------------------------
 
