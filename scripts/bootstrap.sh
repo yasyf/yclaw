@@ -67,6 +67,7 @@ need packer
 need security
 need rsync
 need curl
+need rg               # the genericity guard below scans the config tree with ripgrep
 need nix              # hermes image: build-hermes-image.sh drives nix inside a linux builder VM
 mkdir -p "$RUNTIME_DIR"
 chmod 700 "$RUNTIME_DIR"
@@ -152,7 +153,13 @@ chmod 644 "$NODE_CONFIG_DIR/node.env"
 # Post-Stage-B every nixos/ + darwin/ config uses bare Tailscale MagicDNS names (metal,
 # bluebubbles, hermes). A surviving @@TAILNET_DOMAIN@@ would bake the literal placeholder into
 # the generic image — the exact defect this stage fixes. Fail loud if any remain.
-RESIDUE="$(rg -n '@@TAILNET_DOMAIN@@' "${GENERIC_TREE[@]}" 2>/dev/null || true)"
+# rg exits 1 when nothing matches (the pass case) and >=2 on a real scan error — distinguish
+# them so a broken scan fails loud instead of silently "passing" (rg is preflighted above).
+set +e
+RESIDUE="$(rg -n '@@TAILNET_DOMAIN@@' "${GENERIC_TREE[@]}")"
+rc=$?
+set -e
+[[ "$rc" -le 1 ]] || die "genericity guard: rg failed (exit $rc) scanning ${GENERIC_TREE[*]}"
 if [[ -n "$RESIDUE" ]]; then
   die $'@@TAILNET_DOMAIN@@ survives in the generic config tree (must be bare MagicDNS post-Stage-B):\n'"$RESIDUE"
 fi

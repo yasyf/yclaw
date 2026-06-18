@@ -10,6 +10,7 @@ first request and unloads after STT_IDLE_TTL seconds of inactivity to free unifi
 memory — both load and unload run on the same worker thread that owns the GPU
 stream, mirroring omlx's idle-TTL behaviour on :8000.
 """
+import asyncio
 import concurrent.futures
 import gc
 import os
@@ -71,7 +72,7 @@ async def transcriptions(file: UploadFile, model: str = Form(default=MODEL_ID)):
         f.write(data)
         path = f.name
     try:
-        text = _pool.submit(_transcribe, path).result()
+        text = await asyncio.get_running_loop().run_in_executor(_pool, _transcribe, path)
     finally:
         os.unlink(path)
     return {"text": text}

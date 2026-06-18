@@ -1,6 +1,7 @@
 # yclaw Development Guide
 
-A personal project.
+Reproducible, always-on home server for the Nous `hermes-agent` on Apple Silicon — the agent
+never holds a credential.
 
 ## Repository Structure
 
