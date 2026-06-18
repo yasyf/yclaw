@@ -10,12 +10,16 @@
 #   - BlueBubbles + Apple-ID/iMessage: scripts/bluebubbles-setup.sh
 #
 # HUMAN: Apple-ID iMessage sign-in is an interactive flow (2FA, trust prompts)
-#   that cannot be Packer-provisioned. Use a SEPARATE Apple ID (@@APPLE_ID@@), not
-#   your real one — see scripts/bluebubbles-setup.sh.
+#   that cannot be Packer-provisioned. Use a SEPARATE Apple ID, not your real one
+#   — see scripts/bluebubbles-setup.sh.
 # HUMAN: After this image is captured, the cryptographically-bound boot-blob
 #   triple — hardwareModel + ecid (config.json) + nvram.bin — must be copied
 #   verbatim (`cp -c`) on any clone/migration and NEVER regenerated. Change any
 #   one and the guest will not boot.
+#
+# The wizard exports the build inputs as env before `packer build`:
+#   PKR_VAR_vm_admin_user, PKR_VAR_vm_admin_pass. The required vm_admin_pass keeps a
+#   fail-loud "@@UNSET_VM_ADMIN_PASS@@" sentinel default.
 
 packer {
   required_plugins {
@@ -49,22 +53,23 @@ variable "disk_size_gb" {
 }
 
 # Local admin baked into the image — independent of the Apple ID that signs into
-# iMessage later. SSH uses this account until Tailscale SSH takes over.
+# iMessage later. SSH uses this account until Tailscale SSH takes over. Defaults to
+# `admin` to match metal (darwin/metal.nix adminUser); override via PKR_VAR_vm_admin_user.
 variable "vm_admin_user" {
   type    = string
-  default = "@@VM_ADMIN_USER@@"
+  default = "admin"
 }
 
 # The real value comes from the env as PKR_VAR_vm_admin_pass, sourced from the dedicated
 # yclaw keychain ($HOME/Library/Keychains/yclaw.keychain-db, random-generated per-VM by
 # scripts/lib/secrets.sh, service yclaw-bluebubbles-admin-pass) after unlocking that keychain
 # with the login-keychain-stored yclaw-keychain-password — never prompted, never hardcoded. The
-# @@VM_ADMIN_PASS@@ default is a fail-loud sentinel: build without exporting
+# @@UNSET_VM_ADMIN_PASS@@ default is a fail-loud sentinel: build without exporting
 # PKR_VAR_vm_admin_pass and the image bakes the placeholder. See docs/DEPLOY.md step 3 for the
 # exact `PKR_VAR_vm_admin_pass=$(security ...)` invocation.
 variable "vm_admin_pass" {
   type      = string
-  default   = "@@VM_ADMIN_PASS@@"
+  default   = "@@UNSET_VM_ADMIN_PASS@@"
   sensitive = true
 }
 
@@ -76,7 +81,7 @@ source "tart-cli" "tahoe" {
   disk_size_gb = var.disk_size_gb
   ssh_username = var.vm_admin_user
   # The cloned base ships admin/admin; authenticate with that default, then the
-  # first provisioner resets the password to var.vm_admin_pass (@@VM_ADMIN_PASS@@).
+  # first provisioner resets the password to var.vm_admin_pass (PKR_VAR_vm_admin_pass).
   ssh_password = "admin"
   headless     = true
   # Give the cloned base's guest agent + SSH a moment to come up before connecting.
@@ -105,8 +110,8 @@ build {
   }
 
   # HUMAN: the remaining bring-up is NOT scripted here:
-  #   1. scripts/bluebubbles-setup.sh — sign into iMessage (@@APPLE_ID@@), install
-  #      BlueBubbles + the Private API helper, `tailscale up`, then
+  #   1. scripts/bluebubbles-setup.sh — sign into iMessage (a SEPARATE Apple ID),
+  #      install BlueBubbles + the Private API helper, `tailscale up`, then
   #      `tailscale serve --bg --https=443 1234` to expose the REST API at
-  #      https://bluebubbles.@@TAILNET_DOMAIN@@.
+  #      https://bluebubbles (MagicDNS; on your-tailnet it becomes bluebubbles.<tailnet>.ts.net).
 }

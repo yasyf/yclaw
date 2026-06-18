@@ -27,6 +27,8 @@ result-*
 *.img
 *.ipsw
 build/
+.build/
+result-hermes/
 .packer.d/
 packer_cache/
 

@@ -15,6 +15,10 @@
 # HUMAN: After capture, the cryptographically-bound boot-blob triple — hardwareModel + ecid
 #   (config.json) + nvram.bin — must be copied verbatim (`cp -c`) on any clone and NEVER
 #   regenerated; change one and the guest will not boot.
+#
+# The wizard exports the build inputs as env before `packer build`:
+#   PKR_VAR_ipsw_url, PKR_VAR_github_owner, PKR_VAR_vm_admin_user, PKR_VAR_vm_admin_pass,
+#   PKR_VAR_repo_url. Required-but-unset vars keep a fail-loud "@@UNSET_*@@" sentinel default.
 
 packer {
   required_plugins {
@@ -27,8 +31,21 @@ packer {
 
 variable "ipsw_url" {
   type        = string
-  description = "Pinned macOS Tahoe restore image (URL or local path)."
-  default     = "@@IPSW_URL@@"
+  description = "Pinned macOS Tahoe restore image (URL or local path). Set via PKR_VAR_ipsw_url."
+  default     = "@@UNSET_IPSW_URL@@"
+}
+
+# GitHub owner whose yclaw fork the guest clones, unless repo_url overrides it. Set via
+# PKR_VAR_github_owner.
+variable "github_owner" {
+  type    = string
+  default = "@@UNSET_GITHUB_OWNER@@"
+}
+
+# Explicit clone URL; when empty, locals.clone_url falls back to the github_owner fork.
+variable "repo_url" {
+  type    = string
+  default = ""
 }
 
 variable "vm_name" {
@@ -64,13 +81,17 @@ variable "vm_admin_user" {
 # yclaw keychain ($HOME/Library/Keychains/yclaw.keychain-db, random-generated per-VM by
 # scripts/lib/secrets.sh, service yclaw-metal-admin-pass) after unlocking that keychain with
 # the login-keychain-stored yclaw-keychain-password — never prompted, never hardcoded. The
-# @@VM_ADMIN_PASS@@ default is a fail-loud sentinel: build without exporting
+# @@UNSET_VM_ADMIN_PASS@@ default is a fail-loud sentinel: build without exporting
 # PKR_VAR_vm_admin_pass and the image bakes the placeholder. See docs/DEPLOY.md step 3 for the
 # exact `PKR_VAR_vm_admin_pass=$(security ...)` invocation.
 variable "vm_admin_pass" {
   type      = string
-  default   = "@@VM_ADMIN_PASS@@"
+  default   = "@@UNSET_VM_ADMIN_PASS@@"
   sensitive = true
+}
+
+locals {
+  clone_url = var.repo_url != "" ? var.repo_url : "https://github.com/${var.github_owner}/yclaw.git"
 }
 
 source "tart-cli" "tahoe" {
@@ -99,7 +120,7 @@ build {
       "set -euo pipefail",
       "curl -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm",
       ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh",
-      "git clone https://github.com/@@GITHUB_OWNER@@/yclaw.git /Users/${var.vm_admin_user}/yclaw",
+      "git clone ${local.clone_url} /Users/${var.vm_admin_user}/yclaw",
       # First `darwin-rebuild switch` must run as root (system activation) from a git-clean path.
       "sudo NIX_CONFIG='experimental-features = nix-command flakes' \\",
       "  nix run nix-darwin/nix-darwin-25.05#darwin-rebuild -- \\",
@@ -109,6 +130,6 @@ build {
 
   # HUMAN: the remaining bring-up is NOT scripted here (see the gates listed in the header):
   #   1. cliproxy --codex-login/--login   — device-code / VNC browser flow.
-  #   2. scripts/connect-google-oauth.py  — VAULT_ADDR=http://metal.@@TAILNET_DOMAIN@@:14321.
+  #   2. scripts/connect-google-oauth.py  — VAULT_ADDR=http://metal:14321.
   #   3. place the Qwen MLX model         — hf download onto /Volumes/My Shared Files/state/hf.
 }

@@ -79,7 +79,7 @@ let
   sttWrapper = pkgs.writeShellScript "metal-mlx-audio" ''
     set -euo pipefail
     export HF_HOME=${lib.escapeShellArg hfHome}
-    export STT_MODEL=ibm-granite/granite-speech-4.1-2b STT_PORT=8765
+    export STT_MODEL=${(import ../nixos/models.nix).stt} STT_PORT=8765
     mkdir -p "$HF_HOME"
     VENV=${lib.escapeShellArg sttVenv}
     if [ ! -x "$VENV/bin/python" ]; then
@@ -130,7 +130,7 @@ let
     for _ in $(seq 1 60); do [ -s ${lib.escapeShellArg masterPasswordFile} ] && break; sleep 1; done
     set -a; . ${lib.escapeShellArg masterPasswordFile}; set +a
     ADDR=http://127.0.0.1:14321
-    owner=admin@hermes.local
+    owner=${adminUser}@metal.local
     AV=${pkgs.agent-vault}/bin/agent-vault
 
     for _ in $(seq 1 120); do ${pkgs.curl}/bin/curl -fsS "$ADDR/health" >/dev/null 2>&1 && break; sleep 1; done
@@ -280,7 +280,7 @@ in
     ProgramArguments = [
       "/bin/sh"
       "-c"
-      "/usr/sbin/sysctl iogpu.wired_limit_mb=43008 || true; /sbin/pfctl -f /etc/pf.conf 2>/dev/null || true; /sbin/pfctl -e 2>/dev/null || true"
+      "wired=$(( $(/usr/sbin/sysctl -n hw.memsize)/1048576 - 6144 )); /usr/sbin/sysctl iogpu.wired_limit_mb=$wired || true; /sbin/pfctl -f /etc/pf.conf 2>/dev/null || true; /sbin/pfctl -e 2>/dev/null || true"
     ];
     RunAtLoad = true;
     KeepAlive = false;
@@ -314,8 +314,10 @@ in
   system.activationScripts.postActivation.text = lib.mkMerge [
     ''
       # Raise the Metal wired-memory cap (Apple's default is 36 GB) so the 20 GB 35B model + KV
-      # cache fits. Per-boot setting, re-applied on every activation.
-      /usr/sbin/sysctl iogpu.wired_limit_mb=43008 || true
+      # cache fits. Per-boot setting, re-applied on every activation. Derived from the guest's own
+      # RAM (leave 6 GB for the OS) so it tracks the VM size instead of a hardcode.
+      wired=$(( $(/usr/sbin/sysctl -n hw.memsize)/1048576 - 6144 ))
+      /usr/sbin/sysctl iogpu.wired_limit_mb=$wired || true
 
       # omlx idle-unload: merge idle_timeout into ~/.omlx/settings.json (created by omlx on first
       # serve; JSON). Write as the admin user so ownership stays correct.

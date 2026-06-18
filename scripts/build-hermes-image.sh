@@ -19,7 +19,10 @@
 #   ./scripts/build-hermes-image.sh
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# YCLAW_BUILD_DIR points the build at a gitignored copy of the repo (with the real
+# agent-vault CA written into nixos/agent-vault-ca.pem) so the tracked tree stays clean;
+# defaults to the repo root for plain `just build-hermes-image` iteration.
+REPO="${YCLAW_BUILD_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 TART_BIN="${TART_BIN:-/opt/homebrew/bin/tart}"
 BUILDER_VM="${BUILDER_VM:-hermes-image-builder}"
 BUILDER_IMAGE="${BUILDER_IMAGE:-ghcr.io/cirruslabs/ubuntu:latest}"

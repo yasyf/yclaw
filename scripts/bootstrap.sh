@@ -1,57 +1,37 @@
 #!/usr/bin/env bash
-# Single entrypoint for `just bootstrap`: prompt for placeholders, mint the age key and
-# encrypt secrets, resolve every @@TOKEN@@ in the apply-time tree, build + boot the VMs,
-# load the launchd agents, then print the human gates and stop cleanly.
+# Single entrypoint for `just bootstrap`: the de-Nix'd onboarding wizard. Prompts for the
+# non-secret values, mints the age key + sops-encrypts the secrets (scripts/lib/secrets.sh),
+# assembles the hermes node-config share, applies the host config, builds ALL THREE guest
+# images (metal + bluebubbles via packer, hermes via the linux-builder VM), then prints the
+# human gates and stops cleanly.
 #
-# Idempotent: re-running prompts only for still-unset values, regenerates the age key only
-# when absent, and re-applies the flake. Real secrets never touch a commit or the Nix store.
+# Idempotent: re-running prompts only for still-unset values, reuses the age key + the
+# yclaw-keychain passwords, and rebuilds images in place. Real secrets never touch a commit or
+# the Nix store — env-specifics flow via bare Tailscale MagicDNS names (baked-generic images),
+# the runtime node.env share, sops, and PKR_VAR_* exports.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 RUNTIME_DIR="$REPO_ROOT/secrets/runtime"
-VALUES_FILE="$RUNTIME_DIR/values.env"          # resolved non-secret tokens; gitignored
-AGE_KEY_FILE="$HOME/.yclaw/state/age/key.txt"  # private age key minted by scripts/lib/secrets.sh
-HOST_AGE_KEY="/var/lib/sops-nix/key.txt"       # where sops-nix expects the private key on the host
+VALUES_FILE="$RUNTIME_DIR/values.env"            # resolved non-secret values; gitignored
+AGE_KEY_FILE="$HOME/.yclaw/state/age/key.txt"    # private age key minted by scripts/lib/secrets.sh
+HOST_AGE_KEY="/var/lib/sops-nix/key.txt"         # where sops-nix expects the private key on the host
 
-# The apply tree: everything `nix flake check` / a rebuild evaluates. Substitution and the
-# residue guard both operate over this. Docs and the secrets template are excluded.
-APPLY_TREE=(flake.nix nixos darwin pkgs .sops.yaml)
+# The hermes node-config share source: setup.sh mounts this dir into the hermes guest as the
+# virtiofs `sops` tag, and common.nix's seedNodeConfig installs key.txt → /var/lib/sops-nix,
+# secrets.sops.yaml + node.env (+ agent-vault-ca.pem) → /var/lib/node-config on first boot.
+NODE_CONFIG_DIR="$HOME/.config/yclaw/vm-secrets"
 
-# Non-secret tokens substituted literally into the apply tree wherever they appear (config
-# values + comment mentions alike — the value is the same). Rendered to the world-readable
-# Nix store, so none of these is a secret. AGE_PUBLIC_KEY is generated, not prompted.
-NONSECRET_TOKENS=(TAILNET_DOMAIN HOST_NAME HOST_USER HOST_RAM AUTHORIZED_HANDLES)
+# Gitignored build copy of the repo. The hermes image bakes nixos/agent-vault-ca.pem, whose
+# REAL value is fetched from metal at run time — so the hermes build runs from this copy with
+# the fetched CA written in, never dirtying the tracked tree.
+BUILD_DIR="$REPO_ROOT/.build"
 
-# Secret token NAMES that appear in apply-tree comments/configs (e.g. nixos/common.nix
-# references @@TS_AUTHKEY@@; nixos/ai.nix references @@APERTURE_STATIC_KEY@@; darwin/metal.nix
-# references @@VM_ADMIN_PASS@@). The VALUES are generated/collected by scripts/lib/secrets.sh
-# into ~/.yclaw/state (sops) or the dedicated yclaw keychain (yclaw.keychain-db), never the tree —
-# these names are exempted from the residue guard below so their placeholders may survive the apply.
-SECRET_TOKENS=(
-  TS_AUTHKEY
-  BLUEBUBBLES_PASSWORD
-  VM_ADMIN_PASS
-  AGENT_VAULT_MASTER_PASSWORD
-  OPENAI_API_KEY
-  EXA_API_KEY
-  HONCHO_API_KEY
-  GITHUB_TOKEN
-  APERTURE_STATIC_KEY
-)
-
-# Tokens left UNRESOLVED on purpose: human-gate placeholders the residue guard must tolerate.
-# The CA pem is fetched post-apply (human gate 6); the secret-name mentions in comments stay as docs.
-# AGE_PUBLIC_KEY is rendered into ~/.yclaw/state/sops.yaml, so the committed .sops.yaml keeps its
-# @@AGE_PUBLIC_KEY@@ placeholder (the tracked file is never mutated).
-# (terminal.docker_image now has a concrete default pinned in nixos/hermes.nix, so it is no longer
-#  a placeholder — bootstrap leaves it alone.)
-GUARD_EXEMPT_TOKENS=(
-  "${SECRET_TOKENS[@]}"
-  AGENT_VAULT_CA_PEM
-  AGE_PUBLIC_KEY
-)
+# The dirs `nix flake check` / a rebuild evaluates — where a stray @@TAILNET_DOMAIN@@ would break
+# the GENERIC image. Post-Stage-B every config uses bare MagicDNS names, so this guard must pass.
+GENERIC_TREE=(nixos darwin)
 
 # --- helpers -----------------------------------------------------------------
 
@@ -74,21 +54,6 @@ prompt_var() {
   [[ -n "${!name}" ]] || die "$name is required and was left empty."
 }
 
-# Replace every @@TOKEN@@ in a file with a literal value. Per-token (not envsubst): an
-# unknown @@OTHER@@ is left untouched so the residue guard catches it instead of blanking it.
-# Done in Python (token/value via env) so the replacement is byte-literal and version-stable —
-# bash `${var//pat/repl}` mangles values containing a backslash.
-subst_token() {
-  local file="$1" token="$2" value="$3"
-  TOKEN="$token" VALUE="$value" python3 - "$file" <<'PY'
-import os, sys
-p = sys.argv[1]
-tok, val = os.environ["TOKEN"], os.environ["VALUE"]
-s = open(p).read()
-open(p, "w").write(s.replace("@@" + tok + "@@", val))
-PY
-}
-
 # --- 0. preflight ------------------------------------------------------------
 
 need age-keygen
@@ -97,118 +62,188 @@ need openssl
 need jq
 need gum
 need python3
-need nix
 need tart
+need packer
+need security
+need rsync
+need curl
+need nix              # hermes image: build-hermes-image.sh drives nix inside a linux builder VM
 mkdir -p "$RUNTIME_DIR"
 chmod 700 "$RUNTIME_DIR"
 
-# --- 1. collect values -------------------------------------------------------
+# --- 1. collect non-secret values --------------------------------------------
 
-log "Resolving non-secret placeholder values (all prompts are required; secrets come later)..."
+log "Resolving non-secret values (secrets come in step 2)..."
 
-# Tailnet domain: auto-detect from the host's own tailnet membership, else prompt.
+# Tailnet domain: auto-detect from the host's own tailnet membership, else prompt. Used only for
+# the human-gate URLs printed at the end — the configs themselves use bare MagicDNS names.
 if [[ -z "${TAILNET_DOMAIN:-}" ]]; then
   TAILNET_DOMAIN="$(tailscale status --json 2>/dev/null | jq -re '.MagicDNSSuffix' || true)"
-  if [[ -n "$TAILNET_DOMAIN" ]]; then
-    log "Auto-detected TAILNET_DOMAIN=$TAILNET_DOMAIN from tailscale status."
-  fi
+  [[ -n "$TAILNET_DOMAIN" ]] && log "Auto-detected TAILNET_DOMAIN=$TAILNET_DOMAIN from tailscale status."
 fi
 prompt_var TAILNET_DOMAIN "MagicDNS suffix, e.g. tailXXXX.ts.net"
-prompt_var HOST_NAME "this Mac's hostname (targets darwin/host.nix)"
-prompt_var HOST_USER "the macOS login user that runs the launchd agents"
-prompt_var HOST_RAM  "host RAM tier in GB, for VM sizing"
-prompt_var AUTHORIZED_HANDLES "iMessage allowlist (comma-separated handles/groups)"
 
-# --- 2. age key + sops-encrypted secrets (single secrets module) ------------
+# GitHub owner: derive from the repo's origin remote (owner of git@github.com:OWNER/yclaw.git or
+# https://github.com/OWNER/yclaw.git), else prompt. The packer builds clone this fork.
+if [[ -z "${GITHUB_OWNER:-}" ]]; then
+  origin="$(git -C "$REPO_ROOT" config --get remote.origin.url 2>/dev/null || true)"
+  GITHUB_OWNER="$(printf '%s' "$origin" | sed -E 's#^(git@github\.com:|https://github\.com/|ssh://git@github\.com/)##; s#/[^/]+(\.git)?$##')"
+  [[ -n "$GITHUB_OWNER" && "$GITHUB_OWNER" != "$origin" ]] \
+    && log "Derived GITHUB_OWNER=$GITHUB_OWNER from remote.origin.url." \
+    || GITHUB_OWNER=""
+fi
+prompt_var GITHUB_OWNER "GitHub owner whose yclaw fork the guests clone"
+
+# IPSW URL: the pinned macOS Tahoe restore image the metal packer build installs from. Reachability
+# is a warn, not a hard fail — the URL may be a local path or require auth headers packer supplies.
+prompt_var IPSW_URL "pinned macOS Tahoe IPSW (URL or local path) for the metal build"
+if [[ "$IPSW_URL" == http*://* ]]; then
+  curl -fsI --max-time 15 "$IPSW_URL" >/dev/null 2>&1 \
+    && log "IPSW_URL is reachable." \
+    || log "WARNING: IPSW_URL not reachable (HEAD failed) — continuing; packer will fail loud if it is wrong."
+fi
+
+prompt_var HOST_RAM "host RAM tier in GB, for VM sizing"
+prompt_var AUTHORIZED_HANDLES "iMessage allowlist (comma-separated handles; first is the home channel)"
+
+# --- 2. age key + sops-encrypted secrets (single secrets module) -------------
 
 # scripts/lib/secrets.sh is the ONE path that prompts for secrets, mints/reuses the age key,
-# mints the Aperture static key, renders ~/.yclaw/state/sops.yaml from the committed .sops.yaml,
-# and writes the encrypted ~/.yclaw/state/secrets.sops.yaml. Real secrets never touch the repo.
+# mints the Aperture static key, the per-VM admin passwords, and the BlueBubbles server password
+# into the dedicated yclaw keychain, renders ~/.yclaw/state/sops.yaml, and writes the encrypted
+# ~/.yclaw/state/secrets.sops.yaml. Real secrets never touch the repo. Sourcing it also exposes
+# YCLAW_KEYCHAIN + the KC_SERVICE_* names used by the packer builds below.
 source "$REPO_ROOT/scripts/lib/secrets.sh"
 collect_secrets
 
-# Stage the private key where sops-nix reads it on this host (its VM counterpart is seeded
-# out-of-band per node). Needs root; the admin user has passwordless sudo.
+# Stage the private key where sops-nix reads it on this host. Needs root; admin has passwordless sudo.
 if [[ ! -s "$HOST_AGE_KEY" ]]; then
   log "Installing private age key to $HOST_AGE_KEY (sops-nix key path) ..."
   sudo install -D -m 600 "$AGE_KEY_FILE" "$HOST_AGE_KEY"
 fi
 
-# --- 3. resolve non-secret @@TOKEN@@ placeholders across the apply tree -------
-
 # Record the resolved non-secret values so `just deploy <node>` re-runs reproduce them.
 ( umask 077; : > "$VALUES_FILE" )
-for tok in "${NONSECRET_TOKENS[@]}"; do
+for tok in TAILNET_DOMAIN GITHUB_OWNER IPSW_URL HOST_RAM AUTHORIZED_HANDLES; do
   printf '%s=%s\n' "$tok" "${!tok}" >> "$VALUES_FILE"
 done
 
-# Substitute every non-secret token in every apply-tree file that mentions it. A token's
-# value is identical whether it sits in a config string or a comment, so a blanket sweep is
-# correct; unknown @@OTHER@@ tokens survive (subst_token is per-known-token) for the guard.
-log "Resolving non-secret placeholders across: ${APPLY_TREE[*]} ..."
-mapfile -t SUBST_FILES < <(rg -l '@@[A-Z0-9_]+@@' "${APPLY_TREE[@]}" -g '!**/secrets.sops.yaml' 2>/dev/null || true)
-for f in "${SUBST_FILES[@]}"; do
-  for tok in "${NONSECRET_TOKENS[@]}"; do
-    subst_token "$f" "$tok" "${!tok}"
-  done
-done
+# --- 3. assemble the hermes node-config share --------------------------------
 
-# --- 4. fail-loud guard: no UNEXPECTED @@TOKEN@@ may reach a nix apply --------
+# seedNodeConfig (nixos/common.nix) reads key.txt + secrets.sops.yaml (REQUIRED) and node.env +
+# agent-vault-ca.pem (OPTIONAL) from this share on first boot. node.env carries the per-user,
+# NON-SECRET BlueBubbles wiring: the allowlist plus the home channel (the first handle).
+log "Assembling hermes node-config share at $NODE_CONFIG_DIR ..."
+install -d -m 700 "$NODE_CONFIG_DIR"
+install -m 600 "$AGE_KEY_FILE"                       "$NODE_CONFIG_DIR/key.txt"
+install -m 600 "$HOME/.yclaw/state/secrets.sops.yaml" "$NODE_CONFIG_DIR/secrets.sops.yaml"
 
-# Build an alternation of the tokens that are EXEMPT (secrets named only in comments +
-# undecided/human-gate placeholders), then flag any @@TOKEN@@ that is NOT one of them.
-exempt_alt="$(IFS='|'; printf '%s' "${GUARD_EXEMPT_TOKENS[*]}")"
-RESIDUE="$(rg -no "@@[A-Z0-9_]+@@" "${APPLY_TREE[@]}" \
-  -g '!**/secrets.sops.yaml' 2>/dev/null \
-  | rg -v "@@(${exempt_alt})@@" || true)"
+BLUEBUBBLES_HOME_CHANNEL="${AUTHORIZED_HANDLES%%,*}"
+( umask 077
+  cat > "$NODE_CONFIG_DIR/node.env" <<EOF
+BLUEBUBBLES_ALLOWED_USERS=$AUTHORIZED_HANDLES
+BLUEBUBBLES_HOME_CHANNEL=$BLUEBUBBLES_HOME_CHANNEL
+EOF
+)
+chmod 644 "$NODE_CONFIG_DIR/node.env"
+
+# --- 4. genericity guard: no @@TAILNET_DOMAIN@@ may survive in the configs ----
+
+# Post-Stage-B every nixos/ + darwin/ config uses bare Tailscale MagicDNS names (metal,
+# bluebubbles, hermes). A surviving @@TAILNET_DOMAIN@@ would bake the literal placeholder into
+# the generic image — the exact defect this stage fixes. Fail loud if any remain.
+RESIDUE="$(rg -n '@@TAILNET_DOMAIN@@' "${GENERIC_TREE[@]}" 2>/dev/null || true)"
 if [[ -n "$RESIDUE" ]]; then
-  die $'unexpected unresolved @@TOKEN@@ before nix apply (not a known secret/undecided token):\n'"$RESIDUE"
+  die $'@@TAILNET_DOMAIN@@ survives in the generic config tree (must be bare MagicDNS post-Stage-B):\n'"$RESIDUE"
 fi
-log "Placeholder guard passed: only known secret/undecided @@TOKEN@@ remain in the apply tree."
+log "Genericity guard passed: no @@TAILNET_DOMAIN@@ in ${GENERIC_TREE[*]}."
 
 # --- 5. apply the host config ------------------------------------------------
 
 log "Applying host config: ./scripts/setup.sh ..."
 ./scripts/setup.sh
 
-# --- 6. build raw-efi images + disk-replace into tart -------------------------
+# --- 6. build the macOS guest images (metal + bluebubbles) via packer --------
 
-# TODO(human): the aarch64-linux build host is undecided (BLOCKER). These
-#   `nix build` invocations assume a reachable aarch64-linux builder (nix.linux-builder VM,
-#   the VM itself, or a remote builder). Wire the chosen builder into nix.conf before this
-#   step, or the image builds fail. Until decided, the loop below builds from the flake.
-build_and_replace() {
-  local node="$1" image_attr="$2" disk_gb="${3:-64}"
-  log "Building $image_attr ..."
-  local img
-  img="$(nix build --no-link --print-out-paths "$REPO_ROOT#packages.aarch64-linux.$image_attr")/nixos.img"
-  # TODO(human): confirm the raw-efi result filename is nixos.img before trusting this.
-  [[ -f "$img" ]] || die "expected raw-efi image at $img — check the nixos-generators result layout."
+# The yclaw keychain holds the per-VM admin passwords; unlock it once, then feed packer its
+# inputs as PKR_VAR_* env exports (NOT in-tree @@token@@ substitution). vm_admin_user is always
+# `admin` to match darwin/metal.nix's primaryUser. repo_url is left empty so the packer locals
+# fall back to https://github.com/$GITHUB_OWNER/yclaw.git.
+_yclaw_keychain_unlock
 
-  if ! tart list --format json 2>/dev/null | jq -re --arg n "$node" '.[]? | select(.Name==$n)' >/dev/null; then
-    log "Creating tart Linux scaffold for $node ($disk_gb GB) ..."
-    tart create --linux "$node" --disk-size "$disk_gb"
-  fi
-  log "Disk-replacing $node with $image_attr (APFS clonefile) ..."
-  cp -c "$img" "$HOME/.tart/vms/$node/disk.img"
-  tart set "$node" --disk-size "$disk_gb"   # grow the record so NixOS autoResize extends the FS
+build_macos_image() {
+  local node="$1" admin_service="$2" pkr_file="$3" admin_pass
+  admin_pass="$(security find-generic-password -a "$USER" -s "$admin_service" -w "$YCLAW_KEYCHAIN")"
+  [[ -n "$admin_pass" ]] || die "no $admin_service in $YCLAW_KEYCHAIN — collect_secrets should have generated it."
+  log "Building $node image via packer ($pkr_file) ..."
+  PKR_VAR_ipsw_url="$IPSW_URL" \
+  PKR_VAR_github_owner="$GITHUB_OWNER" \
+  PKR_VAR_vm_admin_user="admin" \
+  PKR_VAR_vm_admin_pass="$admin_pass" \
+  PKR_VAR_repo_url="" \
+    packer init "$REPO_ROOT/packer/$pkr_file"
+  PKR_VAR_ipsw_url="$IPSW_URL" \
+  PKR_VAR_github_owner="$GITHUB_OWNER" \
+  PKR_VAR_vm_admin_user="admin" \
+  PKR_VAR_vm_admin_pass="$admin_pass" \
+  PKR_VAR_repo_url="" \
+    packer build "$REPO_ROOT/packer/$pkr_file"
 }
 
-build_and_replace hermes hermes-image
+build_macos_image metal       "$KC_SERVICE_METAL_ADMIN"       metal.pkr.hcl
+build_macos_image bluebubbles "$KC_SERVICE_BLUEBUBBLES_ADMIN" bluebubbles.pkr.hcl
 
-# --- 7. load the launchd agents ---------------------------------------------
-
-# scripts/setup.sh owns the tart launchd agents (com.yclaw.tart-*).
-# The setup.sh run above bootstraps them; nudge them so a fresh disk is picked up.
-for node in hermes; do
-  # scripts/setup.sh prefixes user-agent labels with `com.yclaw.` (agent name `tart-<node>`).
-  label="com.yclaw.tart-$node"
-  log "Reloading launchd agent $label ..."
-  launchctl kickstart -k "gui/$(id -u)/$label" 2>/dev/null \
-    || log "  (agent $label not yet loaded — ./scripts/setup.sh will bootstrap it on next run)"
+# Boot the freshly-built macOS guests now that their disks exist. setup.sh (step 5) loaded the
+# com.yclaw.tart-* agents before the images were built, so KeepAlive would eventually boot them —
+# but the CA fetch below needs metal up + agent-vault provisioned, so kickstart it explicitly.
+for node in metal bluebubbles; do
+  launchctl kickstart -k "gui/$(id -u)/com.yclaw.tart-$node" 2>/dev/null \
+    || log "  (agent com.yclaw.tart-$node not loaded yet; ./scripts/setup.sh bootstraps it)"
 done
 
-# --- 8. human gates ----------------------------------------------------------
+# --- 7. build the hermes image with the REAL agent-vault CA ------------------
+
+# hermes trusts the agent-vault MITM CA (security.pki.certificateFiles → nixos/agent-vault-ca.pem).
+# The CA is generated by agent-vault on metal, so fetch it AFTER metal is up, write it into a
+# gitignored build copy of the repo, and build hermes from there — the tracked tree stays clean.
+log "Fetching agent-vault MITM CA from metal (waiting for metal:14321) ..."
+CA_PEM=""
+for _ in $(seq 1 60); do
+  CA_PEM="$(curl -fsS --max-time 10 http://metal:14321/v1/mitm/ca.pem 2>/dev/null || true)"
+  [[ "$CA_PEM" == *"BEGIN CERTIFICATE"* ]] && break
+  sleep 5
+done
+[[ "$CA_PEM" == *"BEGIN CERTIFICATE"* ]] \
+  || die "could not fetch the agent-vault CA from http://metal:14321/v1/mitm/ca.pem — is metal up and agent-vault running?"
+
+log "Staging gitignored build copy at $BUILD_DIR ..."
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+rsync -a --exclude '.git' --exclude '.build' --exclude 'result' --exclude 'result-*' "$REPO_ROOT/" "$BUILD_DIR/"
+printf '%s' "$CA_PEM" > "$BUILD_DIR/nixos/agent-vault-ca.pem"
+
+log "Building hermes image from the build copy ..."
+YCLAW_BUILD_DIR="$BUILD_DIR" ./scripts/build-hermes-image.sh
+
+# Disk-replace the freshly built hermes image into its tart VM (mirrors deploy-vm.sh).
+HERMES_IMG="$BUILD_DIR/result-hermes/nixos.img"
+[[ -f "$HERMES_IMG" ]] || die "hermes build finished but $HERMES_IMG is missing."
+if ! tart list --format json 2>/dev/null | jq -re '.[]? | select(.Name=="hermes")' >/dev/null; then
+  log "Creating tart Linux scaffold for hermes (64 GB) ..."
+  tart create --linux hermes --disk-size 64
+fi
+log "Disk-replacing hermes (APFS clonefile) ..."
+cp -c "$HERMES_IMG" "$HOME/.tart/vms/hermes/disk.img"
+tart set hermes --disk-size 64   # grow the record so NixOS autoResize extends the FS
+
+# --- 8. (re)load the launchd agents ------------------------------------------
+
+# metal + bluebubbles were booted in step 6; kickstart hermes now that its disk is in place.
+log "Reloading launchd agent com.yclaw.tart-hermes ..."
+launchctl kickstart -k "gui/$(id -u)/com.yclaw.tart-hermes" 2>/dev/null \
+  || log "  (agent com.yclaw.tart-hermes not yet loaded — ./scripts/setup.sh bootstraps it on next run)"
+
+# --- 9. human gates ----------------------------------------------------------
 
 cat <<EOF
 
@@ -217,26 +252,23 @@ cat <<EOF
 ================================================================================
 
   [ ] 1. Apple-ID iMessage sign-in (2FA) on the bluebubbles VM.
-         Sign in with the dedicated Apple ID, complete 2FA, enable iMessage.
+         Sign in with the dedicated Apple ID, complete 2FA, enable iMessage,
+         then run scripts/bluebubbles-setup.sh on the bluebubbles VM.
 
-  [ ] 2. CLIProxyAPI Codex login (host, one-time browser flow):
+  [ ] 2. CLIProxyAPI Codex login (metal, one-time browser flow):
            cli-proxy-api --codex-login          # ChatGPT subscription account
 
-  [ ] 3. CLIProxyAPI Gemini login (host, one-time browser flow):
+  [ ] 3. CLIProxyAPI Gemini login (metal, one-time browser flow):
            cli-proxy-api --login                 # NOTE: flag is --login, NOT --gemini-login
                                                  # personal Google (free Code Assist)
 
-  [ ] 4. agent-vault Google OAuth connect (any tailnet device):
-           POST http://metal.$TAILNET_DOMAIN:14321/v1/credentials/oauth/connect
-         Follow the browser consent; callback lands at
-           https://metal.$TAILNET_DOMAIN/v1/oauth/callback
+  [ ] 4. agent-vault Google OAuth connect (run on the host):
+           ./scripts/connect-google-oauth.py
+         Open the printed CONSENT_URL, approve, and it finishes + verifies.
 
-  [ ] 5. Fetch the agent-vault MITM CA and commit it to the OS trust store:
-           curl -fsS http://metal.$TAILNET_DOMAIN:14321/v1/mitm/ca.pem \\
-             -o nixos/agent-vault-ca.pem
-         Then re-apply hermes so security.pki.certificateFiles installs it:
-           just deploy hermes
-         (the committed file is currently the @@AGENT_VAULT_CA_PEM@@ placeholder)
+  [ ] 5. Place the Qwen MLX model on metal:
+           hf download $(rg -o 'qwen = "[^"]+"' nixos/models.nix | sed -E 's/qwen = "(.*)"/\1/')
+         onto the metal `state` share (/Volumes/My Shared Files/state/hf).
 
 ================================================================================
   Bootstrap finished the autonomous steps. Stopping cleanly at the gates above.

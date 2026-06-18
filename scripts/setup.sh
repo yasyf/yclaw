@@ -106,6 +106,12 @@ brew tap cirruslabs/cli
 brew install cirruslabs/cli/tart gum
 [[ -x "$TART_BIN" ]] || die "tart not at $TART_BIN after brew install."
 
+# packer builds the macOS guest images (metal + bluebubbles) in `just bootstrap`.
+log "Ensuring packer (tap hashicorp/tap) ..."
+brew tap hashicorp/tap
+brew install hashicorp/tap/packer
+command -v packer >/dev/null 2>&1 || die "packer not on PATH after brew install."
+
 # --- 1. Tailscale (detect-then-install; never clobber the mise daemon) -------
 
 # The host already runs a mise-built tailscaled 1.98.5 (system daemon, `tailscale ssh` live).
@@ -127,6 +133,14 @@ for sub in "${STATE_SUBDIRS[@]}"; do
 done
 chmod 700 "$STATE_DIR/age" "$STATE_DIR/vm-secrets"
 mkdir -p "$LOGS_DIR" "$LAUNCH_AGENTS_DIR"
+
+# hermes node-config share source: the dir the tart-hermes runner mounts (--dir=sops:...:ro) so
+# common.nix's seedNodeConfig can read key.txt + secrets.sops.yaml (+ node.env, agent-vault-ca.pem)
+# on first boot. `just bootstrap` populates it; create it here so the runner can mount it even
+# before a full bootstrap has written its contents.
+NODE_CONFIG_DIR="$HOME_DIR/.config/yclaw/vm-secrets"
+mkdir -p "$NODE_CONFIG_DIR"
+chmod 700 "$NODE_CONFIG_DIR"
 
 # --- 3. LaunchAgents for the VM runners --------------------------------------
 

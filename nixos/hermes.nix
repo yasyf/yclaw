@@ -21,9 +21,9 @@ let
   # BLUEBUBBLES_PASSWORD is the one secret and lives in the sops "hermes/env" file,
   # appended AFTER this file (environmentFiles order), so the secret never hits the store.
   hermesEnvFile = pkgs.writeText "hermes.env" ''
-    HTTPS_PROXY=http://metal.@@TAILNET_DOMAIN@@:14322
-    HTTP_PROXY=http://metal.@@TAILNET_DOMAIN@@:14322
-    NO_PROXY=ai,.ts.net,localhost,127.0.0.1
+    HTTPS_PROXY=http://metal:14322
+    HTTP_PROXY=http://metal:14322
+    NO_PROXY=ai,metal,bluebubbles,.ts.net,localhost,127.0.0.1
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
     REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
@@ -40,14 +40,12 @@ let
     OPENAI_API_KEY=__openai__
     EXA_API_KEY=__exa__
     HONCHO_API_KEY=__honcho__
-    BLUEBUBBLES_SERVER_URL=https://bluebubbles.@@TAILNET_DOMAIN@@
-    BLUEBUBBLES_WEBHOOK_HOST=hermes.@@TAILNET_DOMAIN@@
+    BLUEBUBBLES_SERVER_URL=https://bluebubbles
+    BLUEBUBBLES_WEBHOOK_HOST=hermes
     BLUEBUBBLES_WEBHOOK_PORT=8645
     BLUEBUBBLES_WEBHOOK_PATH=/bluebubbles-webhook
     BLUEBUBBLES_REQUIRE_MENTION=false
-    BLUEBUBBLES_ALLOWED_USERS=@@AUTHORIZED_HANDLES@@
     BLUEBUBBLES_ALLOW_ALL_USERS=false
-    BLUEBUBBLES_HOME_CHANNEL=@@AUTHORIZED_HANDLES@@
   '';
 
   # --- BlueBubbles readiness gate (race-fix) -----------------------------------
@@ -60,7 +58,7 @@ let
     # means the server is UP. So check reachability (any HTTP response), NOT -f (which would
     # treat 401 as failure and wait forever). curl exits 0 on any response, non-zero only if
     # it can't connect at all.
-    url="https://bluebubbles.@@TAILNET_DOMAIN@@/api/v1/server/info"
+    url="https://bluebubbles/api/v1/server/info"
     until ${pkgs.curl}/bin/curl -sS -o /dev/null --max-time 5 "$url" 2>/dev/null; do
       echo "waiting for BlueBubbles at $url ..."
       sleep 5
@@ -130,6 +128,8 @@ let
     rev = ha.rev or null;
   };
 
+  models = import ./models.nix;
+
   cfg = config.services.hermes-agent;
 in
 {
@@ -147,6 +147,7 @@ in
     # store-path string (the sops path is already a string).
     environmentFiles = [
       "${hermesEnvFile}"
+      "/var/lib/node-config/node.env"
       config.sops.secrets."hermes/env".path
     ];
 
@@ -170,7 +171,7 @@ in
         }
         {
           provider = "custom";
-          model = "unsloth--Qwen3.6-35B-A3B-UD-MLX-4bit";
+          model = models.qwen;
           base_url = "http://ai/v1";
         }
       ];
@@ -270,7 +271,7 @@ in
         provider = "openai";
         openai = {
           # metal's tailnet name on :8765 — covered by .ts.net in NO_PROXY so it stays DIRECT.
-          base_url = "http://metal.@@TAILNET_DOMAIN@@:8765/v1";
+          base_url = "http://metal:8765/v1";
           api_key = "local";
           model = "whisper-1";
         };
@@ -373,7 +374,7 @@ in
   # --- agent-vault MITM CA → OS trust store ------------------------------------
   # Rust/rustls clients (the `gws` Google CLI) IGNORE SSL_CERT_FILE and read only
   # the system store, so the .env CA vars are necessary but NOT sufficient.
-  # The deploy flow fetches GET http://metal.@@TAILNET_DOMAIN@@:14321/v1/mitm/ca.pem into
+  # The deploy flow fetches GET http://metal:14321/v1/mitm/ca.pem into
   # ./nixos/agent-vault-ca.pem (the committed file is the @@AGENT_VAULT_CA_PEM@@ placeholder; a
   # CA public cert is not a secret). Baked into the system trust store so rustls clients — which
   # ignore SSL_CERT_FILE and read only the system store — also trust the metal MITM proxy.

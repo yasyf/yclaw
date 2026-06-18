@@ -17,10 +17,13 @@
 #   NOT baked into this flake (the Nix store is world-readable). It comes from the sops
 #   `aperture/static-key` secret and is injected at deploy time; the placeholder stays unresolved.
 # - Resolve the real upstream model ids after the Codex/Gemini logins via
-#   `GET http://metal.@@TAILNET_DOMAIN@@:8317/v1/models`, then use them here or alias via
+#   `GET http://metal:8317/v1/models`, then use them here or alias via
 #   CLIProxyAPI's `oauth-model-alias` block.
 { writeText, lib }:
 
+let
+  models = import ./models.nix;
+in
 writeText "aperture-providers.json" (builtins.toJSON {
   providers = {
     cliproxy = {
@@ -29,7 +32,7 @@ writeText "aperture-providers.json" (builtins.toJSON {
       # a trailing /v1 here doubles to /v1/v1/... (HTTP 405). gpt-5.5 and gemini-3.5 share
       # this entry: both route to CLIProxyAPI's unified /v1/chat/completions, which maps the
       # model id to the right OAuth account.
-      baseurl = "http://metal.@@TAILNET_DOMAIN@@:8317";
+      baseurl = "http://metal:8317";
       models = [ "gpt-5.5" "gemini-3-pro-preview" ];
       apikey = "@@APERTURE_STATIC_KEY@@";
       authorization = "bearer";
@@ -37,10 +40,10 @@ writeText "aperture-providers.json" (builtins.toJSON {
     };
     qwen-local = {
       name = "Local Qwen (omlx)";
-      baseurl = "http://metal.@@TAILNET_DOMAIN@@:8000";
+      baseurl = "http://metal:8000";
       # omlx derives the model id from the HF cache dir, replacing "/" with "--"
       # (verified: mlx-community/Qwen3-4B-4bit-DWQ -> mlx-community--Qwen3-4B-4bit-DWQ).
-      models = [ "unsloth--Qwen3.6-35B-A3B-UD-MLX-4bit" ];
+      models = [ models.qwen ];
       compatibility.openai_chat = true;
     };
   };

@@ -7,15 +7,19 @@ set -euo pipefail
 # to tailnet/LAN. One-time human gates (Apple-ID 2FA, app GUI grants) are flagged `HUMAN:`
 # and the script continues with what is scriptable.
 
-# @@BLUEBUBBLES_PASSWORD@@ is resolved by the setup flow from the generated, dedicated-yclaw-
-# keychain-backed value (scripts/lib/secrets.sh, service yclaw-bluebubbles-server-pass in
-# $HOME/Library/Keychains/yclaw.keychain-db) — never prompted, never hardcoded. This guest holds
-# no host Keychain, so the value arrives via the same token-substitution the other @@…@@ tokens
-# use here.
-BB_PASSWORD="@@BLUEBUBBLES_PASSWORD@@"
-AUTHORIZED_HANDLES="@@AUTHORIZED_HANDLES@@"
-TAILNET_DOMAIN="@@TAILNET_DOMAIN@@"
-WEBHOOK_URL="https://hermes.${TAILNET_DOMAIN}"
+# This guest holds no host Keychain and no state share, so its two config inputs arrive via the
+# environment when the operator runs this script over SSH:
+#   BLUEBUBBLES_PASSWORD   the BlueBubbles server password — on the host it lives in the dedicated
+#                          yclaw keychain (scripts/lib/secrets.sh, service yclaw-bluebubbles-server-pass);
+#                          export it before invoking, e.g.
+#                            BLUEBUBBLES_PASSWORD=$(security find-generic-password -a "$USER" \
+#                              -s yclaw-bluebubbles-server-pass -w ~/Library/Keychains/yclaw.keychain-db)
+#   BLUEBUBBLES_ALLOWED_USERS  the iMessage allowlist — the same value seeded into the hermes
+#                          node.env (BLUEBUBBLES_ALLOWED_USERS); export it, or `source` a node.env.
+# Bare Tailscale MagicDNS resolves `hermes` on the tailnet, so the webhook needs no tailnet suffix.
+BB_PASSWORD="${BLUEBUBBLES_PASSWORD:?export BLUEBUBBLES_PASSWORD (yclaw keychain service yclaw-bluebubbles-server-pass)}"
+AUTHORIZED_HANDLES="${BLUEBUBBLES_ALLOWED_USERS:?export BLUEBUBBLES_ALLOWED_USERS (the iMessage allowlist; same value as hermes node.env)}"
+WEBHOOK_URL="https://hermes"
 BB_PORT="1234"
 BB_CONFIG_DIR="${HOME}/Library/Application Support/bluebubbles-server"
 BB_CONFIG="${BB_CONFIG_DIR}/config.json"
