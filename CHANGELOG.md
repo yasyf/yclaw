@@ -86,5 +86,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Generated passwords are random and reused on re-run, never hardcoded, placeholder,
   or prompted. Packer reads each guest's admin password from the `yclaw` keychain via
   `PKR_VAR_vm_admin_pass`; the BlueBubbles password flows through sops.
+- **Per-VM secret isolation.** Each host now has its own age keypair and its own
+  sops bundle, encrypted only to that host's recipient and holding only the secrets
+  it owns (`nixos/secrets-manifest.json` is the single source of truth for both the
+  encryption scope and the `sops.secrets` read-selectors). A host can decrypt only
+  its own secrets — the old single global key that decrypted every host's bundle on
+  every VM is gone, and the vestigial host-side age key is no longer installed.
+- **Narrow virtiofs shares.** `metal` no longer mounts the whole `~/.yclaw/state`
+  tree; it gets read-only/scoped shares for only its own key, bundle, and runtime
+  dirs, so it can no longer read `hermes`'s private agent state (memory, sessions,
+  the BlueBubbles password in `.env`) or any other host's key.
+- **Tailnet least-privilege as code.** `tailnet/policy.hujson` (applied via a
+  `gitops-acl-action` workflow) defines `tag:hermes`/`tag:metal`/`tag:bluebubbles`
+  with default-deny grants (`hermes → metal` only on the broker/AI ports). Each node
+  joins with its own ephemeral, single-use, tagged auth key minted from a Tailscale
+  OAuth client — replacing the one reusable fleet-wide auth key.
+- **Functional credential-injection plane.** `hermes` now presents a per-host
+  agent-vault proxy token (minted from `metal` at bootstrap) so brokered upstream
+  calls are actually injected instead of returning 407; the token only authorizes
+  injection and cannot read raw keys. `hermes` also presents its OWN cliproxy bearer
+  (distinct from `metal`'s Aperture key, rotatable independently). Instance-wide
+  agent-vault proxy rate/concurrency limits are set and locked.
+- **Defense-in-depth hardening.** `metal`'s boot-time `pf` gate fails loud (and
+  non-zero) instead of silently leaving the credential services exposed if `pf` can't
+  enable; the `hermes` code-exec containers run under the gVisor (`runsc`) runtime;
+  the dedicated `yclaw` keychain auto-locks (300 s) and is re-locked after use;
+  BlueBubbles' REST `:1234` is firewalled to the tailnet and its `config.json` is
+  `0600`; and the builder + BlueBubbles base images are pinned by digest.
 
 [Unreleased]: ../../commits/main
