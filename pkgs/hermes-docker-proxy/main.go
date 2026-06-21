@@ -15,6 +15,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net"
@@ -54,7 +55,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.logger.Printf("DENY %s %s: %s", r.Method, r.URL.Path, d.Reason)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = io.WriteString(w, `{"message":"denied by hermes-docker-proxy: `+jsonEscape(d.Reason)+`"}`)
+		// json.Marshal so an agent-controlled bind string in the reason can't break
+		// the response body. Returns the Docker-style {"message": …} shape.
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "denied by hermes-docker-proxy: " + d.Reason})
 		return
 	}
 	if d.InspectedBody != nil {
@@ -64,12 +67,6 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("Content-Length", strconv.Itoa(len(d.InspectedBody)))
 	}
 	h.proxy.ServeHTTP(w, r)
-}
-
-func jsonEscape(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `"`, `\"`)
-	return s
 }
 
 func main() {

@@ -121,21 +121,19 @@ func (p *Policy) Evaluate(r *http.Request) Decision {
 // dangerous setting lives in one of these fields.
 type createBody struct {
 	HostConfig struct {
-		Privileged     bool              `json:"Privileged"`
-		Binds          []string          `json:"Binds"`
-		Mounts         []mount           `json:"Mounts"`
-		Devices        []json.RawMessage `json:"Devices"`
-		CapAdd         []string          `json:"CapAdd"`
-		Runtime        string            `json:"Runtime"`
-		SecurityOpt    []string          `json:"SecurityOpt"`
-		NetworkMode    string            `json:"NetworkMode"`
-		PidMode        string            `json:"PidMode"`
-		IpcMode        string            `json:"IpcMode"`
-		UTSMode        string            `json:"UTSMode"`
-		UsernsMode     string            `json:"UsernsMode"`
-		CgroupnsMode   string            `json:"CgroupnsMode"`
-		CgroupParent   string            `json:"CgroupParent"`
-		PublishAllPorts bool             `json:"PublishAllPorts"`
+		Privileged   bool              `json:"Privileged"`
+		Binds        []string          `json:"Binds"`
+		Mounts       []mount           `json:"Mounts"`
+		Devices      []json.RawMessage `json:"Devices"`
+		CapAdd       []string          `json:"CapAdd"`
+		Runtime      string            `json:"Runtime"`
+		SecurityOpt  []string          `json:"SecurityOpt"`
+		NetworkMode  string            `json:"NetworkMode"`
+		PidMode      string            `json:"PidMode"`
+		IpcMode      string            `json:"IpcMode"`
+		UTSMode      string            `json:"UTSMode"`
+		UsernsMode   string            `json:"UsernsMode"`
+		CgroupnsMode string            `json:"CgroupnsMode"`
 	} `json:"HostConfig"`
 }
 
