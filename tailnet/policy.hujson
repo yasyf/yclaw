@@ -7,8 +7,10 @@
 // grants the only east-west reachability between them. Advertising a tag that is NOT owned here
 // fails `tailscale up`, so this file must land (and apply) before/with any tag advertisement.
 //
-// Applied to the tailnet by .github/workflows/tailscale-acl.yml: `test` on PRs that touch this
-// file, `apply` on push to the default branch. HuJSON — comments and trailing commas are allowed.
+// REFERENCE policy, applied BY HAND (admin console or Tailscale API), not by CI. There is no
+// auto-apply workflow: a force-replace would wipe a SHARED tailnet's other nodes. On a shared
+// tailnet, merge ONLY the tagOwners + ssh block from here ADDITIVELY; the default-deny `grants`
+// below fully apply only on a tailnet dedicated to yclaw. HuJSON — comments + trailing commas ok.
 //
 // Posture: DEFAULT-DENY east-west. There is no broad `autogroup:member` ACL; the only node->node
 // flows are the explicit grants below. pf on metal (darwin/metal.nix) is a host-local backstop —

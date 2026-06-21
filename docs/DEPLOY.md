@@ -21,11 +21,15 @@ the shortest correct path for an operator who already has the repo cloned.
   takes one reusable auth key; it mints a fresh ephemeral, single-use, tagged key per
   node from an OAuth client (stored in the yclaw keychain as `yclaw-ts-oauth-client-id`
   and `yclaw-ts-oauth-client-secret`). Two steps, in order:
-  1. **Apply the committed ACL** `tailnet/policy.hujson`, which defines `tag:hermes`,
-     `tag:metal`, `tag:bluebubbles` and the default-deny grants. Either merge it through
-     the `.github/workflows/tailscale-acl.yml` GitOps workflow — needs repo secrets
-     `TS_API_CLIENT_ID`, `TS_API_CLIENT_SECRET`, `TS_TAILNET`, all with the `policy_file`
-     scope — or paste it into the admin console once.
+  1. **Add the yclaw tags to the ACL.** `tailnet/policy.hujson` is the reference for the
+     `tag:hermes`/`tag:metal`/`tag:bluebubbles` `tagOwners` + an admin-SSH rule. If the
+     tailnet is **dedicated** to yclaw, you can apply the whole file. If it is **shared**
+     with other nodes (the common case), add only that block **additively** — replacing the
+     whole policy with the default-deny file would deauthorize your other tagged nodes.
+     There is no CI workflow for this (a force-replace workflow is unsafe on a shared
+     tailnet); apply it by hand in the admin console or via the Tailscale API. The full
+     default-deny east-west lockdown only takes effect on a tailnet where every node has an
+     explicit grant — see `docs/SECURITY-HANDOFF.md`.
   2. **Create an OAuth client** with the `auth_keys` write scope that owns those three
      tags (their `tagOwners` already list `autogroup:admin`). Supply its id and secret at
      the first `just bootstrap` prompt.

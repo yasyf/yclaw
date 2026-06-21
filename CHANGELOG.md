@@ -67,6 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `nixpkgs-unstable`).
 
 ### Removed
+- The `tailscale-acl.yml` GitOps workflow. It force-replaced the whole tailnet ACL
+  with `tailnet/policy.hujson` on push — destructive on a shared tailnet (it would
+  deauthorize non-yclaw nodes). The yclaw tags are added to the ACL additively
+  instead.
 - The `vault` VM. `agent-vault` (the credential broker and MITM forward proxy) now
   runs on `metal`, the sole credential custodian, so there is no separate vault node.
 - Host Nix. The macOS host no longer runs nix-darwin; `darwin/host.nix` and the host
@@ -96,11 +100,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tree; it gets read-only/scoped shares for only its own key, bundle, and runtime
   dirs, so it can no longer read `hermes`'s private agent state (memory, sessions,
   the BlueBubbles password in `.env`) or any other host's key.
-- **Tailnet least-privilege as code.** `tailnet/policy.hujson` (applied via a
-  `gitops-acl-action` workflow) defines `tag:hermes`/`tag:metal`/`tag:bluebubbles`
-  with default-deny grants (`hermes → metal` only on the broker/AI ports). Each node
-  joins with its own ephemeral, single-use, tagged auth key minted from a Tailscale
-  OAuth client — replacing the one reusable fleet-wide auth key.
+- **Tailnet tags + per-node keys.** `tailnet/policy.hujson` is the reference for the
+  `tag:hermes`/`tag:metal`/`tag:bluebubbles` `tagOwners` + admin-SSH rule and the
+  intended default-deny `hermes → metal` grants. On a shared tailnet (the real
+  deployment) those tags are added **additively** to the existing ACL — the full
+  default-deny lockdown only applies on a tailnet dedicated to yclaw. Each node joins
+  with its own ephemeral, single-use, tagged auth key minted from a Tailscale OAuth
+  client — replacing the one reusable fleet-wide auth key.
 - **Functional credential-injection plane.** `hermes` now presents a per-host
   agent-vault proxy token (minted from `metal` at bootstrap) so brokered upstream
   calls are actually injected instead of returning 407; the token only authorizes
@@ -113,5 +119,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the dedicated `yclaw` keychain auto-locks (300 s) and is re-locked after use;
   BlueBubbles' REST `:1234` is firewalled to the tailnet and its `config.json` is
   `0600`; and the builder + BlueBubbles base images are pinned by digest.
+- **Docker socket no longer root-equivalent to the agent (H6).** gVisor sandboxes
+  syscalls but not bind mounts, so a docker-group agent could still `docker run -v
+  /:/host`. A new `hermes-docker-proxy` (default-deny, screens every container-create
+  body) now fronts the socket; `hermes` is dropped from the docker group and reaches
+  the filtered socket via `DOCKER_HOST`.
+- **metal model services bound tailnet-only (M2).** omlx (`:8000`) and STT (`:8765`)
+  bind the resolved tailnet IP instead of `0.0.0.0`, so they never listen on the vmnet
+  LAN even if `pf` is down. STT needs no app bearer — the tailnet ACL + `pf` are the
+  authentication for an internal service.
 
 [Unreleased]: ../../commits/main
