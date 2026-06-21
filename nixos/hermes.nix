@@ -37,6 +37,12 @@ let
     REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
     CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
     GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
+    # H6: the agent's docker CLI talks to the FILTERED socket (hermes-docker-proxy),
+    # not the real /run/docker.sock — hermes is no longer in the docker group. The
+    # proxy default-denies everything except the code-exec calls and screens every
+    # container-create body (no host-root binds / privileged / runc / host-ns). See
+    # the hermes-docker-proxy service below.
+    DOCKER_HOST=unix:///run/hermes-docker-proxy/docker.sock
     # Dummy API keys. The SDKs refuse to send a request with an empty key, so each
     # must be non-empty to initialize; agent-vault's MITM proxy OVERWRITES the
     # Authorization header with the real, custody-held key on the wire — even if the
@@ -592,21 +598,60 @@ in
   # so the code-execution tool's `docker` lookup fails ("Docker executable not found in PATH").
   # Put the docker client on the service PATH (verified: without this, execute_code errors).
   systemd.services.hermes-agent.path = [ config.virtualisation.docker.package ];
-  # The hermes-agent module's default user/group is "hermes" (nixosModules.nix createUser).
+  # H6: hermes is NO LONGER in the docker group. gVisor (runsc) sandboxes container
+  # syscalls, but a bind mount is honoured by runsc's gofer, so a docker-group agent
+  # could `docker run -v /:/host` (or --privileged / --runtime=runc) to read the host's
+  # sops key + agent-vault token regardless. The fix is to take the raw socket away: a
+  # dedicated `hermes-docker-proxy` user owns /run/docker.sock (via the docker group) and
+  # exposes a DEFAULT-DENY filtered socket; the agent reaches ONLY that (DOCKER_HOST above).
+  # The proxy allowlists exactly the code-exec calls and screens every container-create
+  # body — binds must resolve under the agent's stateDir, and privileged / devices /
+  # host-namespaces / runtime overrides are refused. tecnativa-style verb-only proxies
+  # can't do this (they pass the create body through); see pkgs/hermes-docker-proxy.
+  # Rootless docker stays the longer-term construction-level fix (blocked today by the
+  # upstream module's isSystemUser hermes with no login session / static uid).
   #
-  # TODO(security/H6): the agent still has docker-group (= root-equivalent) access. runsc as the
-  # default runtime sandboxes the WORKLOADS the agent runs, but a prompt-injected agent that
-  # reaches the docker CLI can still pass `--runtime=runc` and `-v /:/host` to escape to VM root
-  # (then read /var/lib/sops-nix/key.txt and the agent-vault proxy token). The full fix is to drop
-  # this group and run rootless docker so the agent is not root-equivalent — BLOCKED here because
-  # the hermes user is `isSystemUser = true` with a DYNAMICALLY-allocated uid (config.users.users.
-  # hermes.uid is null at eval time): the NixOS rootless module only defines a `systemd.user.
-  # services.docker` unit keyed on $XDG_RUNTIME_DIR, which a system user has no session/runtime-dir
-  # for, and the agent's DOCKER_HOST socket path can't be built without a static uid to interpolate.
-  # A docker-socket-proxy (tecnativa/docker-socket-proxy) that whitelists only the API verbs the
-  # code-exec tool needs is the viable alternative — left as follow-up. Phase-1 per-host keys bound
-  # the blast radius: a rooted hermes decrypts ONLY hermes's own bundle, never metal's secrets.
-  users.users.hermes.extraGroups = [ "docker" ];
+  # NOTE: not yet live-validated — a `docker run -v /:/host` from a real code-exec session
+  # must be REFUSED while normal code-exec still works (see docs/SECURITY-HANDOFF.md). If a
+  # legitimate mount source lives outside stateDir, widen HERMES_DOCKER_PROXY_BIND_ROOTS.
+  users.users.hermes-docker-proxy = {
+    isSystemUser = true;
+    # Primary group `hermes` so the proxy's listening socket is connectable by the agent;
+    # supplementary `docker` to reach the real daemon socket.
+    group = "hermes";
+    extraGroups = [ "docker" ];
+    description = "hermes-docker-proxy — filtered Docker socket for the agent (H6)";
+  };
+
+  systemd.services.hermes-docker-proxy = {
+    description = "Filtered Docker socket for the hermes agent (H6)";
+    after = [ "docker.service" "docker.socket" ];
+    requires = [ "docker.socket" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      ExecStart = "${pkgs.hermes-docker-proxy}/bin/hermes-docker-proxy";
+      User = "hermes-docker-proxy";
+      Group = "hermes";
+      SupplementaryGroups = [ "docker" ];
+      # systemd creates /run/hermes-docker-proxy (owned hermes-docker-proxy:hermes, 0750
+      # so the agent's group can traverse); the proxy creates the 0660 socket inside it.
+      RuntimeDirectory = "hermes-docker-proxy";
+      RuntimeDirectoryMode = "0750";
+      Environment = [
+        "HERMES_DOCKER_PROXY_LISTEN=/run/hermes-docker-proxy/docker.sock"
+        "HERMES_DOCKER_PROXY_UPSTREAM=/run/docker.sock"
+        "HERMES_DOCKER_PROXY_BIND_ROOTS=${cfg.stateDir}"
+      ];
+      Restart = "always";
+      RestartSec = 2;
+      NoNewPrivileges = true;
+      PrivateTmp = true;
+    };
+  };
+
+  # The agent's code-exec breaks if it starts before the filtered socket exists.
+  systemd.services.hermes-agent.after = [ "hermes-docker-proxy.service" ];
+  systemd.services.hermes-agent.wants = [ "hermes-docker-proxy.service" ];
 
   # End-of-bootstrap onboarding CLI on the system PATH (merges with the hermes CLI that
   # addToSystemPackages installs). bootstrap.sh launches `sudo -u hermes -H hermes-onboard`.

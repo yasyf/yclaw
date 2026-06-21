@@ -80,6 +80,9 @@
           src = inputs.cliproxyapi-src;
           buildGoModule = unstable.buildGoModule;
         };
+        # The Docker-socket filter (H6). Pure-stdlib Go, so the stable channel's
+        # buildGoModule is fine — no need for the unstable Go toolchain.
+        hermes-docker-proxy = final.callPackage ./pkgs/hermes-docker-proxy.nix { };
         # Track a CURRENT Tailscale: nixos-25.05 pins an old release, so the VMs' dashboard
         # flags them out of date. services.tailscale.package defaults to pkgs.tailscale, so
         # overriding it here bumps every NixOS node without per-module plumbing. Bumped weekly
@@ -159,6 +162,7 @@
       # --- Buildable artifacts ---------------------------------------------------
       packages.${linuxSystem} = {
         agent-vault = pkgsLinux.agent-vault;
+        hermes-docker-proxy = pkgsLinux.hermes-docker-proxy;
         # Aperture is a hosted Tailscale service, not a VM: ai.nix renders the providers
         # JSON we paste into the Aperture dashboard. See nixos/ai.nix.
         aperture-config = pkgsLinux.callPackage ./nixos/ai.nix { };
@@ -167,6 +171,7 @@
 
       packages.${darwinSystem} = {
         cli-proxy-api = pkgsDarwin.cli-proxy-api;
+        hermes-docker-proxy = pkgsDarwin.hermes-docker-proxy;
         aperture-config = pkgsDarwin.callPackage ./nixos/ai.nix { };
       };
 
