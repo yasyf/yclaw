@@ -24,6 +24,7 @@ from fastapi import FastAPI, Form, UploadFile
 from mlx_audio.stt.utils import load_model
 
 MODEL_ID = os.environ.get("STT_MODEL", "ibm-granite/granite-speech-4.1-2b")
+HOST = os.environ.get("STT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("STT_PORT", "8765"))
 IDLE_TTL = int(os.environ.get("STT_IDLE_TTL", "1800"))
 
@@ -80,4 +81,4 @@ async def transcriptions(file: UploadFile, model: str = Form(default=MODEL_ID)):
 
 if __name__ == "__main__":
     threading.Thread(target=_idle_watchdog, daemon=True).start()
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host=HOST, port=PORT)

@@ -64,6 +64,23 @@ let
   hermesCliproxyKeyFile = config.sops.secrets."hermes/cliproxy-key".path;
   tailscaleAuthkeyFile = config.sops.secrets."tailscale/authkey".path;
 
+  # Resolve this node's tailnet (CGNAT 100.64.0.0/10) IPv4 into $TSIP, waiting for tailscaled to
+  # assign one. omlx (:8000) and STT (:8765) bind to THIS address instead of 0.0.0.0, so they are
+  # never exposed on the vmnet LAN bridge even if the pf tailnet-only anchor is down — the pf anchor
+  # + tailnet ACL stay the PRIMARY gate; this is the bind-layer backstop (M2 defense-in-depth). A
+  # RunAtLoad agent can win the race against tailscaled coming up, so poll like the cliproxy/agent-
+  # vault sops-waits above; the `|| true` keeps a failed `tailscale ip` from tripping `set -e`
+  # mid-loop. Fail LOUD after the timeout (a service bound to nothing is useless); KeepAlive then
+  # restarts the wrapper to retry once tailscaled is up.
+  resolveTailscaleIp = ''
+    for _ in $(seq 1 120); do
+      TSIP=$(/opt/homebrew/bin/tailscale ip -4 2>/dev/null | head -1) || true
+      [ -n "$TSIP" ] && break
+      sleep 1
+    done
+    [ -n "$TSIP" ] || { echo "metal: FATAL no tailnet IPv4 from 'tailscale ip -4' after 120s — cannot bind tailnet-only" >&2; exit 1; }
+  '';
+
   # Wrappers: launchd has no EnvironmentFile, so each wrapper sources the secret/env it needs
   # and exec's the absolute binary. Run as the `admin` GUI user (Metal needs the login session).
   # omlx discovers the model from the HF cache on the state mount (HF_HOME) via --hf-cache
@@ -72,8 +89,9 @@ let
     set -euo pipefail
     export HF_HOME=${lib.escapeShellArg hfHome}
     mkdir -p "$HF_HOME" ${lib.escapeShellArg "${home}/Library/Caches/omlx-kv"}
+    ${resolveTailscaleIp}
     exec /opt/homebrew/bin/omlx serve \
-      --host 0.0.0.0 --port 8000 \
+      --host "$TSIP" --port 8000 \
       --memory-guard balanced \
       --paged-ssd-cache-dir ${lib.escapeShellArg "${home}/Library/Caches/omlx-kv"} \
       --hot-cache-max-size 8GB
@@ -90,6 +108,8 @@ let
     export HF_HOME=${lib.escapeShellArg hfHome}
     export STT_MODEL=${(import ../nixos/models.nix).stt} STT_PORT=8765
     mkdir -p "$HF_HOME"
+    ${resolveTailscaleIp}
+    export STT_HOST="$TSIP"
     VENV=${lib.escapeShellArg sttVenv}
     if [ ! -x "$VENV/bin/python" ]; then
       mkdir -p "$(dirname "$VENV")"
