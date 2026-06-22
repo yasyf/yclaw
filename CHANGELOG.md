@@ -16,9 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the rest of `/var/lib/hermes` live in `~/.yclaw/state/hermes` over virtiofs, so
   conversation history survives a VM rebuild and is captured by backups.
 - `just backup` — a `restic` backup of `~/.yclaw/state` that excludes the
-  regenerable model caches (`hf/`, `omlx/`, `mlx-audio/`). Point it at a repo with
-  `YCLAW_RESTIC_REPO` and `RESTIC_PASSWORD`; restore with `restic restore latest
-  --target ~/.yclaw/state` followed by `just setup`.
+  regenerable caches (`omlx/`, `mlx-audio/`). The model cache now lives in the host's
+  regular `~/.cache/huggingface` (outside `~/.yclaw/state`), so it is regenerable and
+  out of the backup scope entirely. Point it at a repo with `YCLAW_RESTIC_REPO` and
+  `RESTIC_PASSWORD`; restore with `restic restore latest --target ~/.yclaw/state`
+  followed by `just setup`.
+- `just validate` (`scripts/validate-hardening.sh`) — a post-`bootstrap` probe, run on
+  the host with the VMs up, that exercises the per-VM isolation + audit controls (pf
+  gate, docker socket proxy, tailnet binds, crypto isolation, share boundary,
+  credential plane, tailnet tags) over `tailscale ssh` and reports PASS/FAIL. The two
+  checks needing a third tailnet node or a cross-VM decrypt are flagged as manual steps.
 - A dedicated `yclaw` keychain (`~/Library/Keychains/yclaw.keychain-db`) holding
   every generated password (agent-vault master, per-VM admin, BlueBubbles server),
   siloed from your login keychain and auto-unlocked via one
@@ -34,8 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Lower iMessage reply latency. hermes now calls metal's model upstreams directly
   (cliproxy `:8317`, omlx `:8000`) instead of routing through the hosted Aperture
-  node, removing a ~0.5 s WAN round-trip per call; it presents cliproxy's static
-  bearer itself (`APERTURE_STATIC_KEY`, now also rendered into sops `hermes/env`).
+  node, removing a ~0.5 s WAN round-trip per call; cliproxy's `:8317` is `pf`-gated to
+  hermes + the host, so hermes reaches it with no bearer of its own.
   Reasoning effort drops from `medium` to `low` (replies are sent only after the full
   completion, so reasoning time dominates perceived latency). The hermes-agent
   systemd unit gains `TimeoutStopSec=210s` so a graceful drain is not SIGKILLed
@@ -60,6 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   builds it locally as a fallback.
 - Model ids have one source of truth, `nixos/models.nix`, consumed by
   `nixos/hermes.nix`, `nixos/ai.nix`, and `darwin/metal.nix`.
+- Models are served from a SHARED Hugging Face cache. `metal` mounts the host's
+  regular `~/.cache/huggingface/hub` as a read-write `hfhub` virtiofs share — only the
+  `hub/` subdir, so the host's HF token never enters the VM — instead of a separate
+  copy under `~/.yclaw/state/hf`; omlx and STT read it via `HF_HUB_CACHE`. `just
+  bootstrap` auto-downloads the Qwen model into that cache, retiring the manual
+  model-placement gate.
 - Speech-to-text now lazy-loads and idle-unloads. `mlx-audio` STT on `metal` loads
   `granite-speech` on first use and unloads after an idle period, matching the omlx
   per-model idle TTL (1800s).
@@ -87,6 +100,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cliproxy` holds the Codex/Gemini subscription OAuth.
 - BlueBubbles runs in its own SIP-off `bluebubbles` guest — a separate tailnet node
   that holds no credentials beyond the BlueBubbles server password it needs locally.
+- **bluebubbles bring-up hardens itself.** `scripts/bluebubbles-setup.sh` best-effort
+  auto-grants BlueBubbles the Full Disk Access + Accessibility TCC permissions (the
+  guest is SIP-off, so the system/user TCC databases can be written and `tccd`
+  reloaded), health-checks the server, and AUTO-DISABLES Screen Sharing once the
+  Private-API helper has injected — falling back to the human GUI grant + `just
+  bb-harden` only when the auto-grant does not take. Screen Sharing no longer stays
+  enabled by default after bring-up. Apple-ID 2FA stays the one irreducibly-human step.
 - Generated passwords are random and reused on re-run, never hardcoded, placeholder,
   or prompted. Packer reads each guest's admin password from the `yclaw` keychain via
   `PKR_VAR_vm_admin_pass`; the BlueBubbles password flows through sops.
@@ -110,9 +130,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Functional credential-injection plane.** `hermes` now presents a per-host
   agent-vault proxy token (minted from `metal` at bootstrap) so brokered upstream
   calls are actually injected instead of returning 407; the token only authorizes
-  injection and cannot read raw keys. `hermes` also presents its OWN cliproxy bearer
-  (distinct from `metal`'s Aperture key, rotatable independently). Instance-wide
-  agent-vault proxy rate/concurrency limits are set and locked.
+  injection and cannot read raw keys. Instance-wide agent-vault proxy
+  rate/concurrency limits are set and locked. The model plane carries no per-caller
+  bearer at all: `metal`'s cliproxy `:8317` is reachable only by `hermes` + the host
+  (the `pf` gate below), so "the tailnet is the auth" and `HERMES_CLIPROXY_KEY` is gone.
 - **Defense-in-depth hardening.** `metal`'s boot-time `pf` gate fails loud (and
   non-zero) instead of silently leaving the credential services exposed if `pf` can't
   enable; the `hermes` code-exec containers run under the gVisor (`runsc`) runtime;

@@ -17,7 +17,7 @@ cross-decrypt, resolved image digests. It does NOT mean live-tested on the VMs �
 | Crypto | Per-VM age keypairs + per-host bundles; `nixos/secrets-manifest.json` is the single source of truth; host age key removed | core, H1 |
 | Shares | metal gets narrow per-need virtiofs shares, not the whole state tree | H1 |
 | Tailnet | yclaw tags + admin-SSH added to the live ACL; per-node ephemeral tagged keys via an OAuth client (in the keychain) | H3, H4 |
-| Credential plane | agent-vault proxy token minted from metal at bootstrap; distinct rotatable hermes cliproxy key; proxy rate limits | H5, L1, M9 |
+| Credential plane | agent-vault proxy token minted from metal at bootstrap; model plane needs no per-caller bearer (pf-gated); proxy rate limits | H5, L1, M9 |
 | Network | metal pf fail-loud + scoped to hermes + host runtime-resolved IPs; bluebubbles `:1234` firewalled; omlx/STT bound to the tailnet IP, not `0.0.0.0` | H2, H3, H4, M2, M3 |
 | Confinement | gVisor `runsc` default runtime **+** a default-deny Docker-socket proxy; hermes dropped from the docker group | H6 |
 | Hygiene | keychain auto-lock; config.json `0600`; builder + base images digest-pinned | M4, M6, M7, M8 |
@@ -30,8 +30,8 @@ cross-decrypt, resolved image digests. It does NOT mean live-tested on the VMs �
   (default loopback). They no longer listen on the vmnet LAN even if pf is down.
 - **M2 — STT app-auth dropped as unnecessary.** STT is an internal tailnet service; the
   ACL (the `tag:hermes` to `metal:8765` grant) + pf are the authentication. An app bearer would put a
-  needless secret on the agent. The same logic means `HERMES_CLIPROXY_KEY` could later be
-  dropped too (rely on the ACL for `:8317`) — a follow-up, not done.
+  needless secret on the agent. The same logic dropped `HERMES_CLIPROXY_KEY` (the `:8317` bearer)
+  this session — see [Done this session (2026-06-22)](#done-this-session-2026-06-22).
 - **H6 — Docker root-equivalence removed.** New `hermes-docker-proxy` (pure-stdlib Go,
   `pkgs/hermes-docker-proxy`): a default-deny proxy in front of `/run/docker.sock` that
   allowlists exactly the agent's code-exec calls and screens every `POST
@@ -70,9 +70,50 @@ cross-decrypt, resolved image digests. It does NOT mean live-tested on the VMs �
   `just bootstrap` (or re-write `metal-allowed-hosts` over `tailscale ssh root@metal`) so the host
   keeps reaching `metal:14321` for OAuth admin.
 
+## Done this session (2026-06-22)
+
+The remaining threads were implemented; this section records them and the decisions taken. Live runs
+are still pending — see [Live validation](#live-validation-required-needs-the-running-vms).
+
+- **`HERMES_CLIPROXY_KEY` dropped.** The model plane carries no per-caller bearer: cliproxy `:8317`
+  is reachable only by hermes + the host (the pf gate), so "the tailnet is the auth". Removed from
+  `hermes/env` + the manifest catalog + `darwin/metal.nix`'s render + both model `key_env`s;
+  `darwin/metal-cliproxyapi-config.yaml` keeps `@@APERTURE_STATIC_KEY@@` as the one required key, so
+  cliproxy's gate stays armed for the Aperture node. `nix eval` of both configs passes. Existing VMs
+  keep the old key until secret re-collection + a hermes boot+reboot redeploy.
+- **D1 — Google OAuth scopes: KEPT ALL.** No code change; `scripts/connect-google-oauth.py` still
+  requests gmail/calendar/drive/sheets/docs/slides/tasks. (Narrowing was optional and needs a
+  re-consent run.)
+- **D2 — autonomous + broad toolset: COMMITTED.** `delegation.subagent_auto_approve = true` stays
+  and `platform_toolsets.bluebubbles` stays the full `hermes-telegram` bundle; the `TODO(human)` is
+  resolved — the breadth is deliberate, contained by gVisor + the docker socket proxy, not by
+  toolset narrowing.
+- **D3 + GUI grants — bluebubbles bring-up is hands-off, with a human fallback.**
+  `scripts/bluebubbles-setup.sh` gained a `setup`/`harden` subcommand split. `setup` best-effort
+  auto-grants BlueBubbles Full Disk Access (system TCC.db) + Accessibility (user TCC.db) — possible
+  because the guest is SIP-off — resolving the bundle id + csreq from the installed app and reloading
+  `tccd`, then health-checks the REST API on `helper_connected` and AUTO-runs `harden` (Screen
+  Sharing + ARDAgent off, mirroring `darwin/metal.nix`) once the helper has injected. If it has not,
+  it prints the GUI fallback and leaves Screen Sharing up; `just bb-harden` finishes it. The csreq
+  computation (Security.framework via ctypes) is verified on a dev box; the TCC.db schema + the
+  `/api/v1/server/info` field shape need the live guest (macOS 26 Tahoe may need a Tahoe-capable
+  helper — BlueBubbles server issue #776).
+- **Model delivery — shared HF cache + auto-download.** metal serves models from the host's REGULAR
+  `~/.cache/huggingface/hub` via a new read-write `hfhub` virtiofs share (only `hub/`, so the HF
+  token stays on the host), repointing omlx + STT to `HF_HUB_CACHE`; the state `hf` share is retired.
+  `just bootstrap` auto-downloads the Qwen model (former human gate #5 removed). Tradeoff: the share
+  exposes every model in the host's hub cache to metal (read-write, weights only) — but the prior
+  state `hf` share was already host-FS read-write, so the trust level is unchanged.
+- **Live-validation runbook.** `scripts/validate-hardening.sh` + `just validate` (run on the host,
+  VMs up) probe all seven controls over `tailscale ssh` and report PASS/FAIL, flagging the
+  third-node and cross-VM-decrypt checks as manual. This is the mechanism for the checklist below.
+
 ## Live validation (required — needs the running VMs)
 
-None of this can be checked from a dev box; run it on the host after `just bootstrap`.
+None of this can be checked from a dev box; run it on the host after `just bootstrap`. `just
+validate` (`scripts/validate-hardening.sh`) automates the seven controls below — pf gate, docker
+proxy, tailnet bind, crypto isolation, share boundary, credential plane, tailnet tags — and reports
+PASS/FAIL; the bluebubbles bring-up + model-load checks at the end are separate.
 
 - [ ] **H6 / Docker proxy (the new one):** from a real code-exec session, `docker run -v
       /:/host …` (and `--privileged`, `--runtime=runc`) must be **refused**, while normal
@@ -87,11 +128,19 @@ None of this can be checked from a dev box; run it on the host after `just boots
       hermes's key it succeeds and shows only `tailscale/authkey` + `hermes/env`. Host has
       no `/var/lib/sops-nix/key.txt`.
 - [ ] **Share boundary:** inside the metal guest, `ls "/Volumes/My Shared Files/"` shows
-      only metal's narrow shares; `hosts/hermes` is not mountable.
+      only metal's narrow shares (`metalsecrets agentvault hfhub mlxaudio cliproxy repo`);
+      `hosts/hermes` is not mountable.
 - [ ] **Credential plane (L1):** a brokered tool call (Exa/Honcho/OpenAI) from hermes
       returns **200, not 407**; `~/.hermes/.env` ends with `HTTPS_PROXY=http://av_agt_…`.
 - [ ] **Tailnet:** `tailscale status` shows each yclaw node carrying its tag; admin
       `tailscale ssh root@hermes` works (the additive ssh rule).
+- [ ] **bluebubbles bring-up (new):** after `scripts/bluebubbles-setup.sh`, the TCC auto-grant +
+      health gate either auto-disabled Screen Sharing (BlueBubbles `helper_connected: true`) or
+      printed the GUI fallback. Confirm the TCC.db INSERT actually took (the `access` schema is
+      version-specific on macOS 26) and that `launchctl print system/com.apple.screensharing` shows
+      it disabled once done; `just bb-harden` re-runs the disable.
+- [ ] **Model load (new):** metal's omlx serves the Qwen model from `/Volumes/My Shared Files/hfhub`
+      (`HF_HUB_CACHE`) — a first request cold-loads it from the shared host cache; STT likewise.
 
 ### Migration of in-flight VMs
 Seeding is only-if-missing, so existing VMs keep the OLD global key on a plain rebuild.
@@ -103,6 +152,7 @@ boot+reboot (disk-replace), not `switch`. Full steps: `docs/DEPLOY.md`.
 ## Remaining work
 
 ### 1. Live validation (you, on the running VMs)
+`just validate` runs the seven controls and reports PASS/FAIL; the items still needing your eye:
 - **pf hermes+host gate (done this session, code-verified — needs the live check):** from a tailnet
   node that is NEITHER hermes NOR this host, `nc -vz metal 8000` (also `8765`/`8317`/`14321`)
   **fails**; from hermes AND from the host it succeeds; `pfctl -a metal -sr` on metal shows pass rules
@@ -115,31 +165,25 @@ boot+reboot (disk-replace), not `switch`. Full steps: `docs/DEPLOY.md`.
   `HERMES_DOCKER_PROXY_BIND_ROOTS` if a legit mount source is outside `/var/lib/hermes`;
   `getent group docker` has no `hermes`.
 - **C2 / M2:** omlx/STT answer on `metal:8000|8765` from hermes, not on metal's loopback/vmnet IP.
+- **bluebubbles bring-up (new):** the TCC auto-grant either hardened automatically or fell back to
+  the GUI — confirm the TCC.db write took on the live macOS 26 guest and Screen Sharing ended up
+  disabled (`just bb-harden` if not).
+- **Model load (new):** omlx/STT serve from the shared `hfhub` cache (`HF_HUB_CACHE`).
 - Isolation cross-decrypt, share boundary, credential plane (200 not 407), tailnet tags +
   admin SSH — the full checklist above.
 
-### 2. Decisions (you)
-- **D1 — Google OAuth scopes.** `scripts/connect-google-oauth.py` requests `gmail.modify`,
-  `calendar`, `drive`, `spreadsheets`, `documents`, `presentations`, `tasks`. Evidence: the
-  upstream `google-workspace` skill uses gmail (send/search/reply/modify-labels), calendar,
-  drive (upload/share), sheets, and docs. If you do not use Slides/Tasks, drop
-  `presentations`/`tasks`; keep `gmail.modify` (the skill sends + relabels). Narrowing reduces
-  capability and needs a re-consent run, so it is left to you.
-- **D2 — `subagent_auto_approve` / delegation budget.** `nixos/hermes.nix` keeps
-  `subagent_auto_approve = true`, `max_iterations = 50`, `max_turns = 90` (autonomous by
-  design, now contained by gVisor + the socket proxy). Decide whether to add an approval gate
-  for high-risk tools.
-- **D3 — disable bluebubbles Screen Sharing after bring-up.** Once tailnet access works,
-  `sudo launchctl disable system/com.apple.screensharing` + the ARDAgent `kickstart
-  -deactivate -stop` on the guest (as metal does).
+### 2. Decisions (DECIDED this session — see [Done this session (2026-06-22)](#done-this-session-2026-06-22))
+- **D1 — Google OAuth scopes: KEPT ALL.** No narrowing; `scripts/connect-google-oauth.py` is
+  unchanged (gmail/calendar/drive/sheets/docs/slides/tasks). Re-narrow later if you never touch
+  Slides/Tasks — it needs a re-consent run.
+- **D2 — autonomous + broad toolset: COMMITTED.** `subagent_auto_approve = true` and the broad
+  `hermes-telegram` bundle stay; the `TODO(human)` is resolved. Containment is gVisor + the socket
+  proxy, not toolset narrowing.
+- **D3 — bluebubbles Screen Sharing: AUTO-DISABLED.** `scripts/bluebubbles-setup.sh` disables it
+  automatically once the server is healthy (or via `just bb-harden` after the GUI fallback) — no
+  longer a manual step.
 
 ### 3. Code follow-ups (I implement on request)
-- **Drop `HERMES_CLIPROXY_KEY` (now unblocked — metal restricted to hermes + host).** cliproxy
-  `:8317` is now reachable only by hermes + the host (the pf gate above), so for hermes's model
-  traffic the bearer is redundant for access by the same "tailnet is the auth" logic. Removing it
-  means dropping it from `hermes/env` + the manifest + the model `key_env` AND relaxing cliproxy's
-  required-key in `darwin/metal-cliproxyapi-config.yaml`. Optional — you may keep the key for caller
-  distinction / independent rotation.
 - **Rootless Docker (construction-level H6).** The socket proxy contains H6; the stronger fix
   is rootless docker so a daemon escape lands unprivileged. Blocked today by the upstream
   module's `isSystemUser` hermes with no login session / static uid; pinning the uid +
@@ -157,12 +201,12 @@ boot+reboot (disk-replace), not `switch`. Full steps: `docs/DEPLOY.md`.
 | core,H1 | global key / monolithic bundle / broad share | **done** |
 | H2 | pf fail-open | **done** (fail-loud) |
 | H3,H4 | tailnet ACL absent / reusable key | **done** (tags + per-node keys added additively; hermes+host east-west now enforced by the runtime-resolved pf anchor) |
-| H5,L1 | hermes bearer / dead custody plane | **done** in code; needs live check |
+| H5,L1 | hermes bearer / dead custody plane | **done** in code (proxy token live; `HERMES_CLIPROXY_KEY` dropped — model plane is pf-gated, no bearer); needs live check |
 | H6 | agent = VM root | **done** in code (runsc + socket proxy); needs live test; rootless = follow-up |
 | M1 | keys on argv | **won't-fix** (upstream limit) |
 | M2 | omlx/STT no auth | **done** (tailnet-bound; metal now restricted to hermes + host via the runtime-resolved pf anchor, so "the tailnet is the auth" holds) |
 | M3,M4 | bluebubbles :1234 / config perms | **done** |
-| M5 | bluebubbles VNC RFC1918 | **operator step** — D3 |
+| M5 | bluebubbles VNC RFC1918 | **done** (D3 — Screen Sharing auto-disabled at bring-up, `just bb-harden` fallback); needs live check |
 | M6 | keychain unlocked | **done** |
 | M7,M8 | mutable image tags | **done** (digest-pinned) |
-| M9 | broker limits / OAuth scopes / auto-approve | rate limits **done**; scopes+auto-approve — D1/D2 |
+| M9 | broker limits / OAuth scopes / auto-approve | rate limits **done**; scopes kept (D1), auto-approve kept (D2) — both **decided** |

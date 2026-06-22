@@ -107,11 +107,14 @@ cleanly.
 These are one-time interactive steps the wizard can't perform. Do them in order,
 then verify.
 
-1. **Apple-ID iMessage sign-in (2FA) on `bluebubbles`.** Sign in with the
-   dedicated Apple ID, complete 2FA, enable iMessage, then run
-   `scripts/bluebubbles-setup.sh` on the `bluebubbles` guest. `bluebubbles`
-   enrollment is still a manual `tailscale up`, and it must now advertise its tag:
-   `tailscale up --advertise-tags=tag:bluebubbles`.
+1. **Apple-ID iMessage sign-in (2FA) on `bluebubbles`** — the one irreducibly-human
+   step. Sign in with the dedicated Apple ID, complete 2FA, enable iMessage, then run
+   `scripts/bluebubbles-setup.sh` on the `bluebubbles` guest. It auto-grants the
+   BlueBubbles GUI permissions (Full Disk Access + Accessibility, possible because the
+   guest is SIP-off) and auto-disables Screen Sharing once the server is healthy; if it
+   prints a HUMAN FALLBACK, finish those GUI grants over Screen Sharing, then run
+   `just bb-harden`. `bluebubbles` enrollment is still a manual `tailscale up`, and it
+   must advertise its tag: `tailscale up --advertise-tags=tag:bluebubbles`.
 2. **CLIProxyAPI Codex login on `metal`** (browser flow):
 
    ```sh
@@ -133,12 +136,9 @@ then verify.
 
    Open the printed consent URL, approve, and it finishes and verifies.
 
-5. **Place the Qwen MLX model on `metal`.** Download it onto the `metal` `state`
-   share (`/Volumes/My Shared Files/state/hf`):
-
-   ```sh
-   hf download "$(rg -o 'qwen = "[^"]+"' nixos/models.nix | sed -E 's/qwen = "(.*)"/\1/')"
-   ```
+The Qwen MLX model is no longer a gate — `just bootstrap` auto-downloads it into the
+host's regular Hugging Face cache (`~/.cache/huggingface/hub`), which `metal` mounts as
+the `hfhub` share and serves via `HF_HUB_CACHE`.
 
 `metal` is SIP-on from its fresh IPSW install and `bluebubbles` is SIP-off from
 the cirruslabs base, so neither guest needs a SIP recovery step.
@@ -147,19 +147,15 @@ the cirruslabs base, so neither guest needs a SIP recovery step.
 
 Once the gates are clear, confirm the stack and close out the operator follow-ups:
 
+- **Run the hardening probe.** `just validate` (on the host, with the VMs up) exercises
+  the per-VM isolation + audit controls over `tailscale ssh` and reports PASS/FAIL.
 - **Credential-injection plane.** A brokered tool call (Exa, Honcho, OpenAI) from
   `hermes` returns 200, not 407.
 - **Code-exec sandbox.** `hermes` runs code under the gVisor `runsc` runtime —
   `docker info` shows `Default Runtime: runsc`.
-- **Disable Screen Sharing on `bluebubbles`** once the one-time GUI bring-up is done
-  and tailnet access works. Its VNC anchor is open to the LAN only for first-time
-  bring-up; close it the way `metal` does:
-
-  ```sh
-  sudo launchctl disable system/com.apple.screensharing
-  sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-    -deactivate -stop
-  ```
+- **Screen Sharing on `bluebubbles`** is disabled automatically by
+  `scripts/bluebubbles-setup.sh` once BlueBubbles is healthy. If you completed the GUI
+  grants via the fallback, run `just bb-harden` to disable it.
 
 ## State layout
 
