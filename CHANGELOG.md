@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (cliproxy `:8317`, omlx `:8000`) instead of routing through the hosted Aperture
   node, removing a ~0.5 s WAN round-trip per call; it presents cliproxy's static
   bearer itself (`APERTURE_STATIC_KEY`, now also rendered into sops `hermes/env`).
-  Reasoning effort drops `medium` → `low` (replies are sent only after the full
+  Reasoning effort drops from `medium` to `low` (replies are sent only after the full
   completion, so reasoning time dominates perceived latency). The hermes-agent
   systemd unit gains `TimeoutStopSec=210s` so a graceful drain is not SIGKILLed
   mid-flight.
@@ -50,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is baked into the hermes image — upstream dropped it from the eager-install set, so
   it would otherwise fail to lazy-install in the network-less Nix Python. The provider
   is declared (`memory.provider = "honcho"`, `environment = "production"`, no
-  `base_url` → cloud, real key injected by agent-vault on `api.honcho.dev`), and
+  `base_url` so it targets the cloud, real key injected by agent-vault on `api.honcho.dev`), and
   `~/.honcho/config.json` is seeded as a writable copy rather than a read-only symlink,
   so the agent's own memory writes survive a rebuild.
 - VM images are generic and reusable across tailnets. Nodes are addressed by bare
@@ -128,5 +128,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bind the resolved tailnet IP instead of `0.0.0.0`, so they never listen on the vmnet
   LAN even if `pf` is down. STT needs no app bearer — the tailnet ACL + `pf` are the
   authentication for an internal service.
+- **metal restricted to hermes + host, east-west (H3/H4 via `pf`).** The deployment tailnet is
+  shared and its ACL is allow-all, so the ACL cannot scope metal to `tag:hermes`; a `pf` anchor
+  does it instead. metal admits ONLY its two legitimate consumers to the five service ports —
+  hermes (the runtime client, resolved by hostname at RUNTIME via `tailscale ip -4 hermes`) and the
+  host admin machine (its tailnet IP, which `bootstrap.sh` injects over the SSH path; the host hits
+  `metal:14321` for the bootstrap CA fetch and Google-OAuth admin, and its Mac is an existing tailnet
+  member metal cannot name-resolve) — and drops every OTHER tailnet node (sprite/gcp/zo/modal) and
+  the sibling vmnet-LAN guests. The scope is resolved at activation, at every boot, and on a 5-minute
+  refresh, never baked into the build: if hermes is rebuilt and its IP changes, the next refresh
+  re-scopes with no `darwin-rebuild`. It never fails open — a transient hermes unresolve reuses the
+  sticky last-known IP, the anchor is written atomically and only persisted after the kernel accepts
+  it, and with no resolvable source the anchor is fully CLOSED (loopback only), never the whole tailnet.
 
 [Unreleased]: ../../commits/main

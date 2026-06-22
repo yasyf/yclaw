@@ -18,7 +18,7 @@ cross-decrypt, resolved image digests. It does NOT mean live-tested on the VMs �
 | Shares | metal gets narrow per-need virtiofs shares, not the whole state tree | H1 |
 | Tailnet | yclaw tags + admin-SSH added to the live ACL; per-node ephemeral tagged keys via an OAuth client (in the keychain) | H3, H4 |
 | Credential plane | agent-vault proxy token minted from metal at bootstrap; distinct rotatable hermes cliproxy key; proxy rate limits | H5, L1, M9 |
-| Network | metal pf fail-loud; bluebubbles `:1234` firewalled; omlx/STT bound to the tailnet IP, not `0.0.0.0` | H2, M3, M2 |
+| Network | metal pf fail-loud + scoped to hermes + host runtime-resolved IPs; bluebubbles `:1234` firewalled; omlx/STT bound to the tailnet IP, not `0.0.0.0` | H2, H3, H4, M2, M3 |
 | Confinement | gVisor `runsc` default runtime **+** a default-deny Docker-socket proxy; hermes dropped from the docker group | H6 |
 | Hygiene | keychain auto-lock; config.json `0600`; builder + base images digest-pinned | M4, M6, M7, M8 |
 
@@ -50,10 +50,25 @@ cross-decrypt, resolved image digests. It does NOT mean live-tested on the VMs �
     stored in the keychain (`yclaw-ts-oauth-client-id` / `-secret`) — bootstrap can now
     mint tagged keys.
   - `.github/workflows/tailscale-acl.yml` was **removed** (force-replace is unsafe here).
-  - **Consequence:** the default-deny east-west lockdown is NOT in effect. yclaw nodes are
-    reachable per the allow-all ACL; metal's ports stay pf-gated to the tailnet CGNAT but
-    to *all* tailnet nodes, not hermes-only. Full lockdown needs a tailnet ACL redesign
-    (see [Remaining](#remaining-work)).
+  - **Consequence (closed by the pf gate below):** the tailnet ACL itself stays allow-all, so
+    east-west is not restricted at the ACL layer. metal's hermes+host restriction is enforced by
+    `pf` instead (next bullet), not by the ACL.
+- **metal restricted to hermes + host — pf scoped to RUNTIME-resolved IPs.** pf has no hostname
+  matching, so `darwin/metal.nix`'s `metal-pf-anchor` admits ONLY metal's two legitimate consumers
+  to the five service ports (`8000/8765/8317/14321/14322`): hermes (resolved by hostname, `tailscale
+  ip -4 hermes`) and the host admin machine (its tailnet IP, injected by `bootstrap.sh` over the SSH
+  path into `/etc/pf.anchors/metal-allowed-hosts` — the host hits `metal:14321` for the bootstrap CA
+  fetch + Google-OAuth admin, and its Mac is an existing tailnet member metal cannot name-resolve).
+  Every OTHER tailnet node (sprite/gcp/zo/modal) and the sibling vmnet-LAN guests are dropped. The
+  script runs at activation, at every boot (AFTER pf already enforces the persisted anchor, so the
+  up-to-120s resolve-wait never opens a window), and on a 5-minute `metal-pf-refresh` that self-heals
+  an IP change with no rebuild. It never fails open: a transient hermes unresolve reuses the sticky
+  last-known IP, the anchor is written atomically and loaded into the kernel before the file is
+  persisted, and with no resolvable source it is fully CLOSED (loopback only), never the whole
+  tailnet. This restores the "the tailnet is the auth" premise behind dropping STT app-auth (M2) and
+  unblocks dropping `HERMES_CLIPROXY_KEY`. **Host-IP note:** if the host's tailnet IP changes, re-run
+  `just bootstrap` (or re-write `metal-allowed-hosts` over `tailscale ssh root@metal`) so the host
+  keeps reaching `metal:14321` for OAuth admin.
 
 ## Live validation (required — needs the running VMs)
 
@@ -87,36 +102,14 @@ boot+reboot (disk-replace), not `switch`. Full steps: `docs/DEPLOY.md`.
 
 ## Remaining work
 
-### 1. Restrict metal to hermes-only — pf scoped to hermes's IP (PLANNED; I implement on your go-ahead)
-
-**Why.** On the shared allow-all tailnet, ANY tailnet node can currently reach `metal:8000`
-(omlx) and `metal:8765` (STT) **unauthenticated**, plus the token-gated credential ports
-(`:8317/:14321/:14322`). Tailscale has no per-destination deny rule, so the ACL can't scope
-metal to `tag:hermes` without redesigning the whole tailnet — but pf can, entirely inside
-yclaw's own code. This also restores the premise behind skipping STT app-auth ("the tailnet
-*is* the auth") and unblocks dropping `HERMES_CLIPROXY_KEY` (item 4).
-
-**Approach** (`darwin/metal.nix`, the postActivation pf anchor):
-- Resolve hermes's tailnet IP at activation with `tailscale ip -4 hermes`.
-- Pass only that IP to the five service ports (replace `from 100.64.0.0/10`); keep the `lo0`
-  pass and the catch-all `block`.
-- If hermes is not yet resolvable (pre-join / down), fall back to the CGNAT and log a WARN so
-  the gate never bricks. The per-boot `metal-boot-setup` reload reuses the persisted anchor
-  verbatim, so it carries whatever IP the last activation resolved.
-
-**Pitfalls.**
-- IP-based, not tag-based: if hermes is destroyed + recreated its tailnet IP changes — re-run
-  `darwin-rebuild` on metal to re-resolve (the IP is otherwise stable per node identity).
-- First bootstrap can activate metal before hermes joins, so it falls back to the CGNAT until
-  a later activation; re-run the metal rebuild once hermes is up.
-- Do NOT `pfctl -f /etc/pf.conf` on every activation (it flushes the dynamically-loaded
-  vmnet/NAT anchors) — keep the existing `pfctl -a metal -f` reload-this-anchor path.
-
-**Verification.** `nix eval` the metal config; live: from a NON-hermes tailnet node `nc -vz
-metal 8000`/`8765` fails, from hermes it succeeds, and `pfctl -a metal -s rules` shows hermes's
-IP as the source.
-
-### 2. Live validation (you, on the running VMs)
+### 1. Live validation (you, on the running VMs)
+- **pf hermes+host gate (done this session, code-verified — needs the live check):** from a tailnet
+  node that is NEITHER hermes NOR this host, `nc -vz metal 8000` (also `8765`/`8317`/`14321`)
+  **fails**; from hermes AND from the host it succeeds; `pfctl -a metal -sr` on metal shows pass rules
+  for hermes's tailnet IP + the host IP (from `/etc/pf.anchors/metal-allowed-hosts`), NOT
+  `100.64.0.0/10`, plus the catch-all `block`. Reboot metal and re-check — the boot setup must
+  re-resolve and leave the block rule resident. Logs: `/var/log/metal-pf-refresh.log`,
+  `/var/log/metal-boot-setup.{log,error.log}`, and the `metal: pf anchor sources = …` lines.
 - **C1 / docker proxy:** `docker run -v /:/host` from a code-exec session must be **refused**
   (`journalctl -u hermes-docker-proxy` shows `DENY`) while normal code-exec works; widen
   `HERMES_DOCKER_PROXY_BIND_ROOTS` if a legit mount source is outside `/var/lib/hermes`;
@@ -125,7 +118,7 @@ IP as the source.
 - Isolation cross-decrypt, share boundary, credential plane (200 not 407), tailnet tags +
   admin SSH — the full checklist above.
 
-### 3. Decisions (you)
+### 2. Decisions (you)
 - **D1 — Google OAuth scopes.** `scripts/connect-google-oauth.py` requests `gmail.modify`,
   `calendar`, `drive`, `spreadsheets`, `documents`, `presentations`, `tasks`. Evidence: the
   upstream `google-workspace` skill uses gmail (send/search/reply/modify-labels), calendar,
@@ -140,12 +133,13 @@ IP as the source.
   `sudo launchctl disable system/com.apple.screensharing` + the ARDAgent `kickstart
   -deactivate -stop` on the guest (as metal does).
 
-### 4. Code follow-ups (I implement on request)
-- **Drop `HERMES_CLIPROXY_KEY` (after item 1).** Once metal is hermes-only, cliproxy `:8317`
-  is reachable only by hermes, so by the same "tailnet is the auth" logic the bearer is
-  redundant for access. Removing it means dropping it from `hermes/env` + the manifest + the
-  model `key_env` AND relaxing cliproxy's required-key in `darwin/metal-cliproxyapi-config.yaml`.
-  Optional — you may keep the key for caller distinction / independent rotation.
+### 3. Code follow-ups (I implement on request)
+- **Drop `HERMES_CLIPROXY_KEY` (now unblocked — metal restricted to hermes + host).** cliproxy
+  `:8317` is now reachable only by hermes + the host (the pf gate above), so for hermes's model
+  traffic the bearer is redundant for access by the same "tailnet is the auth" logic. Removing it
+  means dropping it from `hermes/env` + the manifest + the model `key_env` AND relaxing cliproxy's
+  required-key in `darwin/metal-cliproxyapi-config.yaml`. Optional — you may keep the key for caller
+  distinction / independent rotation.
 - **Rootless Docker (construction-level H6).** The socket proxy contains H6; the stronger fix
   is rootless docker so a daemon escape lands unprivileged. Blocked today by the upstream
   module's `isSystemUser` hermes with no login session / static uid; pinning the uid +
@@ -162,11 +156,11 @@ IP as the source.
 |---|---------|-------|
 | core,H1 | global key / monolithic bundle / broad share | **done** |
 | H2 | pf fail-open | **done** (fail-loud) |
-| H3,H4 | tailnet ACL absent / reusable key | **done additively** (tags + per-node keys); hermes-only gate = item 1 (pf) |
+| H3,H4 | tailnet ACL absent / reusable key | **done** (tags + per-node keys added additively; hermes+host east-west now enforced by the runtime-resolved pf anchor) |
 | H5,L1 | hermes bearer / dead custody plane | **done** in code; needs live check |
 | H6 | agent = VM root | **done** in code (runsc + socket proxy); needs live test; rootless = follow-up |
 | M1 | keys on argv | **won't-fix** (upstream limit) |
-| M2 | omlx/STT no auth | **done** (tailnet-bound); "tailnet is the auth" holds only once metal is hermes-only — item 1 |
+| M2 | omlx/STT no auth | **done** (tailnet-bound; metal now restricted to hermes + host via the runtime-resolved pf anchor, so "the tailnet is the auth" holds) |
 | M3,M4 | bluebubbles :1234 / config perms | **done** |
 | M5 | bluebubbles VNC RFC1918 | **operator step** — D3 |
 | M6 | keychain unlocked | **done** |

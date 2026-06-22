@@ -66,8 +66,8 @@ let
 
   # Resolve this node's tailnet (CGNAT 100.64.0.0/10) IPv4 into $TSIP, waiting for tailscaled to
   # assign one. omlx (:8000) and STT (:8765) bind to THIS address instead of 0.0.0.0, so they are
-  # never exposed on the vmnet LAN bridge even if the pf tailnet-only anchor is down — the pf anchor
-  # + tailnet ACL stay the PRIMARY gate; this is the bind-layer backstop (M2 defense-in-depth). A
+  # never exposed on the vmnet LAN bridge even if the pf anchor is down — the pf anchor (scoped to
+  # hermes's resolved tailnet IP) stays the PRIMARY gate; this is the bind-layer backstop (M2). A
   # RunAtLoad agent can win the race against tailscaled coming up, so poll like the cliproxy/agent-
   # vault sops-waits above; the `|| true` keeps a failed `tailscale ip` from tripping `set -e`
   # mid-loop. Fail LOUD after the timeout (a service bound to nothing is useless); KeepAlive then
@@ -190,6 +190,133 @@ let
     # carries credential injection on the matched hosts but can never read/reveal a raw key. (L1.)
     "$AV" agent create ${vaultName} --vault ${vaultName}:proxy 2>/dev/null || true
   '';
+
+  # Scope metal's five service ports to its two legitimate consumers, resolved at RUNTIME (boot,
+  # activation, and a periodic refresh — never baked into the build):
+  #   * hermes (the runtime client), by HOSTNAME — `tailscale ip -4 hermes`. If hermes is rebuilt and
+  #     its tailnet IP changes, the next resolve re-scopes with no darwin-rebuild.
+  #   * the host admin machine, whose tailnet IP is NOT yclaw-named (it is the operator's own Mac, an
+  #     existing tailnet member) so it cannot be resolved here — bootstrap.sh writes it into
+  #     `metal-allowed-hosts` over the SSH path (which the gate never blocks) and kicks this refresh.
+  #     The host reaches `metal:14321` directly for the bootstrap CA fetch + Google-OAuth admin.
+  # This is the PRIMARY hermes/host-only gate: the deployment tailnet is SHARED and its ACL is
+  # allow-all, so the ACL does not restrict metal — pf does, here, dropping every OTHER tailnet node
+  # (sprite/gcp/zo/modal) and the sibling vmnet-LAN guests. Never fail-OPEN: with no resolvable source
+  # the anchor is fully CLOSED (lo0 only), never the whole CGNAT.
+  #
+  # $1 = poll attempts (1s apart) to wait for tailscaled + the hermes peer. A transient hermes
+  # unresolve reuses the last-known hermes IP (sticky state) so a blip never drops hermes; it never
+  # widens. The anchor is written atomically (temp + rename) and loaded into the kernel BEFORE the
+  # file is persisted, with the load failure surfaced — so the on-disk file (the boot-time `load
+  # anchor` source) can never claim a ruleset the kernel does not actually hold.
+  pfAnchorScript = pkgs.writeShellScript "metal-pf-anchor" ''
+    set -u
+    ANCHOR_DIR="/etc/pf.anchors"
+    ANCHOR_FILE="$ANCHOR_DIR/metal"
+    HOSTS_FILE="$ANCHOR_DIR/metal-allowed-hosts"
+    HERMES_STATE="$ANCHOR_DIR/.metal-hermes-ip"
+    PORTS="{ 8000, 8765, 8317, 14321, 14322 }"
+    # A single bare IPv4 host — NO CIDR. Both writers (tailscale ip -4; bootstrap.sh) emit a bare /32,
+    # so refusing a mask stops a fat-fingered/hostile `0.0.0.0/0` line in metal-allowed-hosts from
+    # widening the gate to the whole tailnet. A malformed octet still gets rejected by pfctl at load,
+    # which fail-CLOSED leaves the prior ruleset in force (see the load check below).
+    IPV4='^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+    mkdir -p "$ANCHOR_DIR"
+
+    HERMES_IP=""
+    for _ in $(seq 1 "''${1:-10}"); do
+      HERMES_IP=$(/opt/homebrew/bin/tailscale ip -4 hermes 2>/dev/null | head -1) || true
+      [ -n "$HERMES_IP" ] && break
+      sleep 1
+    done
+    # Remember a good resolve; reuse the last-known IP on a transient unresolve so a blip never DROPS
+    # hermes. Never resolved + no prior state => hermes simply absent (fail-closed, NOT the CGNAT).
+    if printf '%s' "$HERMES_IP" | grep -Eq "$IPV4"; then
+      printf '%s\n' "$HERMES_IP" > "$HERMES_STATE.tmp" && mv -f "$HERMES_STATE.tmp" "$HERMES_STATE"
+    elif [ -s "$HERMES_STATE" ]; then
+      HERMES_IP=$(cat "$HERMES_STATE")
+    else
+      HERMES_IP=""
+    fi
+
+    # Allowed sources = hermes + the host admin IP(s). Each host line must be a single bare IPv4
+    # before it can reach a pf rule, so the file can neither inject pf syntax nor widen to a fat CIDR.
+    SOURCES=""
+    [ -n "$HERMES_IP" ] && SOURCES="$HERMES_IP"
+    if [ -s "$HOSTS_FILE" ]; then
+      while IFS= read -r line; do
+        line=$(printf '%s' "$line" | tr -d '[:space:]')
+        printf '%s' "$line" | grep -Eq "$IPV4" && SOURCES="''${SOURCES:+$SOURCES }$line"
+      done < "$HOSTS_FILE"
+    fi
+
+    # Build the desired anchor in a temp file. No source => CLOSED (lo0 pass + block-all): the very
+    # first bring-up before hermes joins and before the host has injected its IP.
+    TMP=$(mktemp "$ANCHOR_DIR/.metal.XXXXXX") || { echo "metal: ERROR mktemp failed for pf anchor" >&2; exit 1; }
+    {
+      echo "# Generated at runtime by metal-pf-anchor (hermes by hostname; host IPs from metal-allowed-hosts)."
+      echo "# lo0 is never filtered (agent-vault provision + health checks hit 127.0.0.1:14321)."
+      echo "pass in quick on lo0 all"
+      for s in $SOURCES; do
+        echo "pass in quick proto tcp from $s to any port $PORTS"
+      done
+      echo "block in quick proto tcp from any to any port $PORTS"
+    } > "$TMP"
+
+    # Watchdog: pf can sit loaded-but-DISABLED (macOS boots that way, and an out-of-band `pfctl -d`
+    # would too), in which case a resident block rule filters NOTHING — and cliproxy/agent-vault bind
+    # 0.0.0.0, so pf is their SOLE gate. If our block rule is already resident but pf is off, re-enable
+    # it (idempotent), so the 5-min refresh guards the ENGINE, not just the ruleset (the boot daemon
+    # only re-enables at boot). Runs before the skip below so an unchanged ruleset cannot bypass it.
+    if /sbin/pfctl -a metal -sr 2>/dev/null | grep -q 'block' && ! /sbin/pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'; then
+      echo "metal: WARN pf was disabled with the metal anchor resident — re-enabling" >&2
+      /sbin/pfctl -e 2>/dev/null || true
+    fi
+
+    # Skip the reload only when the desired ruleset already matches the persisted file AND the kernel
+    # actually has the anchor loaded (a block rule resident) — so a stale/empty kernel anchor or a
+    # changed source set always forces a reload, while a steady-state refresh stays quiet.
+    if cmp -s "$TMP" "$ANCHOR_FILE" && /sbin/pfctl -a metal -sr 2>/dev/null | grep -q 'block'; then
+      rm -f "$TMP"
+      exit 0
+    fi
+    # Load into the kernel FIRST; persist the file (the boot-time `load anchor` source) only once pf
+    # has accepted it, and surface a load failure instead of swallowing it. ALWAYS reloads when not
+    # current (cheap; pf STATE survives a rule reload), so a prior failed load self-heals.
+    if /sbin/pfctl -a metal -f "$TMP" 2>/dev/null; then
+      mv -f "$TMP" "$ANCHOR_FILE"
+      echo "metal: pf anchor sources = ''${SOURCES:-CLOSED (no hermes, no host yet)}"
+    else
+      rm -f "$TMP"
+      echo "metal: ERROR pfctl rejected the metal anchor — previous ruleset left in force" >&2
+      exit 1
+    fi
+  '';
+
+  # Re-applied at EVERY boot (postActivation runs only on darwin-rebuild, and both the Metal wired
+  # cap and pf reset on reboot). Raise the wired cap, reload pf.conf (re-loads the persisted `metal`
+  # anchor — last-known-good), ENABLE pf and fail LOUD (non-zero, recorded by launchd) if it does not
+  # come up, THEN refresh the anchor to hermes's current tailnet IP. The refresh runs AFTER pf is
+  # already enforcing the persisted anchor, so waiting up to 120s for tailscaled never opens a window.
+  # Final gate: assert the metal block rule is actually RESIDENT in the kernel — `Status: Enabled`
+  # alone passes even with an empty anchor (e.g. if the pf.conf reload failed), which would leave the
+  # 0.0.0.0-bound credential ports open; the block rule is the real default-deny.
+  bootSetupScript = pkgs.writeShellScript "metal-boot-setup" ''
+    set -u
+    wired=$(( $(/usr/sbin/sysctl -n hw.memsize)/1048576 - 6144 ))
+    /usr/sbin/sysctl iogpu.wired_limit_mb=$wired || true
+    /sbin/pfctl -f /etc/pf.conf 2>/dev/null || echo 'metal: ERROR pfctl -f /etc/pf.conf failed' >&2
+    /sbin/pfctl -e 2>/dev/null || true
+    if ! /sbin/pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'; then
+      echo 'metal: FATAL pf not enabled after boot setup — credential services exposed to vmnet LAN' >&2
+      exit 1
+    fi
+    ${pfAnchorScript} 120
+    if ! /sbin/pfctl -a metal -sr 2>/dev/null | grep -q 'block'; then
+      echo 'metal: FATAL metal pf anchor has no block rule after boot setup — credential ports exposed' >&2
+      exit 1
+    fi
+  '';
 in
 {
   # Evaluate-only manifest sanity: every secret metal owns must exist in the catalog (the single
@@ -304,33 +431,34 @@ in
   };
 
   # --- boot-time system setup (system daemon) ----------------------------------
-  # The postActivation script (below) sets the Metal wired-memory cap and enables pf, but
-  # activation runs only on `darwin-rebuild`, NOT at boot — and BOTH reset on reboot:
-  #   * iogpu.wired_limit_mb is a runtime sysctl that reverts to the macOS default (~36 GB) on
-  #     boot, too small for the 35B model + KV cache, so omlx would fail/OOM on first serve.
-  #   * macOS's boot-time com.apple.pfctl loads /etc/pf.conf (so the `metal` anchor rules are
-  #     present) but never ENABLES pf, so the tailnet-only gate would sit inert after a reboot
-  #     (including the auto-security-update reboots this module keeps on), exposing the
-  #     credential services to the vmnet LAN.
-  # This RunAtLoad daemon re-applies both at every boot: raise the wired cap, then reload
-  # /etc/pf.conf (includes the persisted `metal` anchor) and enable pf. The guest runs no
-  # vmnet/NAT anchors, so a full `-f` reload is safe here.
+  # postActivation (below) sets the Metal wired cap, enables pf, and scopes the anchor to hermes +
+  # the host — but activation runs only on `darwin-rebuild`, NOT at boot, and all three reset on reboot:
+  #   * iogpu.wired_limit_mb is a runtime sysctl that reverts to the macOS default (~36 GB) on boot,
+  #     too small for the 35B model + KV cache, so omlx would fail/OOM on first serve.
+  #   * macOS's boot-time com.apple.pfctl loads /etc/pf.conf (so the `metal` anchor rules are present)
+  #     but never ENABLES pf, so the gate would sit inert after a reboot (including the
+  #     auto-security-update reboots this module keeps on), exposing the credential services.
+  # bootSetupScript (defined above) re-applies all of it at every boot: raise the cap, reload + enable
+  # pf and fail LOUD if it does not come up, then re-resolve the allowed sources and re-scope the anchor.
   launchd.daemons.metal-boot-setup.serviceConfig = {
-    # pf is the tailnet-only default-deny gate; if it fails to come up the credential services are
-    # exposed to the vmnet LAN. Fail LOUD, not open: a reload failure is logged, and a pf-enable
-    # failure both logs and exits non-zero so launchd records it (stderr lands in the persistent
-    # StandardErrorPath below). `pfctl -e` returns non-zero when pf is ALREADY enabled, so its exit
-    # code alone is not a reliable signal — the `pfctl -s info` "Status: Enabled" check is the real
-    # gate. Wired cap keeps `|| true` (a sysctl miss is not security-relevant).
-    ProgramArguments = [
-      "/bin/sh"
-      "-c"
-      "wired=$(( $(/usr/sbin/sysctl -n hw.memsize)/1048576 - 6144 )); /usr/sbin/sysctl iogpu.wired_limit_mb=$wired || true; /sbin/pfctl -f /etc/pf.conf 2>/dev/null || echo 'metal: ERROR pfctl -f /etc/pf.conf failed' >&2; /sbin/pfctl -e 2>/dev/null || true; if /sbin/pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'; then exit 0; else echo 'metal: FATAL pf not enabled after boot setup — credential services exposed to vmnet LAN' >&2; exit 1; fi"
-    ];
+    ProgramArguments = [ "${bootSetupScript}" ];
     RunAtLoad = true;
     KeepAlive = false;
     StandardOutPath = "/var/log/metal-boot-setup.log";
     StandardErrorPath = "/var/log/metal-boot-setup.error.log";
+  };
+
+  # Periodic anchor refresh: re-resolve hermes + re-read the host allow-list every 5 min and re-scope
+  # the pf anchor if a source moved (hermes destroyed + recreated, or a host IP change) — so the gate
+  # self-heals WITHOUT a reboot or darwin-rebuild. Never loosens: a transient hermes unresolve reuses
+  # the sticky last-known IP, and an unchanged source set skips the reload, so established pf state is
+  # left intact.
+  launchd.daemons.metal-pf-refresh.serviceConfig = {
+    ProgramArguments = [ "${pfAnchorScript}" "3" ];
+    StartInterval = 300;
+    RunAtLoad = false;
+    StandardOutPath = "/var/log/metal-pf-refresh.log";
+    StandardErrorPath = "/var/log/metal-pf-refresh.error.log";
   };
 
   # --- Activation-time imperative steps ----------------------------------------
@@ -377,25 +505,14 @@ in
       mv "$SETTINGS.tmp" "$SETTINGS"
       chown -R ${adminUser} "$OMLX_DIR"
 
-      # pf anchor — inbound to the service ports ONLY from the tailnet (100.64.0.0/10), blocked
-      # otherwise. Idempotent (only appends to pf.conf once). NEVER `pfctl -f /etc/pf.conf`
-      # except on the first anchor add: a full reload flushes the dynamically-loaded vmnet/NAT
-      # anchors; reload ONLY this anchor with `pfctl -a metal` on every other activation (the
-      # hard-won guard from host.nix:189-204).
-      PF_ANCHOR_FILE="/etc/pf.anchors/metal"
-      mkdir -p /etc/pf.anchors
-      cat > "$PF_ANCHOR_FILE" <<'EOF'
-      # Loopback is never filtered (the agent-vault provision oneshot + service health checks hit
-      # 127.0.0.1:14321). Allow ONLY the tailnet CGNAT to the five service ports; every other
-      # source — including the sibling guests sharing the host's vmnet LAN bridge — is dropped.
-      # RFC-1918 is deliberately NOT allowed: these credential/AI services are tailnet-only.
-      # The PRIMARY restriction is now the tailnet ACL (tailnet/policy.hujson), which limits the
-      # source to tag:hermes — pf cannot see tags, only the CGNAT range, so this anchor is the
-      # host-local backstop that holds even if the ACL is wrong or a non-hermes tailnet node probes.
-      pass in quick on lo0 all
-      pass in quick proto tcp from 100.64.0.0/10 to any port { 8000, 8765, 8317, 14321, 14322 }
-      block in quick proto tcp from any to any port { 8000, 8765, 8317, 14321, 14322 }
-      EOF
+      # pf anchor — scope the five service ports to hermes (resolved by hostname) + the host admin IP.
+      # metal-pf-anchor writes /etc/pf.anchors/metal and reloads just this anchor. This is the PRIMARY
+      # gate: the shared deployment tailnet's ACL is allow-all, so pf — not the ACL — is what limits
+      # metal to hermes + the host. NEVER `pfctl -f /etc/pf.conf` except on the first anchor add (a
+      # full reload flushes the dynamically-loaded vmnet/NAT anchors); the script reloads ONLY this
+      # anchor with `pfctl -a metal` (the hard-won guard from host.nix:189-204).
+      ${pfAnchorScript}
+      # Wire the anchor into pf.conf ONCE (first activation) so the boot-time `pfctl -f` reloads it.
       if ! grep -q 'anchor "metal"' /etc/pf.conf; then
         cat >> /etc/pf.conf <<CONF
 
@@ -404,10 +521,9 @@ in
       CONF
         /sbin/pfctl -f /etc/pf.conf || true
       fi
-      /sbin/pfctl -a metal -f "$PF_ANCHOR_FILE" 2>/dev/null || true
       # ENABLE pf. macOS ships pf DISABLED and only auto-enables it for Internet Sharing/vmnet —
       # which runs on the HOST, not in this guest — so, unlike host.nix, we MUST enable it here or
-      # the anchor is loaded-but-never-enforced and the services are NOT actually tailnet-only.
+      # the anchor is loaded-but-never-enforced and the services are NOT actually restricted.
       # `-e` is idempotent enough (no-ops with a harmless error if pf is already enabled). The
       # scoped anchor only blocks the five ports, so enabling pf never touches ssh/tailscale.
       /sbin/pfctl -e 2>/dev/null || true

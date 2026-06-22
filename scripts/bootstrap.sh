@@ -206,6 +206,26 @@ for node in metal bluebubbles; do
     || log "  (agent com.yclaw.tart-$node not loaded yet; ./scripts/setup.sh bootstraps it)"
 done
 
+# --- 6b. authorize THIS host on metal's pf gate ------------------------------
+# metal's pf anchor (darwin/metal.nix) admits ONLY hermes + explicitly-allowed host IPs to its five
+# service ports; every other tailnet node is dropped. hermes does not exist yet, and this host is an
+# arbitrary existing tailnet member (not yclaw-named), so metal cannot resolve it — authorize it by
+# writing this host's own tailnet IP into metal's allow-list over the SSH path (which the gate never
+# blocks), then kick the anchor refresh so it applies before the CA fetch below. Idempotent: the file
+# is overwritten each run, so no stale host IP accumulates. metal SSH must be up first (it is the
+# admin path), so wait on it.
+HOST_TS_IP="$(tailscale ip -4 2>/dev/null | head -1)"
+[[ -n "$HOST_TS_IP" ]] || die "could not determine this host's tailnet IP (tailscale ip -4) to authorize host->metal access"
+log "Authorizing this host ($HOST_TS_IP) on metal's pf gate (waiting for metal SSH) ..."
+host_authorized=""
+for _ in $(seq 1 60); do
+  if tailscale ssh root@metal -- sh -c "mkdir -p /etc/pf.anchors && umask 077 && printf '%s\n' '$HOST_TS_IP' > /etc/pf.anchors/metal-allowed-hosts && launchctl kickstart -k system/org.nixos.metal-pf-refresh" 2>/dev/null; then
+    host_authorized=1; break
+  fi
+  sleep 5
+done
+[[ -n "$host_authorized" ]] || die "could not authorize this host on metal's pf gate over tailscale ssh — is metal up?"
+
 # --- 7. build the hermes image with the REAL agent-vault CA ------------------
 
 # hermes trusts the agent-vault MITM CA (security.pki.certificateFiles → nixos/agent-vault-ca.pem).
