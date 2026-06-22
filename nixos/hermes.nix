@@ -48,9 +48,9 @@ let
     # Authorization header with the real, custody-held key on the wire — even if the
     # client sends Authorization: Bearer dummy, the broker replaces it.
     # api.openai.com / api.exa.ai / api.honcho.dev are NOT in NO_PROXY, so they route
-    # through the vault proxy and get injected. The model (custom provider) call no longer
-    # rides a dummy: it goes to metal's cliproxy directly with hermes's own HERMES_CLIPROXY_KEY
-    # (model.key_env below) — a distinct bearer, not metal's aperture/static-key.
+    # through the vault proxy and get injected. The model (custom provider) call rides no
+    # dummy and no bearer: it reaches metal's cliproxy directly on :8317, which is pf-gated to
+    # hermes + the host ("the tailnet is the auth"), so the model plane needs no key_env.
     # TODO(human): confirm each SDK honors HTTPS_PROXY (so vault can intercept) — Exa/Honcho/OpenAI.
     OPENAI_API_KEY=__openai__
     EXA_API_KEY=__exa__
@@ -303,21 +303,18 @@ in
       # through it added a measured ~0.5s TTFB per call (paid again on each tool round).
       # We now hit metal's upstreams directly: gpt-5.5 + gemini → cliproxy :8317,
       # Qwen → omlx :8000. Bare `metal` resolves via MagicDNS and is in NO_PROXY, so these
-      # stay DIRECT (no agent-vault MITM hop). cliproxy gates :8317 with a static bearer; hermes
-      # presents its OWN cliproxy key (HERMES_CLIPROXY_KEY — distinct from metal's aperture/static-key,
-      # rotatable independently) via key_env. omlx :8000 needs no key.
+      # stay DIRECT (no agent-vault MITM hop). cliproxy's :8317 is pf-gated to hermes + the host,
+      # so hermes reaches it with no bearer ("the tailnet is the auth"); omlx :8000 needs no key either.
       model = {
         provider = "custom";
         default = "gpt-5.5";
         base_url = "http://metal:8317/v1";
-        key_env = "HERMES_CLIPROXY_KEY";
       };
       fallback_providers = [
         {
           provider = "custom";
           model = "gemini-3-pro-preview";
           base_url = "http://metal:8317/v1";
-          key_env = "HERMES_CLIPROXY_KEY";
         }
         {
           provider = "custom";
@@ -490,9 +487,10 @@ in
       # ── Platform toolsets (locked stack: CLI + BlueBubbles only) ──
       platform_toolsets = {
         cli = [ "hermes-cli" ];
-        # hermes-telegram is the standard full messaging bundle (terminal, file,
-        # web, vision, image_gen, tts, browser, skills, todo, cronjob, send_message).
-        # TODO(human): pick hermes-telegram bundle vs an explicit list.
+        # hermes-telegram is the standard full messaging bundle (terminal, file, web,
+        # vision, image_gen, tts, browser, skills, todo, cronjob, send_message). Deliberately
+        # the full bundle: the agent is autonomous by design (delegation.subagent_auto_approve),
+        # contained by gVisor + the docker socket proxy — not by toolset narrowing.
         bluebubbles = [ "hermes-telegram" ];
       };
 
@@ -520,16 +518,13 @@ in
     };
   };
 
-  # Two secrets land in the hermes VM, both carried by the encrypted sops "hermes/env" file
-  # (appended last into ~/.hermes/.env, so neither hits the world-readable Nix store):
+  # One secret lands in the hermes VM, carried by the encrypted sops "hermes/env" file
+  # (appended last into ~/.hermes/.env, so it never hits the world-readable Nix store):
   #   * BLUEBUBBLES_PASSWORD — BlueBubbles is in NO_PROXY, so agent-vault cannot inject it on the
   #     wire; hermes must hold it. Scope the BlueBubbles account to least privilege + rotate on
   #     any hermes compromise.
-  #   * HERMES_CLIPROXY_KEY — hermes's OWN bearer for metal's cliproxy on :8317 (model.key_env
-  #     above). This is NOT metal's aperture/static-key: it is a distinct, machine-minted key that
-  #     cliproxy also accepts (api-keys list) and that can be rotated independently of the Aperture
-  #     key. So a hermes compromise leaks only hermes's cliproxy access (gated to tag:hermes by the
-  #     tailnet ACL), never metal's real Aperture bearer or any upstream API key.
+  # (hermes's former cliproxy bearer HERMES_CLIPROXY_KEY was dropped: metal's :8317 is pf-gated to
+  # hermes + the host, so the model plane needs no per-caller key — "the tailnet is the auth".)
   #
   # Derived from the manifest's hosts.hermes.secrets (single source of truth), minus
   # tailscale/authkey — that universal secret is already declared by nixos/common.nix, so we

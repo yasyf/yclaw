@@ -61,7 +61,6 @@ let
   masterPasswordFile = config.sops.secrets."vault/master-password".path;
   staticKeysFile = config.sops.secrets."vault/static-keys".path;
   apertureKeyFile = config.sops.secrets."aperture/static-key".path;
-  hermesCliproxyKeyFile = config.sops.secrets."hermes/cliproxy-key".path;
   tailscaleAuthkeyFile = config.sops.secrets."tailscale/authkey".path;
 
   # Resolve this node's tailnet (CGNAT 100.64.0.0/10) IPv4 into $TSIP, waiting for tailscaled to
@@ -129,11 +128,10 @@ let
     # Wait for sops-nix to decrypt the key. /run/secrets is tmpfs (empty on a cold boot) and this
     # RunAtLoad agent can win the race against the sops secret-install daemon; without the wait the
     # `cat` fails under `set -e` and the service crash-loops until kicked.
-    for _ in $(seq 1 60); do [ -s ${lib.escapeShellArg apertureKeyFile} ] && [ -s ${lib.escapeShellArg hermesCliproxyKeyFile} ] && break; sleep 1; done
+    for _ in $(seq 1 60); do [ -s ${lib.escapeShellArg apertureKeyFile} ] && break; sleep 1; done
     KEY=$(cat ${lib.escapeShellArg apertureKeyFile})
-    HKEY=$(cat ${lib.escapeShellArg hermesCliproxyKeyFile})
     mkdir -p ${lib.escapeShellArg "/Volumes/My Shared Files/cliproxy/auth"}
-    ${pkgs.gnused}/bin/sed -e "s|@@APERTURE_STATIC_KEY@@|$KEY|g" -e "s|@@HERMES_CLIPROXY_KEY@@|$HKEY|g" \
+    ${pkgs.gnused}/bin/sed -e "s|@@APERTURE_STATIC_KEY@@|$KEY|g" \
       ${lib.escapeShellArg "${cliproxyConfigTemplate}"} > ${lib.escapeShellArg cliproxyConfigRendered}
     chmod 600 ${lib.escapeShellArg cliproxyConfigRendered}
     exec ${pkgs.cli-proxy-api}/bin/cli-proxy-api --config ${lib.escapeShellArg cliproxyConfigRendered}
