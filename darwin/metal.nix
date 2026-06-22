@@ -52,7 +52,11 @@ let
   vaultHome = "/Volumes/My Shared Files/agentvault";
   servicesYaml = ../nixos/vault-services.yaml;
 
-  hfHome = "/Volumes/My Shared Files/hf";
+  # The shared HF hub cache: metal mounts the host's regular ~/.cache/huggingface/hub here (the
+  # `hfhub` share, scripts/setup.sh). omlx + STT read models from it via HF_HUB_CACHE — host and
+  # VM share ONE cache, so `hf download` on the host is what the VM serves. The host's HF token
+  # stays on the host (only the `hub/` subdir is shared, never the sibling `token` file).
+  hfHubCache = "/Volumes/My Shared Files/hfhub";
 
   # mlx-audio runs from a python venv (system python3 is 3.14); the wrapper builds it once.
   sttVenv = "/Volumes/My Shared Files/mlxaudio/venv";
@@ -82,12 +86,13 @@ let
 
   # Wrappers: launchd has no EnvironmentFile, so each wrapper sources the secret/env it needs
   # and exec's the absolute binary. Run as the `admin` GUI user (Metal needs the login session).
-  # omlx discovers the model from the HF cache on the state mount (HF_HOME) via --hf-cache
-  # (default on); no --model-dir (verified: serving the 35B this way cold-loads in ~14s).
+  # omlx discovers the model from the shared HF hub cache (HF_HUB_CACHE → the `hfhub` share, the
+  # host's regular cache) via --hf-cache (default on); no --model-dir (verified: serving the 35B
+  # this way cold-loads in ~14s).
   omlxWrapper = pkgs.writeShellScript "metal-omlx" ''
     set -euo pipefail
-    export HF_HOME=${lib.escapeShellArg hfHome}
-    mkdir -p "$HF_HOME" ${lib.escapeShellArg "${home}/Library/Caches/omlx-kv"}
+    export HF_HUB_CACHE=${lib.escapeShellArg hfHubCache}
+    mkdir -p "$HF_HUB_CACHE" ${lib.escapeShellArg "${home}/Library/Caches/omlx-kv"}
     ${resolveTailscaleIp}
     exec /opt/homebrew/bin/omlx serve \
       --host "$TSIP" --port 8000 \
@@ -104,9 +109,9 @@ let
   sttServerPy = ./stt-server.py;
   sttWrapper = pkgs.writeShellScript "metal-mlx-audio" ''
     set -euo pipefail
-    export HF_HOME=${lib.escapeShellArg hfHome}
+    export HF_HUB_CACHE=${lib.escapeShellArg hfHubCache}
     export STT_MODEL=${(import ../nixos/models.nix).stt} STT_PORT=8765
-    mkdir -p "$HF_HOME"
+    mkdir -p "$HF_HUB_CACHE"
     ${resolveTailscaleIp}
     export STT_HOST="$TSIP"
     VENV=${lib.escapeShellArg sttVenv}

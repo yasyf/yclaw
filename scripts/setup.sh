@@ -34,9 +34,15 @@ LAUNCH_AGENTS_DIR="$HOME_DIR/Library/LaunchAgents"
 TART_BIN="/opt/homebrew/bin/tart"
 LOGS_DIR="$HOME_DIR/Library/Logs/Tart"
 
+# The host's REGULAR Hugging Face hub cache (NOT the state tree). metal mounts this as the
+# `hfhub` share and serves models (omlx + STT) from it, so host and VM share ONE model cache and
+# `hf download` on the host lands where the VM reads. Only the `hub/` subdir is shared — the
+# sibling `token` file stays on the host and never enters the VM.
+HF_HUB_DIR="${HF_HOME:-$HOME_DIR/.cache/huggingface}/hub"
+
 # State subdirs the VMs read/write over the virtiofs shares (metal mounts narrow per-need shares,
 # hermes mounts its own hosts/hermes bundle + hermes/ runtime state).
-STATE_SUBDIRS=(hosts/hermes hosts/metal cli-proxy-api/auth agent-vault hf mlx-audio hermes)
+STATE_SUBDIRS=(hosts/hermes hosts/metal cli-proxy-api/auth agent-vault mlx-audio hermes)
 
 # pf VNC anchor: OFF by default. The host runs no VNC-exposed model services anymore, so there
 # is nothing to gate. Set ENABLE_VNC_ANCHOR=1 only if a VNC service is reintroduced on the host.
@@ -134,6 +140,9 @@ for sub in "${STATE_SUBDIRS[@]}"; do
 done
 chmod 700 "$STATE_DIR/hosts/hermes" "$STATE_DIR/hosts/metal"
 mkdir -p "$LOGS_DIR" "$LAUNCH_AGENTS_DIR"
+# The shared HF hub cache lives in the host's regular cache, not the state tree — create it so the
+# metal LaunchAgent can mount the `hfhub` share even before any model has been downloaded.
+mkdir -p "$HF_HUB_DIR"
 
 # hermes node-config share source: the dir the tart-hermes runner mounts (--dir=sops:...:ro) so
 # common.nix's seedNodeConfig can read key.txt + secrets.sops.yaml (+ node.env, agent-vault-ca.pem)
@@ -161,7 +170,7 @@ write_agent metal \
   --no-graphics \
   "--dir=metalsecrets:$STATE_DIR/hosts/metal:ro" \
   "--dir=agentvault:$STATE_DIR/agent-vault" \
-  "--dir=hf:$STATE_DIR/hf" \
+  "--dir=hfhub:$HF_HUB_DIR" \
   "--dir=mlxaudio:$STATE_DIR/mlx-audio" \
   "--dir=cliproxy:$STATE_DIR/cli-proxy-api" \
   "--dir=repo:$HOME_DIR/Code/yclaw:ro"

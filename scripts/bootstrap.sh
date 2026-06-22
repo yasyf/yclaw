@@ -67,6 +67,7 @@ need rsync
 need curl
 need rg               # the genericity guard below scans the config tree with ripgrep
 need nix              # hermes image: build-hermes-image.sh drives nix inside a linux builder VM
+need hf               # auto-downloads the Qwen model into the host's shared HF hub cache
 mkdir -p "$RUNTIME_DIR"
 chmod 700 "$RUNTIME_DIR"
 
@@ -309,6 +310,18 @@ else
   log "    $ONBOARD_CMD"
 fi
 
+# --- 8c. download the Qwen model into the shared HF hub cache ----------------
+
+# The model the agent serves (omlx on metal) lives in the host's REGULAR HF hub cache, which metal
+# mounts as the `hfhub` virtiofs share (scripts/setup.sh) — host and VM share one cache, so the
+# download lands exactly where the VM reads. `hf download` is idempotent (skips files already
+# present). models.nix stores the id in HF cache-dir form (org--repo); the first `--` becomes the
+# repo-id `/`. Public model — no HF token needed (the token never enters the VM regardless).
+QWEN_ID="$(rg -o 'qwen = "[^"]+"' nixos/models.nix | sed -E 's/qwen = "(.*)"/\1/')"
+QWEN_REPO="${QWEN_ID/--//}"
+log "Downloading model $QWEN_REPO into the shared HF hub cache (${HF_HOME:-$HOME/.cache/huggingface}/hub) ..."
+hf download "$QWEN_REPO"
+
 # --- 9. human gates ----------------------------------------------------------
 
 cat <<EOF
@@ -331,11 +344,6 @@ cat <<EOF
   [ ] 4. agent-vault Google OAuth connect (run on the host):
            ./scripts/connect-google-oauth.py
          Open the printed CONSENT_URL, approve, and it finishes + verifies.
-
-  [ ] 5. Place the Qwen MLX model on metal:
-           hf download $(rg -o 'qwen = "[^"]+"' nixos/models.nix | sed -E 's/qwen = "(.*)"/\1/')
-         into the host's ~/.yclaw/state/hf (metal mounts it as the narrow `hf` share at
-         /Volumes/My Shared Files/hf, which the omlx wrapper sets as HF_HOME).
 
 ================================================================================
   Bootstrap finished the autonomous steps. Stopping cleanly at the gates above.

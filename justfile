@@ -97,6 +97,5 @@ backup:
     command -v restic >/dev/null || brew install restic
     restic -r "$YCLAW_RESTIC_REPO" snapshots >/dev/null 2>&1 || restic -r "$YCLAW_RESTIC_REPO" init
     restic -r "$YCLAW_RESTIC_REPO" backup "$HOME/.yclaw/state" \
-      --exclude "$HOME/.yclaw/state/hf" \
       --exclude "$HOME/.yclaw/state/omlx" \
       --exclude "$HOME/.yclaw/state/mlx-audio"
