@@ -6,6 +6,13 @@
 default:
     @just --list
 
+# The single entrypoint: the de-Nix'd onboarding wizard. Preflight → collect secrets + mint
+# per-host age keys and per-node tailnet keys → packer-build metal+bluebubbles → build hermes
+# image → setup.sh → authorize host on metal's pf gate → boot+onboard hermes → download the
+# model → print the human gates. Idempotent; re-run after clearing a gate.
+bootstrap:
+    ./scripts/bootstrap.sh
+
 # De-Nix'd host bring-up: Homebrew tart/gum, ~/.yclaw/state, and the com.yclaw.tart-* runners.
 setup:
     ./scripts/setup.sh
@@ -83,19 +90,97 @@ validate:
 bb-harden:
     tailscale ssh root@bluebubbles -- bash -s harden < scripts/bluebubbles-setup.sh
 
-# Tear down the tart VMs (boot out launchd agents first so KeepAlive can't relaunch).
+# Tear down every yclaw tart VM (boot out launchd agents first so KeepAlive can't relaunch),
+# then remove the runner plists. Covers metal, hermes, bluebubbles, and the retired `vault`
+# VM whose disk lingers at ~/.tart/vms/vault. Leaves host state/keychain alone — use `nuke`.
 destroy:
     #!/usr/bin/env bash
     set -euo pipefail
     # scripts/setup.sh writes the runners as `com.yclaw.tart-<node>` (NOT the old nix-darwin
     # `org.nixos.*` labels). Boot them out so KeepAlive can't relaunch the VM mid-teardown.
-    launchctl bootout "gui/$(id -u)/com.yclaw.tart-metal"  || true
-    launchctl bootout "gui/$(id -u)/com.yclaw.tart-hermes" || true
-    tart stop metal  2>/dev/null || true ; tart delete metal  2>/dev/null || true
-    tart stop hermes 2>/dev/null || true ; tart delete hermes 2>/dev/null || true
+    for node in metal hermes bluebubbles; do
+      launchctl bootout "gui/$(id -u)/com.yclaw.tart-${node}" 2>/dev/null || true
+      rm -f "$HOME/Library/LaunchAgents/com.yclaw.tart-${node}.plist"
+    done
+    # `vault` was retired into metal but its disk persists; delete it too.
+    for vm in metal hermes bluebubbles vault; do
+      tart stop "$vm" 2>/dev/null || true
+      tart delete "$vm" 2>/dev/null || true
+    done
 
 # From-zero acceptance test: destroy then bring the host back up.
 rebuild: destroy setup
+
+# Clean slate: destroy every VM, then wipe host secret/agent state + the generated keychain
+# items so the next `just bootstrap` regenerates everything fresh. PRESERVES the operator-supplied
+# Tailscale OAuth client (yclaw-ts-oauth-client-{id,secret}) and the large, content-addressed
+# model caches (set WIPE_MODELS=1 to drop those too). After this, mint lingering tailnet device
+# entries with `just nuke-tailnet`.
+nuke: destroy
+    #!/usr/bin/env bash
+    set -euo pipefail
+    state="$HOME/.yclaw/state"
+    # Secret + agent state under ~/.yclaw/state (keep model weight caches by default).
+    rm -rf \
+      "$state/age" \
+      "$state"/secrets.sops.yaml* \
+      "$state/vm-secrets" \
+      "$state/hosts" \
+      "$state/agent-vault" \
+      "$state/cli-proxy-api" \
+      "$state/hermes" \
+      "$state/bluebubbles" \
+      "$state/aperture-backup" \
+      "$state/mlx-audio" \
+      "$state/values.env"
+    if [ "${WIPE_MODELS:-0}" = "1" ]; then
+      rm -rf "$state/hf" "$state/omlx" "$HOME/.cache/huggingface/hub"
+      echo "nuke: dropped model caches (WIPE_MODELS=1) — redeploy will re-download ~20 GB"
+    else
+      echo "nuke: preserved model caches ($state/{hf,omlx}, ~/.cache/huggingface/hub); set WIPE_MODELS=1 to drop them"
+    fi
+    # The hermes node-config share source, so a fresh hermes can't re-seed stale secrets.
+    rm -rf "$HOME/.config/yclaw/vm-secrets"
+    # Gitignored repo build cruft.
+    rm -rf secrets/runtime .build
+    # Keychain: delete only the GENERATED items; keep the OAuth client + keychain unlock password.
+    kc="$HOME/Library/Keychains/yclaw.keychain-db"
+    if [ -f "$kc" ]; then
+      for svc in yclaw-agent-vault-master yclaw-metal-admin-pass yclaw-bluebubbles-admin-pass yclaw-bluebubbles-server-pass; do
+        security delete-generic-password -s "$svc" "$kc" >/dev/null 2>&1 || true
+      done
+      echo "nuke: cleared generated keychain passwords; preserved yclaw-ts-oauth-client-{id,secret}"
+    fi
+    echo "nuke: clean slate. Next: just nuke-tailnet (optional), then just bootstrap."
+
+# Delete lingering yclaw device registrations from the tailnet (ephemeral metal/hermes keys
+# auto-reap; the manually-joined bluebubbles node is the one that lingers). Needs TAILSCALE_API_KEY
+# (the same key in .env). No-op with a message if it's unset.
+nuke-tailnet:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ -f .env ] && set -a && . ./.env && set +a || true
+    if [ -z "${TAILSCALE_API_KEY:-}" ]; then
+      echo "nuke-tailnet: TAILSCALE_API_KEY unset (check .env) — skipping; delete yclaw devices by hand in the admin console" >&2
+      exit 0
+    fi
+    api="https://api.tailscale.com/api/v2"
+    devices="$(curl -sf -u "${TAILSCALE_API_KEY}:" "$api/tailnet/-/devices")"
+    # Match by hostname AND by tag — old pre-migration nodes joined untagged, new ones carry tag:<host>.
+    echo "$devices" | jq -r '
+      .devices[]
+      | ((.hostname // "") | ascii_downcase) as $h
+      | ((.name // "") | ascii_downcase | split(".")[0]) as $n
+      | select(
+          ([$h, $n] | any(. == "hermes" or . == "metal" or . == "bluebubbles" or . == "vault"))
+          or ((.tags // []) | any(. == "tag:hermes" or . == "tag:metal" or . == "tag:bluebubbles"))
+        )
+      | "\(.id)\t\(.hostname)\t\((.tags // []) | join(","))"
+    ' | while IFS=$'\t' read -r id hostname tags; do
+          echo "nuke-tailnet: deleting device $hostname (tags: ${tags:-none})"
+          curl -sf -X DELETE -u "${TAILSCALE_API_KEY}:" "$api/device/$id" || echo "  (delete failed for $id)" >&2
+        done
+    echo "nuke-tailnet: done."
 
 # Back up the irreplaceable host state (~/.yclaw/state) via restic. Set YCLAW_RESTIC_REPO
 # + RESTIC_PASSWORD first (a B2/S3 URL or a local/NAS path). Skips the large, regenerable caches.

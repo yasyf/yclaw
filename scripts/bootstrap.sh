@@ -338,11 +338,14 @@ cat <<EOF
          prints a HUMAN FALLBACK, finish those GUI grants over Screen Sharing, then: just bb-harden
 
   [ ] 2. CLIProxyAPI Codex login (metal, one-time browser flow):
-           cli-proxy-api --codex-login          # ChatGPT subscription account
+           cli-proxy-api --codex-login --no-browser   # ChatGPT subscription account
+                                                       # --no-browser prints a URL to approve from any
+                                                       # browser, then paste the code back (no SSH tunnel)
 
   [ ] 3. CLIProxyAPI Gemini login (metal, one-time browser flow):
-           cli-proxy-api --login                 # NOTE: flag is --login, NOT --gemini-login
-                                                 # personal Google (free Code Assist)
+           cli-proxy-api --login --no-browser    # NOTE: flag is --login, NOT --gemini-login
+                                                 # personal Google (free Code Assist); --no-browser =
+                                                 # approve in any browser, paste the redirect URL back
 
   [ ] 4. agent-vault Google OAuth connect (run on the host):
            ./scripts/connect-google-oauth.py

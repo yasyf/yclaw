@@ -115,17 +115,19 @@ then verify.
    prints a HUMAN FALLBACK, finish those GUI grants over Screen Sharing, then run
    `just bb-harden`. `bluebubbles` enrollment is still a manual `tailscale up`, and it
    must advertise its tag: `tailscale up --advertise-tags=tag:bluebubbles`.
-2. **CLIProxyAPI Codex login on `metal`** (browser flow):
+2. **CLIProxyAPI Codex login on `metal`** (browser flow). `--no-browser` prints a URL
+   you approve in any browser, then paste the one-time code back — no SSH tunnel needed:
 
    ```sh
-   cli-proxy-api --codex-login
+   cli-proxy-api --codex-login --no-browser
    ```
 
 3. **CLIProxyAPI Gemini login on `metal`** (browser flow — the flag is `--login`,
-   not `--gemini-login`):
+   not `--gemini-login`). `--no-browser` lets you approve in any browser and paste the
+   redirect URL back:
 
    ```sh
-   cli-proxy-api --login
+   cli-proxy-api --login --no-browser
    ```
 
 4. **agent-vault Google OAuth connect** (run on the host):

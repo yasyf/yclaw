@@ -37,6 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   user, only writes files that are absent (so the agent's own later edits are never
   overwritten), and is re-runnable: `tailscale ssh -t admin@hermes -- sudo -u hermes -H
   hermes-onboard`.
+- The `just bootstrap` recipe. The documented entrypoint (`scripts/bootstrap.sh`) had
+  no matching recipe, so `just bootstrap` failed with "unknown recipe"; it now runs the
+  wizard.
+- `just nuke` and `just nuke-tailnet` — a true clean-slate teardown. `nuke` extends
+  `destroy` by wiping host secret/agent state (`~/.yclaw/state`, the `hermes` node-config
+  share) and the generated keychain passwords, while PRESERVING the operator-supplied
+  Tailscale OAuth client and the large, content-addressed model caches (drop those too
+  with `WIPE_MODELS=1`). `nuke-tailnet` deletes the VMs' lingering device registrations
+  from the tailnet over the Tailscale API. The next `just bootstrap` regenerates the rest.
 
 ### Changed
 - Lower iMessage reply latency. hermes now calls metal's model upstreams directly
@@ -78,6 +87,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-model idle TTL (1800s).
 - Tailscale on the NixOS nodes is bumped to current (overlaid from
   `nixpkgs-unstable`).
+- `just destroy` now tears down every yclaw VM, not just `metal` + `hermes`. It also
+  stops and deletes the `bluebubbles` guest and the retired `vault` VM, boots out all
+  three `com.yclaw.tart-*` launchd agents, and removes their runner plists.
+- The end-of-bootstrap gate instructions pass `--no-browser` to the `cli-proxy-api`
+  Codex/Gemini logins, so the OAuth consent can be approved in any browser and the code
+  pasted back — no SSH tunnel to `metal` required.
 
 ### Removed
 - The `tailscale-acl.yml` GitOps workflow. It force-replaced the whole tailnet ACL
