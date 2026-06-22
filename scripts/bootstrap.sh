@@ -327,12 +327,15 @@ hf download "$QWEN_REPO"
 cat <<EOF
 
 ================================================================================
-  HUMAN GATES — these cannot be scripted. Do them in order, then verify.
+  HUMAN GATES — credential ceremonies the providers keep human (Apple-ID 2FA, OAuth consent).
+  Do them in order, then verify. Everything mechanical is already automated.
 ================================================================================
 
-  [ ] 1. Apple-ID iMessage sign-in (2FA) on the bluebubbles VM.
-         Sign in with the dedicated Apple ID, complete 2FA, enable iMessage,
-         then run scripts/bluebubbles-setup.sh on the bluebubbles VM.
+  [ ] 1. Apple-ID iMessage sign-in (2FA) on the bluebubbles VM — the one irreducibly-human step.
+         Sign in with the dedicated Apple ID, complete 2FA, enable iMessage, then run
+         scripts/bluebubbles-setup.sh on the guest. It auto-grants the BlueBubbles GUI
+         permissions (SIP-off) and auto-disables Screen Sharing once the server is healthy. If it
+         prints a HUMAN FALLBACK, finish those GUI grants over Screen Sharing, then: just bb-harden
 
   [ ] 2. CLIProxyAPI Codex login (metal, one-time browser flow):
            cli-proxy-api --codex-login          # ChatGPT subscription account
