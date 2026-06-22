@@ -73,6 +73,16 @@ smoke:
     # gmail: `gws` with a dummy token round-trips through the agent-vault proxy (real token never in the hermes VM)
     # bluebubbles: send/receive in a DM AND a group, from an authorized handle (allowlist enforced) via https://bluebubbles.@@TAILNET_DOMAIN@@
 
+# Validate the deployed security hardening. Run ON THE HOST with the VMs up, after `just bootstrap`:
+# probes the per-VM isolation + audit controls over `tailscale ssh` and reports PASS/FAIL per check.
+validate:
+    ./scripts/validate-hardening.sh
+
+# Disable Screen Sharing on the bluebubbles guest once iMessage bring-up is done (the post-bring-up
+# hardening step). Idempotent, needs no secrets — pipes the setup script's `harden` path over SSH.
+bb-harden:
+    tailscale ssh root@bluebubbles -- bash -s harden < scripts/bluebubbles-setup.sh
+
 # Tear down the tart VMs (boot out launchd agents first so KeepAlive can't relaunch).
 destroy:
     #!/usr/bin/env bash
