@@ -94,8 +94,8 @@ if [[ -z "${GITHUB_OWNER:-}" ]]; then
 fi
 prompt_var GITHUB_OWNER "GitHub owner whose yclaw fork the guests clone"
 
-# The metal IPSW is pinned in packer/metal.pkr.hcl (its boot_command is tuned to that exact macOS
-# build), so it is no longer collected here — bump it in the packer template, not the wizard.
+# metal clones a digest-pinned cirruslabs base image (see packer/metal.pkr.hcl) rather than
+# installing from a raw IPSW, so there is no IPSW to collect here.
 prompt_var HOST_RAM "host RAM tier in GB, for VM sizing"
 prompt_var AUTHORIZED_HANDLES "iMessage allowlist (comma-separated handles; first is the home channel)"
 
@@ -185,7 +185,7 @@ build_macos_image() {
   [[ -n "$admin_pass" ]] || die "no $admin_service in $YCLAW_KEYCHAIN — collect_secrets should have generated it."
   log "Building $node image via packer (-only=tart-cli.$node) ..."
   # Packer loads every packer/*.pkr.hcl together (shared common.pkr.hcl); -only picks this node.
-  # The metal IPSW is pinned in metal.pkr.hcl, so it is not passed here.
+  # Both nodes clone a digest-pinned base in their .pkr.hcl, so no IPSW var is passed here.
   PKR_VAR_github_owner="$GITHUB_OWNER" \
   PKR_VAR_vm_admin_user="admin" \
   PKR_VAR_vm_admin_pass="$admin_pass" \

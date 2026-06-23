@@ -57,8 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   systemd unit gains `TimeoutStopSec=210s` so a graceful drain is not SIGKILLed
   mid-flight.
 - Deploy is now a single wizard. `just bootstrap` runs end to end: preflight
-  tooling, prompt for the non-secret values (tailnet, GitHub owner, IPSW URL, host
-  RAM, authorized handles), mint the age key and generate per-VM passwords, encrypt
+  tooling, prompt for the non-secret values (tailnet, GitHub owner, host RAM,
+  authorized handles), mint the age key and generate per-VM passwords, encrypt
   state with sops, then build and boot all images. The agent-vault CA fetch from
   `metal` is automated; the remaining human gates (Apple-ID iMessage sign-in,
   `cliproxy` OAuth logins, agent-vault Google OAuth) are printed at the end.

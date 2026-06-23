@@ -15,8 +15,10 @@ the shortest correct path for an operator who already has the repo cloned.
   preflights all of them and stops if one is missing.
 - Disk headroom: the model cache is ~20–25 GB, and the VM disks are `metal` 200 GB,
   `bluebubbles` ~68 GB, and `hermes` 64 GB.
-- A pinned macOS Tahoe IPSW URL (or local path) for the `metal` build, a dedicated
-  Apple ID for iMessage, and a Tailscale tailnet the host already belongs to.
+- A dedicated Apple ID for iMessage and a Tailscale tailnet the host already belongs to.
+  (Both macOS guests clone digest-pinned cirruslabs Tahoe base images — `metal` the SIP-on
+  `macos-tahoe-vanilla`, `bluebubbles` the SIP-off `macos-tahoe-base` — so no operator-supplied
+  IPSW is needed.)
 - **A Tailscale OAuth client, set up before bootstrap.** `collect_secrets` no longer
   takes one reusable auth key; it mints a fresh ephemeral, single-use, tagged key per
   node from an OAuth client (stored in the yclaw keychain as `yclaw-ts-oauth-client-id`
@@ -39,8 +41,8 @@ the shortest correct path for an operator who already has the repo cloned.
   is short-lived (~1h); the minted node keys live two hours (`expirySeconds`) and are
   redeemed at each node's first boot.
 
-First boot is **long** — hours. It downloads the IPSW, installs macOS into the
-guest, and pulls the model weights.
+First boot is **long** — hours. It pulls the cirruslabs base images, builds the
+guests, and pulls the model weights.
 
 ## Run the wizard
 
@@ -57,8 +59,7 @@ The wizard runs these stages autonomously:
 1. **Preflight** the required host tools.
 2. **Prompt for non-secret values.** It auto-detects `TAILNET_DOMAIN` from
    `tailscale status`, derives `GITHUB_OWNER` from your `origin` remote, and
-   asks for `IPSW_URL` (HEAD-checked for reachability — a warning, not a hard
-   fail), `HOST_RAM` (the GB tier for VM sizing), and `AUTHORIZED_HANDLES` (the
+   asks for `HOST_RAM` (the GB tier for VM sizing) and `AUTHORIZED_HANDLES` (the
    comma-separated iMessage allowlist; the first handle is the home channel).
 3. **Mint the per-host age keys and encrypt the secrets.** `collect_secrets` mints
    (or reuses) one age key per host, generates the Aperture static key plus the per-VM
@@ -142,8 +143,8 @@ The Qwen MLX model is no longer a gate — `just bootstrap` auto-downloads it in
 host's regular Hugging Face cache (`~/.cache/huggingface/hub`), which `metal` mounts as
 the `hfhub` share and serves via `HF_HUB_CACHE`.
 
-`metal` is SIP-on from its fresh IPSW install and `bluebubbles` is SIP-off from
-the cirruslabs base, so neither guest needs a SIP recovery step.
+`metal` clones the SIP-on cirruslabs `macos-tahoe-vanilla` base and `bluebubbles` the
+SIP-off `macos-tahoe-base`, so neither guest needs a SIP recovery step.
 
 ## Validate and finish
 

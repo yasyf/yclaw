@@ -17,17 +17,18 @@ packer {
 }
 
 # Local admin baked into both images. nix-darwin's primaryUser + launchd.user.agents target this
-# account, so it MUST be `admin` to match darwin/metal.nix (adminUser = "admin"). Both the cloned
-# cirruslabs base and tart's from_ipsw install ship this account as admin/admin; each build SSHes
-# in with that default and reset-admin-password.sh sets the real per-VM password.
+# account, so it MUST be `admin` to match darwin/metal.nix (adminUser = "admin"). Both nodes clone
+# a cirruslabs base (metal the SIP-on vanilla, bluebubbles the SIP-off base), which ship this
+# account as admin/admin; each build SSHes in with that default and reset-admin-password.sh sets
+# the real per-VM password.
 variable "vm_admin_user" {
   type    = string
   default = "admin"
 }
 
-# The password both images' admin account ships with before reset_admin_password.sh runs: tart's
-# from_ipsw install and the cirruslabs base both create admin/admin, so each source authenticates
-# SSH with this until the first provisioner sets vm_admin_pass.
+# The password both images' admin account ships with before reset-admin-password.sh runs: the
+# cirruslabs bases both create admin/admin, so each source authenticates SSH with this until the
+# first provisioner sets vm_admin_pass.
 variable "install_default_admin_password" {
   type    = string
   default = "admin"

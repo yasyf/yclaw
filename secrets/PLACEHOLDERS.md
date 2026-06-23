@@ -54,7 +54,6 @@ the guests as packer vars at build time or the runtime `node.env` share on first
 
 | Input | What | Consumed by | How the human supplies it |
 |---|---|---|---|
-| `IPSW_URL` | Pinned macOS Tahoe IPSW URL (or local path) for the metal guest | `packer/metal.pkr.hcl` as `PKR_VAR_ipsw_url` (fail-loud `@@UNSET_IPSW_URL@@` default if unset) | prompt (with reachability check) |
 | `GITHUB_OWNER` | GitHub owner whose `yclaw` fork the guests clone at build | `packer/metal.pkr.hcl` as `PKR_VAR_github_owner` (fail-loud `@@UNSET_GITHUB_OWNER@@` default if unset) | derived from `remote.origin.url`, else prompt |
 | `vm_admin_pass` | Per-VM admin password (resolves `@@VM_ADMIN_PASS@@`) | `packer/metal.pkr.hcl`, `packer/bluebubbles.pkr.hcl` as `PKR_VAR_vm_admin_pass` | generated per-VM into the yclaw keychain (`yclaw.keychain-db`, services `yclaw-metal-admin-pass` / `yclaw-bluebubbles-admin-pass`), unlocked via `yclaw-keychain-password` in the login keychain, reused on re-run |
 | `AUTHORIZED_HANDLES` | iMessage allowlist (comma-separated; first handle is the home channel) | hermes VM via the runtime `node.env` share (`BLUEBUBBLES_ALLOWED_USERS` / `BLUEBUBBLES_HOME_CHANNEL`) | prompt (list) |
