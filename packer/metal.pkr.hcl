@@ -114,13 +114,16 @@ build {
       # comes from the redacted YCLAW_GH_TOKEN env (set on this provisioner), so it is not in the
       # logged command and is never written into the captured image.
       "sudo NIX_CONFIG=\"experimental-features = nix-command flakes\naccess-tokens = github.com=$YCLAW_GH_TOKEN\" nix run nix-darwin/nix-darwin-25.05#darwin-rebuild -- build --flake github:${var.github_owner}/yclaw#metal",
+      # Record the pre-built system store path so the first-boot activator can activate it WITHOUT a
+      # flake re-eval (zero GitHub at first boot). `darwin-rebuild build` symlinks ./result -> toplevel.
+      "readlink -f result | sudo tee /etc/yclaw-metal-toplevel >/dev/null",
     ]
   }
 
   # Stage the first-boot activator (a plain LaunchDaemon — nix-darwin is not yet activated, so it
-  # cannot be a nix-darwin daemon). It runs `darwin-rebuild switch` once the metalsecrets share is
-  # mounted at first boot, then self-disables via a sentinel. It loads at the next boot (the
-  # runtime boot under the tart runner), not during this build.
+  # cannot be a nix-darwin daemon). It activates the pre-built closure (the recorded toplevel store
+  # path) once the metalsecrets share is mounted at first boot, then self-disables via a sentinel.
+  # It loads at the next boot (the runtime boot under the tart runner), not during this build.
   provisioner "file" {
     source      = "${path.root}/metal-activate.sh"
     destination = "/tmp/metal-activate.sh"
@@ -130,11 +133,13 @@ build {
     destination = "/tmp/com.yclaw.metal-activate.plist"
   }
   provisioner "shell" {
-    environment_vars = ["GH_OWNER=${var.github_owner}"]
     inline = [
       "set -euo pipefail",
-      # Bake the operator's GitHub owner into the activator (BSD sed needs the empty -i arg).
-      "sed -i '' \"s/@@GITHUB_OWNER@@/$GH_OWNER/g\" /tmp/metal-activate.sh",
+      # Bake the pre-built system store path (recorded right after the build) into the activator so
+      # first boot activates it directly — no flake re-eval, no GitHub. BSD sed needs the empty -i
+      # arg; use a | delimiter since the store path contains slashes.
+      "TOP=$(cat /etc/yclaw-metal-toplevel)",
+      "sed -i '' \"s|@@METAL_TOPLEVEL@@|$TOP|g\" /tmp/metal-activate.sh",
       "sudo install -m 755 /tmp/metal-activate.sh /usr/local/bin/metal-activate.sh",
       "sudo install -m 644 /tmp/com.yclaw.metal-activate.plist /Library/LaunchDaemons/com.yclaw.metal-activate.plist",
       "rm -f /tmp/metal-activate.sh /tmp/com.yclaw.metal-activate.plist",

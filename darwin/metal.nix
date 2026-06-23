@@ -21,8 +21,9 @@
 #
 # Lockdown posture: SIP on, Gatekeeper on, app firewall + a pf tailnet-only anchor, every
 # sharing/remote-access surface off, and OpenSSH Remote Login off — the ONLY admin path is
-# `tailscale ssh root@metal`. In-guest auto-login stays ON (set by packer) so omlx gets a GPU
-# aqua session; FileVault is therefore NOT used (auto-login would negate it). Sensitive state
+# `tailscale ssh root@metal`. In-guest auto-login is set by packer (cirruslabs base default); it is
+# NOT required for the GPU — the services run as UserName=admin daemons and MLX/Metal works headless
+# (verified) — but FileVault is NOT used regardless (auto-login would negate it). Sensitive state
 # lives on the host's ~/.yclaw/state, backed up encrypted off-box; the vault is also encrypted
 # at rest, and every service is bound tailnet-only by the pf anchor + app-firewall allowlist.
 #
@@ -85,7 +86,8 @@ let
   '';
 
   # Wrappers: launchd has no EnvironmentFile, so each wrapper sources the secret/env it needs
-  # and exec's the absolute binary. Run as the `admin` GUI user (Metal needs the login session).
+  # and exec's the absolute binary. The daemons run as `adminUser` so they read the admin-owned
+  # sops secrets; MLX/Metal GPU works headless from a daemon context — no login session needed.
   # omlx discovers the model from the shared HF hub cache (HF_HUB_CACHE → the `hfhub` share, the
   # host's regular cache) via --hf-cache (default on); no --model-dir (verified: serving the 35B
   # this way cold-loads in ~14s).
@@ -387,36 +389,46 @@ in
     secrets = lib.genAttrs manifest.hosts.metal.secrets (_: { owner = adminUser; });
   };
 
-  # --- launchd user agents -----------------------------------------------------
-  # User agents (gui session), NOT system daemons: omlx/mlx-audio need the GPU + Metal, which
-  # the system domain lacks. All ProgramArguments are absolute (launchd does not use PATH or
-  # expand ~). RunAtLoad + KeepAlive = restart-always, except the provision oneshot.
-  launchd.user.agents.omlx.serviceConfig = {
+  # --- launchd daemons for the AI + credential services ------------------------
+  # System daemons running as `adminUser`, NOT user agents. nix-darwin loads user agents via
+  # `launchctl asuser <uid>`, which needs a live Aqua GUI session — but metal runs headless
+  # (tart --no-graphics), so no such session exists and the asuser load aborts activation
+  # (RC=134) before the Homebrew bundle + tailnet join even run. Running these as UserName=admin
+  # system daemons loads them in the global context (no GUI session) while still running as the
+  # admin uid, so they read the admin-owned sops secrets and keep their HOME=share overrides.
+  # MLX/Metal GPU compute is verified to work headless from a daemon context (no login session),
+  # so omlx/mlx-audio do NOT need a GUI session. All ProgramArguments are absolute (launchd does
+  # not use PATH or expand ~). RunAtLoad + KeepAlive = restart-always, except the provision oneshot.
+  launchd.daemons.omlx.serviceConfig = {
     ProgramArguments = [ "${omlxWrapper}" ];
+    UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = true;
     StandardOutPath = "${logs}/omlx/omlx.log";
     StandardErrorPath = "${logs}/omlx/omlx.error.log";
   };
 
-  launchd.user.agents.mlx-audio.serviceConfig = {
+  launchd.daemons.mlx-audio.serviceConfig = {
     ProgramArguments = [ "${sttWrapper}" ];
+    UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = true;
     StandardOutPath = "${logs}/mlx-audio/stt.log";
     StandardErrorPath = "${logs}/mlx-audio/stt.error.log";
   };
 
-  launchd.user.agents.cliproxy.serviceConfig = {
+  launchd.daemons.cliproxy.serviceConfig = {
     ProgramArguments = [ "${cliproxyWrapper}" ];
+    UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = true;
     StandardOutPath = "${logs}/cliproxy/proxy.log";
     StandardErrorPath = "${logs}/cliproxy/proxy.error.log";
   };
 
-  launchd.user.agents.agent-vault.serviceConfig = {
+  launchd.daemons.agent-vault.serviceConfig = {
     ProgramArguments = [ "${agentVaultWrapper}" ];
+    UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = true;
     StandardOutPath = "${logs}/agent-vault/server.log";
@@ -425,8 +437,9 @@ in
 
   # Provision runs once at load and exits (KeepAlive=false). It waits for the server's /health
   # before registering, so no explicit ordering against agent-vault is needed.
-  launchd.user.agents.agent-vault-provision.serviceConfig = {
+  launchd.daemons.agent-vault-provision.serviceConfig = {
     ProgramArguments = [ "${agentVaultProvision}" ];
+    UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = false;
     StandardOutPath = "${logs}/agent-vault/provision.log";
@@ -507,6 +520,13 @@ in
       fi
       mv "$SETTINGS.tmp" "$SETTINGS"
       chown -R ${adminUser} "$OMLX_DIR"
+
+      # The service daemons run as `admin` and log under admin's ~/Library/Logs; launchd needs each
+      # StandardOutPath's parent dir to exist, so pre-create them owned by admin.
+      mkdir -p ${lib.escapeShellArg "${logs}/omlx"} ${lib.escapeShellArg "${logs}/mlx-audio"} \
+        ${lib.escapeShellArg "${logs}/cliproxy"} ${lib.escapeShellArg "${logs}/agent-vault"}
+      chown ${adminUser} ${lib.escapeShellArg "${logs}/omlx"} ${lib.escapeShellArg "${logs}/mlx-audio"} \
+        ${lib.escapeShellArg "${logs}/cliproxy"} ${lib.escapeShellArg "${logs}/agent-vault"}
 
       # pf anchor — scope the five service ports to hermes (resolved by hostname) + the host admin IP.
       # metal-pf-anchor writes /etc/pf.anchors/metal and reloads just this anchor. This is the PRIMARY
