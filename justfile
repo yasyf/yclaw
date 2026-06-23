@@ -120,19 +120,14 @@ nuke: destroy
     #!/usr/bin/env bash
     set -euo pipefail
     state="$HOME/.yclaw/state"
-    # Secret + agent state under ~/.yclaw/state (keep model weight caches by default).
-    rm -rf \
-      "$state/age" \
-      "$state"/secrets.sops.yaml* \
-      "$state/vm-secrets" \
-      "$state/hosts" \
-      "$state/agent-vault" \
-      "$state/cli-proxy-api" \
-      "$state/hermes" \
-      "$state/bluebubbles" \
-      "$state/aperture-backup" \
-      "$state/mlx-audio" \
-      "$state/values.env"
+    # Secret + agent state under ~/.yclaw/state (keep model weight caches by default). The hermes
+    # agent writes some skill files read-only (mode 444 inside 555 dirs), so make each tree
+    # writable before removing it — otherwise rm cannot unlink them and aborts under `set -e`.
+    for d in age vm-secrets hosts agent-vault cli-proxy-api hermes bluebubbles aperture-backup mlx-audio; do
+      [ -e "$state/$d" ] && chmod -R u+w "$state/$d" 2>/dev/null || true
+      rm -rf "$state/$d"
+    done
+    rm -f "$state"/secrets.sops.yaml* "$state/values.env"
     if [ "${WIPE_MODELS:-0}" = "1" ]; then
       rm -rf "$state/hf" "$state/omlx" "$HOME/.cache/huggingface/hub"
       echo "nuke: dropped model caches (WIPE_MODELS=1) — redeploy will re-download ~20 GB"
@@ -178,7 +173,7 @@ nuke-tailnet:
       | "\(.id)\t\(.hostname)\t\((.tags // []) | join(","))"
     ' | while IFS=$'\t' read -r id hostname tags; do
           echo "nuke-tailnet: deleting device $hostname (tags: ${tags:-none})"
-          curl -sf -X DELETE -u "${TAILSCALE_API_KEY}:" "$api/device/$id" || echo "  (delete failed for $id)" >&2
+          curl -sf -o /dev/null -X DELETE -u "${TAILSCALE_API_KEY}:" "$api/device/$id" || echo "  (delete failed for $id)" >&2
         done
     echo "nuke-tailnet: done."
 
