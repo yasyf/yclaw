@@ -236,8 +236,13 @@ HOST_TS_IP="$(tailscale ip -4 2>/dev/null | head -1)"
 # generously (180 × 5s = 15 min) for it to become SSH-reachable.
 log "Authorizing this host ($HOST_TS_IP) on metal's pf gate (waiting for metal's first-boot activation + SSH, up to 15 min) ..."
 host_authorized=""
+# Pass the whole script as ONE argument: `tailscale ssh host -- sh -c "a && b"` is mangled because
+# tailscale ssh word-splits its remote args, so the remote runs `sh -c <first-word>` (e.g. `sh -c
+# mkdir`) and the rest is misparsed — it silently fails to write the file yet still exits 0. As a
+# single string the remote login shell runs the full `&&` chain and returns its real exit code.
+metal_authorize_cmd="mkdir -p /etc/pf.anchors && umask 077 && printf '%s\n' '$HOST_TS_IP' > /etc/pf.anchors/metal-allowed-hosts && launchctl kickstart -k system/org.nixos.metal-pf-refresh"
 for _ in $(seq 1 180); do
-  if tailscale ssh root@metal -- sh -c "mkdir -p /etc/pf.anchors && umask 077 && printf '%s\n' '$HOST_TS_IP' > /etc/pf.anchors/metal-allowed-hosts && launchctl kickstart -k system/org.nixos.metal-pf-refresh" 2>/dev/null; then
+  if tailscale ssh root@metal "$metal_authorize_cmd" 2>/dev/null; then
     host_authorized=1; break
   fi
   sleep 5
