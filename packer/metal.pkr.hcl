@@ -80,7 +80,23 @@ build {
   provisioner "shell" {
     inline = [
       "set -euo pipefail",
+      # The vanilla base has no Homebrew (only the cirruslabs *-base images add it on top), but
+      # metal's nix-darwin config uses the homebrew module (omlx is a brew formula) — which aborts
+      # activation if brew is absent. Install it (NONINTERACTIVE for the non-tty packer shell).
+      "NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"",
+      # omlx's Homebrew tap lives at github.com/jundot/omlx, NOT the default `homebrew-omlx` repo
+      # `brew tap jundot/omlx` would clone (that 404s). Pre-tap with the explicit clone URL so the
+      # nix-darwin homebrew module's `brew bundle` (taps = [\"jundot/omlx\"]) finds it already present.
+      "/opt/homebrew/bin/brew tap jundot/omlx https://github.com/jundot/omlx",
+      # Homebrew refuses to install formulae from an untrusted third-party tap; trust it so the
+      # nix-darwin homebrew module's `brew install omlx` succeeds.
+      "/opt/homebrew/bin/brew trust jundot/omlx",
       "curl -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm",
+      # The Determinate installer writes /etc/{zshenv,zshrc,zprofile,bashrc} to put Nix on the
+      # non-interactive PATH, but nix-darwin's activation also manages those and aborts rather than
+      # overwrite an unrecognized file. Rename them so nix-darwin claims them (its versions re-add
+      # Nix to PATH); the originals are kept as *.before-nix-darwin.
+      "for f in zshenv zshrc zprofile bashrc; do sudo mv -f \"/etc/$f\" \"/etc/$f.before-nix-darwin\" 2>/dev/null || true; done",
       ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh",
       "sudo NIX_CONFIG='experimental-features = nix-command flakes' \\",
       "  nix run nix-darwin/nix-darwin-25.05#darwin-rebuild -- \\",

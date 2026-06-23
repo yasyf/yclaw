@@ -627,12 +627,17 @@ in
     # now OWNS tag:metal (the source of truth the per-node minted key is also tagged against), so
     # advertising it succeeds; it is what enforces least-privilege east-west reachability.
     (lib.mkAfter ''
-      # Ensure BOTH the tailnet join and the SSH server, idempotently. The SSH assertion must NOT
-      # be gated on tailscale being down: OpenSSH Remote Login is disabled above, so if tailscaled
-      # were already up WITHOUT --ssh, a down-gated `up --ssh` would be skipped forever and leave NO
-      # admin path (the sharpest lockout vector). `tailscale set --ssh` is idempotent and applies
-      # whether up or down; the cold-join branch (authkey present, tailscale down) handles first boot.
-      if /opt/homebrew/bin/tailscale status >/dev/null 2>&1; then
+      # tailscaled is brew-installed (homebrew module above) but is NOT registered as a system
+      # daemon on a fresh node, and `tailscale up` needs it running — register + start it
+      # (idempotent), then wait for the daemon to answer before joining.
+      /opt/homebrew/bin/tailscaled install-system-daemon >/dev/null 2>&1 || true
+      for _ in $(seq 1 30); do /opt/homebrew/bin/tailscale status >/dev/null 2>&1 && break; sleep 2; done
+      # Ensure BOTH the tailnet join and the SSH server, idempotently. Gate on the backend actually
+      # being Running (joined) — NOT on `tailscale status` succeeding, which returns 0 even when the
+      # daemon is up but LOGGED OUT (so the old guard skipped the cold-join `up` forever). The SSH
+      # assertion must not be down-gated: OpenSSH Remote Login is disabled above, so leaving the node
+      # up WITHOUT --ssh would cut the only admin path. `tailscale set --ssh` is idempotent.
+      if /opt/homebrew/bin/tailscale status --json 2>/dev/null | grep -q '"BackendState":[[:space:]]*"Running"'; then
         /opt/homebrew/bin/tailscale set --ssh=true || true
       elif [ -s ${lib.escapeShellArg tailscaleAuthkeyFile} ]; then
         /opt/homebrew/bin/tailscale up \
