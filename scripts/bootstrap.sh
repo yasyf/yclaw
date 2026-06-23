@@ -175,8 +175,7 @@ done
 
 # The yclaw keychain holds the per-VM admin passwords; unlock it once, then feed packer its
 # inputs as PKR_VAR_* env exports (NOT in-tree @@token@@ substitution). vm_admin_user is always
-# `admin` to match darwin/metal.nix's primaryUser. repo_url is left empty so the packer locals
-# fall back to https://github.com/$GITHUB_OWNER/yclaw.git.
+# `admin` to match darwin/metal.nix's primaryUser. metal applies github:$GITHUB_OWNER/yclaw#metal.
 _yclaw_keychain_unlock
 
 build_macos_image() {
@@ -189,12 +188,10 @@ build_macos_image() {
   PKR_VAR_github_owner="$GITHUB_OWNER" \
   PKR_VAR_vm_admin_user="admin" \
   PKR_VAR_vm_admin_pass="$admin_pass" \
-  PKR_VAR_repo_url="" \
     packer init "$REPO_ROOT/packer/"
   PKR_VAR_github_owner="$GITHUB_OWNER" \
   PKR_VAR_vm_admin_user="admin" \
   PKR_VAR_vm_admin_pass="$admin_pass" \
-  PKR_VAR_repo_url="" \
     packer build -only="tart-cli.$node" "$REPO_ROOT/packer/"
 }
 

@@ -20,27 +20,17 @@
 #   regenerated; change one and the guest will not boot.
 #
 # The wizard exports the build inputs as env before `packer build`:
-#   PKR_VAR_github_owner, PKR_VAR_vm_admin_user, PKR_VAR_vm_admin_pass, PKR_VAR_repo_url.
+#   PKR_VAR_github_owner, PKR_VAR_vm_admin_user, PKR_VAR_vm_admin_pass.
 #   github_owner keeps a fail-loud "@@UNSET_*@@" sentinel default.
 # The plugin pin + the vm_admin_user/vm_admin_pass/install_default_admin_password vars are shared
 # in common.pkr.hcl (Packer loads every *.pkr.hcl in this dir together; build with
 # `packer build -only='tart-cli.metal' packer/`).
 
-# GitHub owner whose yclaw fork the guest clones, unless repo_url overrides it. Set via
+# GitHub owner whose yclaw fork the build applies as `github:<owner>/yclaw#metal`. Set via
 # PKR_VAR_github_owner.
 variable "github_owner" {
   type    = string
   default = "@@UNSET_GITHUB_OWNER@@"
-}
-
-# Explicit clone URL; when empty, locals.clone_url falls back to the github_owner fork.
-variable "repo_url" {
-  type    = string
-  default = ""
-}
-
-locals {
-  clone_url = var.repo_url != "" ? var.repo_url : "https://github.com/${var.github_owner}/yclaw.git"
 }
 
 source "tart-cli" "metal" {
@@ -84,11 +74,13 @@ build {
       "set -euo pipefail",
       "curl -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm",
       ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh",
-      "git clone ${local.clone_url} /Users/${var.vm_admin_user}/yclaw",
-      # First `darwin-rebuild switch` must run as root (system activation) from a git-clean path.
+      # Build straight from the flake on GitHub. The vanilla base has no git / Xcode CLT — a
+      # `git clone` would trigger the Command Line Tools install dialog and fail — and nix fetches
+      # github: refs with its own fetcher (as the nix-darwin ref below already does), so no system
+      # git is needed. Runs as root for system activation.
       "sudo NIX_CONFIG='experimental-features = nix-command flakes' \\",
       "  nix run nix-darwin/nix-darwin-25.05#darwin-rebuild -- \\",
-      "  switch --flake /Users/${var.vm_admin_user}/yclaw#metal",
+      "  switch --flake github:${var.github_owner}/yclaw#metal",
     ]
   }
 
