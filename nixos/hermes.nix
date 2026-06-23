@@ -63,7 +63,7 @@ let
     #     (/etc/hosts) so it would bind to loopback, unreachable by BlueBubbles.
     # bootstrap.sh renders both as FQDNs into node.env (using the real TAILNET_DOMAIN); node.env is
     # appended after this file in environmentFiles, so those values win. Keeping the FQDN out of
-    # this store-baked file preserves the generic image (the @@TAILNET_DOMAIN@@ genericity guard).
+    # this store-baked file preserves the generic image (the tailnet-domain genericity guard).
     BLUEBUBBLES_WEBHOOK_PORT=8645
     BLUEBUBBLES_WEBHOOK_PATH=/bluebubbles-webhook
     BLUEBUBBLES_REQUIRE_MENTION=false
@@ -80,8 +80,8 @@ let
     # means the server is UP. So check reachability (any HTTP response), NOT -f (which would
     # treat 401 as failure and wait forever). curl exits 0 on any response, non-zero only if
     # it can't connect at all.
-    # The cert is FQDN-only, so resolve the node's tailnet domain at runtime (no @@TAILNET_DOMAIN@@
-    # baked into the generic image) and probe the FQDN — bare `bluebubbles` fails the TLS handshake.
+    # The cert is FQDN-only, so resolve the node's tailnet domain at runtime (no tailnet-domain
+    # placeholder baked into the generic image) and probe the FQDN — bare `bluebubbles` fails the TLS handshake.
     domain="$(${pkgs.tailscale}/bin/tailscale status --json | ${pkgs.jq}/bin/jq -r .MagicDNSSuffix)"
     url="https://bluebubbles.$domain/api/v1/server/info"
     until ${pkgs.curl}/bin/curl -sS -o /dev/null --max-time 5 "$url" 2>/dev/null; do
