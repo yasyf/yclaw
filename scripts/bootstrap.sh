@@ -94,15 +94,8 @@ if [[ -z "${GITHUB_OWNER:-}" ]]; then
 fi
 prompt_var GITHUB_OWNER "GitHub owner whose yclaw fork the guests clone"
 
-# IPSW URL: the pinned macOS Tahoe restore image the metal packer build installs from. Reachability
-# is a warn, not a hard fail — the URL may be a local path or require auth headers packer supplies.
-prompt_var IPSW_URL "pinned macOS Tahoe IPSW (URL or local path) for the metal build"
-if [[ "$IPSW_URL" == http*://* ]]; then
-  curl -fsI --max-time 15 "$IPSW_URL" >/dev/null 2>&1 \
-    && log "IPSW_URL is reachable." \
-    || log "WARNING: IPSW_URL not reachable (HEAD failed) — continuing; packer will fail loud if it is wrong."
-fi
-
+# The metal IPSW is pinned in packer/metal.pkr.hcl (its boot_command is tuned to that exact macOS
+# build), so it is no longer collected here — bump it in the packer template, not the wizard.
 prompt_var HOST_RAM "host RAM tier in GB, for VM sizing"
 prompt_var AUTHORIZED_HANDLES "iMessage allowlist (comma-separated handles; first is the home channel)"
 
@@ -119,7 +112,7 @@ collect_secrets
 
 # Record the resolved non-secret values so `just deploy <node>` re-runs reproduce them.
 ( umask 077; : > "$VALUES_FILE" )
-for tok in TAILNET_DOMAIN GITHUB_OWNER IPSW_URL HOST_RAM AUTHORIZED_HANDLES; do
+for tok in TAILNET_DOMAIN GITHUB_OWNER HOST_RAM AUTHORIZED_HANDLES; do
   printf '%s=%s\n' "$tok" "${!tok}" >> "$VALUES_FILE"
 done
 
@@ -192,13 +185,12 @@ build_macos_image() {
   [[ -n "$admin_pass" ]] || die "no $admin_service in $YCLAW_KEYCHAIN — collect_secrets should have generated it."
   log "Building $node image via packer (-only=tart-cli.$node) ..."
   # Packer loads every packer/*.pkr.hcl together (shared common.pkr.hcl); -only picks this node.
-  PKR_VAR_ipsw_url="$IPSW_URL" \
+  # The metal IPSW is pinned in metal.pkr.hcl, so it is not passed here.
   PKR_VAR_github_owner="$GITHUB_OWNER" \
   PKR_VAR_vm_admin_user="admin" \
   PKR_VAR_vm_admin_pass="$admin_pass" \
   PKR_VAR_repo_url="" \
     packer init "$REPO_ROOT/packer/"
-  PKR_VAR_ipsw_url="$IPSW_URL" \
   PKR_VAR_github_owner="$GITHUB_OWNER" \
   PKR_VAR_vm_admin_user="admin" \
   PKR_VAR_vm_admin_pass="$admin_pass" \

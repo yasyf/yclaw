@@ -25,8 +25,8 @@
 
 variable "ipsw_url" {
   type        = string
-  description = "Pinned macOS Tahoe restore image (URL or local path). Set via PKR_VAR_ipsw_url."
-  default     = "@@UNSET_IPSW_URL@@"
+  description = "Pinned macOS Tahoe restore image. Defaults to the EXACT IPSW cirruslabs' vanilla-tahoe template builds from, so the boot_command Setup-Assistant choreography below matches this macOS build. Override via PKR_VAR_ipsw_url ONLY together with a matching boot_command."
+  default     = "https://updates.cdn-apple.com/2026SpringFCS/fullrestores/122-58869/DFB1CEEF-5619-4591-9924-E20DB2C8FED0/UniversalMac_26.5_25F71_Restore.ipsw"
 }
 
 # GitHub owner whose yclaw fork the guest clones, unless repo_url overrides it. Set via
@@ -54,18 +54,103 @@ source "tart-cli" "metal" {
   memory_gb    = 48
   disk_size_gb = 200
   ssh_username = var.vm_admin_user
-  # tart's from_ipsw install creates the admin account as admin/admin (same default the cirruslabs
-  # base ships); reset-admin-password.sh sets the real var.vm_admin_pass in the first provisioner.
+  # A fresh from_ipsw install boots to Setup Assistant with NO account and NO SSH — tart does not
+  # automate it. boot_command drives Setup Assistant over the virtual keyboard to create admin/admin
+  # and enable Remote Login (SSH); reset-admin-password.sh then sets the real var.vm_admin_pass.
   ssh_password = var.install_default_admin_password
   headless     = true
-  # macOS Setup Assistant + first-boot account creation need slack before SSH; a fresh install
-  # boots slower than a clone, so allow a generous SSH timeout too.
-  create_grace_time = "120s"
-  ssh_timeout       = "600s"
+  # Keep the recovery partition so `softwareupdate` keeps working in the guest.
+  recovery_partition = "keep"
+  create_grace_time  = "30s"
+  ssh_timeout        = "300s"
+  # Setup-Assistant choreography replicated from cirruslabs' vanilla-tahoe template
+  # (github.com/cirruslabs/macos-image-templates), which pins this exact IPSW. We keep their
+  # account-creation + Remote-Login steps but DROP their SIP/Gatekeeper-disable tail: metal is the
+  # hardened, SIP-on credential node. Keystroke counts are tuned to macOS 26.5's screens — bump the
+  # IPSW and this block together.
+  boot_command = [
+    # hello, hola, bonjour, …
+    "<wait60s><spacebar>",
+    # Language: switch to Italiano then back to English so we land on the first "English" entry.
+    "<wait30s>italiano<esc>english<enter>",
+    # Select Your Country or Region
+    "<wait60s><click 'Select Your Country or Region'><wait5s>united states<leftShiftOn><tab><leftShiftOff><spacebar>",
+    # Transfer Your Data to This Mac
+    "<wait10s><tab><tab><tab><spacebar><tab><tab><spacebar>",
+    # Written and Spoken Languages
+    "<wait10s><leftShiftOn><tab><leftShiftOff><spacebar>",
+    # Accessibility
+    "<wait10s><leftShiftOn><tab><leftShiftOff><spacebar>",
+    # Data & Privacy
+    "<wait10s><leftShiftOn><tab><leftShiftOff><spacebar>",
+    # Create a Mac Account: full name "Managed via Tart", account admin, password admin
+    "<wait10s><tab><tab><tab><tab><tab><tab>Managed via Tart<tab>admin<tab>admin<tab>admin<tab><tab><spacebar><tab><tab><spacebar>",
+    # Enable Voice Over (so the remaining screens are keyboard-navigable)
+    "<wait120s><leftAltOn><f5><leftAltOff>",
+    # Sign In with Your Apple ID -> skip
+    "<wait10s><leftShiftOn><tab><leftShiftOff><spacebar><up><spacebar>",
+    # Are you sure you want to skip signing in with an Apple ID?
+    "<wait10s><tab><spacebar>",
+    # Terms and Conditions
+    "<wait10s><leftShiftOn><tab><leftShiftOff><spacebar>",
+    # I have read and agree …
+    "<wait10s><tab><spacebar>",
+    # Age Range -> Adult
+    "<wait10s><tab><tab><tab><spacebar>",
+    # Enable Location Services -> skip
+    "<wait10s><leftShiftOn><tab><leftShiftOff><spacebar>",
+    # Are you sure you don't want to use Location Services?
+    "<wait10s><tab><spacebar>",
+    # Select Your Time Zone -> UTC
+    "<wait10s><tab><tab><tab>UTC<enter><leftShiftOn><tab><leftShiftOff><spacebar>",
+    # Analytics
+    "<wait10s><leftShiftOn><tab><leftShiftOff><spacebar>",
+    # Screen Time
+    "<wait10s><tab><tab><spacebar>",
+    # Siri
+    "<wait10s><tab><spacebar><leftShiftOn><tab><leftShiftOff><spacebar>",
+    # Your Mac is Ready for FileVault
+    "<wait10s><leftShiftOn><tab><tab><leftShiftOff><spacebar>",
+    # Mac Data Will Not Be Securely Encrypted
+    "<wait10s><tab><spacebar>",
+    # Choose Your Look
+    "<wait10s><leftShiftOn><tab><leftShiftOff><spacebar>",
+    # Update Mac Automatically
+    "<wait10s><tab><tab><spacebar>",
+    # Welcome to Mac
+    "<wait30s><spacebar>",
+    # Disable Voice Over
+    "<wait10s><leftAltOn><f5><leftAltOff>",
+    # Open Terminal and enable full keyboard navigation so System Settings is tab-navigable
+    "<wait10s><leftAltOn><spacebar><leftAltOff>Terminal<wait10s><enter>",
+    "<wait10s><wait10s>defaults write NSGlobalDomain AppleKeyboardUIMode -int 3<enter>",
+    # Open System Settings
+    "<wait10s>open '/System/Applications/System Settings.app'<enter>",
+    "<wait120s>",
+    # Navigate to Sharing
+    "<wait10s><leftCtrlOn><f2><leftCtrlOff><right><right><right><down>Sharing<enter>",
+    # Enable Screen Sharing
+    "<wait10s><tab><tab><tab><tab><tab><spacebar>",
+    # Authenticate to enable Screen Sharing
+    "<wait10s>admin<enter>",
+    # Navigate to Remote Login and enable it (the SSH service packer connects to)
+    "<wait10s><tab><tab><tab><tab><tab><tab><tab><tab><tab><tab><tab><tab><spacebar>",
+    # Quit System Settings
+    "<wait10s><leftAltOn>q<leftAltOff>",
+  ]
 }
 
 build {
   sources = ["source.tart-cli.metal"]
+
+  # The fresh from_ipsw install has no passwordless sudo (the cirruslabs base bluebubbles clones
+  # already does), and admin's password is still the install default here — enable it now, before
+  # reset-admin-password.sh and the nix provisioner, which use sudo non-interactively.
+  provisioner "shell" {
+    inline = [
+      "echo ${var.install_default_admin_password} | sudo -S sh -c \"mkdir -p /etc/sudoers.d/; echo 'admin ALL=(ALL) NOPASSWD: ALL' | EDITOR=tee visudo /etc/sudoers.d/admin-nopasswd\"",
+    ]
+  }
 
   # Reset the install-default admin password to the per-VM password (shared with bluebubbles).
   provisioner "shell" {
