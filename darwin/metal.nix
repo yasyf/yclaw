@@ -337,6 +337,17 @@ in
   system.stateVersion = 5;
   system.primaryUser = adminUser;
 
+  # CLI helper on the system PATH (/run/current-system/sw/bin) so bootstrap can mint hermes's
+  # agent-vault proxy token over `tailscale ssh root@metal`. `agent rotate` needs the provisioned
+  # master session, which lives in the admin user's HOME=vaultHome (where the provision daemon
+  # registered it) — so run it as admin with that HOME. `--token-only` is idempotent and prints
+  # ONLY the raw proxy token. A bare `agent-vault` is NOT on root's SSH PATH (nix-store binary), and
+  # root has no session, which is why bootstrap must go through this helper.
+  environment.systemPackages = [
+    (pkgs.writeShellScriptBin "metal-mint-hermes-token"
+      "exec /usr/bin/sudo -u ${adminUser} /usr/bin/env HOME=${lib.escapeShellArg vaultHome} ${pkgs.agent-vault}/bin/agent-vault agent rotate ${vaultName} --token-only")
+  ];
+
   # Nix is installed by the Determinate installer in-guest (it runs its own daemon), so
   # nix-darwin must NOT also manage the Nix installation — otherwise activation aborts with
   # "Determinate detected". This forgoes the `nix.*` settings options (unused here).

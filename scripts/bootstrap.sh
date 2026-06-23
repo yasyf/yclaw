@@ -179,6 +179,12 @@ done
 
 build_macos_image() {
   local node="$1" admin_service="$2" admin_pass
+  # Idempotent: skip the (expensive) build if the VM already exists, so a re-run resumes past it.
+  # `just destroy` / `just nuke` removes the VMs to force a clean rebuild.
+  if tart list --format json 2>/dev/null | jq -re --arg n "$node" '.[]? | select(.Name==$n)' >/dev/null; then
+    log "$node VM already exists — skipping build (run 'just destroy' to force a rebuild)."
+    return 0
+  fi
   # Re-unlock the keychain right before each read: the keychain auto-locks after 300s, and a build
   # ahead of this one (metal takes ~6 min) trips that, so a single up-front unlock would have
   # re-locked by the second build — a locked read then pops a GUI prompt / fails (exit 152)
@@ -262,8 +268,8 @@ done
 # never read/reveal a raw key. seedNodeConfig (nixos/common.nix) copies it to the hermes VM and
 # renders the HTTPS_PROXY URL (http://<token>:hermes@metal:14322) — so it MUST be staged before
 # hermes boots. (L1.)
-log "Minting hermes agent-vault proxy token from metal (agent rotate hermes --token-only) ..."
-HERMES_AV_TOKEN="$(tailscale ssh root@metal -- agent-vault agent rotate hermes --token-only)"
+log "Minting hermes agent-vault proxy token from metal (metal-mint-hermes-token) ..."
+HERMES_AV_TOKEN="$(tailscale ssh root@metal -- /run/current-system/sw/bin/metal-mint-hermes-token)"
 case "$HERMES_AV_TOKEN" in
   av_agt_*) ;;
   *) die "agent-vault did not return a proxy token (got: '${HERMES_AV_TOKEN:0:12}…') — is metal up and the hermes agent provisioned?" ;;
