@@ -110,7 +110,8 @@ PY
 # Prompt for the external API secrets, generate/reuse the age key + the dedicated-keychain
 # passwords (vault master, the two per-VM admin passwords, BlueBubbles server), and write the
 # sops-encrypted blob to ~/.yclaw/state. Idempotent: reuses an existing age key and the
-# yclaw-keychain-stored passwords; re-prompts the external API keys. The caller must run under
+# yclaw-keychain-stored passwords; reuses pre-set $OPENAI_API_KEY/$EXA_API_KEY/$HONCHO_API_KEY
+# from the environment if present, else prompts for them. The caller must run under
 # `set -euo pipefail`.
 collect_secrets() {
   local t manifest sops_rendered host age_key pub plain recipients
@@ -129,9 +130,10 @@ collect_secrets() {
     'yclaw · runtime secret collection' \
     'Values are read locally and sops-encrypted. Nothing is printed or sent.'
 
-  OPENAI_API_KEY="$(_secrets_ask 'OpenAI API key (sk-…)')"
-  EXA_API_KEY="$(_secrets_ask 'Exa API key')"
-  HONCHO_API_KEY="$(_secrets_ask 'Honcho API key')"
+  # Reuse a value already exported in the environment (non-interactive re-bootstrap), else prompt.
+  OPENAI_API_KEY="${OPENAI_API_KEY:-$(_secrets_ask 'OpenAI API key (sk-…)')}"
+  EXA_API_KEY="${EXA_API_KEY:-$(_secrets_ask 'Exa API key')}"
+  HONCHO_API_KEY="${HONCHO_API_KEY:-$(_secrets_ask 'Honcho API key')}"
   # GitHub: reuse the locally-authenticated gh CLI token rather than prompting.
   if command -v gh >/dev/null && GITHUB_TOKEN="$(gh auth token 2>/dev/null)" && [ -n "$GITHUB_TOKEN" ]; then
     _secrets_note "GitHub token sourced from gh CLI (account: $(gh api user -q .login 2>/dev/null || echo '?'))."
