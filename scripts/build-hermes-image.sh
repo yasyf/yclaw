@@ -96,6 +96,12 @@ if ! command -v nix >/dev/null; then
   curl --proto '=https' --tlsv1.2 -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm
 fi
 . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+# A PERSISTED builder reboots between runs and may come up before the Nix daemon socket is
+# activated (nix build then fails "cannot connect to socket … Connection refused"). Ensure it.
+if [ ! -S /nix/var/nix/daemon-socket/socket ]; then
+  sudo systemctl start nix-daemon.socket 2>/dev/null || sudo systemctl start nix-daemon 2>/dev/null || true
+  for _ in $(seq 1 30); do [ -S /nix/var/nix/daemon-socket/socket ] && break; sleep 1; done
+fi
 # Authenticate nix's github flake-input fetches: the unauthenticated GitHub API is 60/hr and the
 # hermes closure exhausts it. Append the token (passed via the YCLAW_GH_TOKEN env) to this throwaway
 # builder's SYSTEM nix.conf so the client honors it (access-tokens is only honored from trusted/
