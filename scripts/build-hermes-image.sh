@@ -31,6 +31,8 @@ BUILDER_VM="${BUILDER_VM:-hermes-image-builder}"
 # Re-run that command and update the digest below on an intentional base bump.
 BUILDER_IMAGE="${BUILDER_IMAGE:-ghcr.io/cirruslabs/ubuntu@sha256:e90dfc9e6dffb742809f32e61ee03daf5fa6ee30e24ee05c105beffa3b7c9540}"
 BUILDER_DISK_GB="${BUILDER_DISK_GB:-40}"
+BUILDER_MEMORY_GB="${BUILDER_MEMORY_GB:-16}"  # base image ships 4 GB; the hermes nix build OOMs there
+BUILDER_CPU="${BUILDER_CPU:-8}"
 SSH_USER="${BUILDER_SSH_USER:-admin}"
 # admin/admin + StrictHostKeyChecking=no below are the cirruslabs base default on a THROWAWAY
 # local NAT builder VM that holds no secrets (audit M7, documented residual, lower priority).
@@ -48,8 +50,10 @@ command -v sshpass >/dev/null || die "sshpass not found (brew install sshpass) â
 if ! "$TART_BIN" list --format json | jq -re --arg n "$BUILDER_VM" '.[]? | select(.Name==$n)' >/dev/null; then
   echo "[build-hermes-image] cloning $BUILDER_IMAGE -> $BUILDER_VM ..."
   "$TART_BIN" clone "$BUILDER_IMAGE" "$BUILDER_VM"
-  "$TART_BIN" set "$BUILDER_VM" --disk-size "$BUILDER_DISK_GB"
 fi
+# (Re)apply sizing every run (idempotent; VM is stopped here). The base image ships 4 GB RAM, which
+# OOM-kills the hermes image nix build â€” give it enough RAM + CPU. Applied to persisted builders too.
+"$TART_BIN" set "$BUILDER_VM" --disk-size "$BUILDER_DISK_GB" --memory "$((BUILDER_MEMORY_GB * 1024))" --cpu "$BUILDER_CPU"
 
 # 2. Boot it headless WITH nested virt and the repo shared rw over virtiofs (tag `repo`).
 echo "[build-hermes-image] starting $BUILDER_VM (--nested, repo shared rw) ..."
