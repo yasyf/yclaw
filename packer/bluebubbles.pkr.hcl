@@ -50,7 +50,7 @@ build {
   # Reset the install-default admin password to the per-VM password (shared with metal).
   provisioner "shell" {
     script           = "${path.root}/reset-admin-password.sh"
-    environment_vars = ["VM_ADMIN_USER=${var.vm_admin_user}", "VM_ADMIN_PASS=${var.vm_admin_pass}"]
+    environment_vars = ["VM_ADMIN_USER=${var.vm_admin_user}", "VM_ADMIN_OLD_PASS=${var.install_default_admin_password}", "VM_ADMIN_PASS=${var.vm_admin_pass}"]
   }
 
   # Install Homebrew, then the OSS Tailscale build (the App Store build does NOT

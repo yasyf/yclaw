@@ -71,7 +71,7 @@ build {
   # bluebubbles). The vanilla base already has passwordless sudo, so this runs non-interactively.
   provisioner "shell" {
     script           = "${path.root}/reset-admin-password.sh"
-    environment_vars = ["VM_ADMIN_USER=${var.vm_admin_user}", "VM_ADMIN_PASS=${var.vm_admin_pass}"]
+    environment_vars = ["VM_ADMIN_USER=${var.vm_admin_user}", "VM_ADMIN_OLD_PASS=${var.install_default_admin_password}", "VM_ADMIN_PASS=${var.vm_admin_pass}"]
   }
 
   # Install Nix (Determinate) + nix-darwin, clone the repo, and apply `.#metal`. Everything
