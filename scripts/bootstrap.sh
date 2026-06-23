@@ -189,13 +189,17 @@ build_macos_image() {
   log "Building $node image via packer (-only=tart-cli.$node) ..."
   # Packer loads every packer/*.pkr.hcl together (shared common.pkr.hcl); -only picks this node.
   # Both nodes clone a digest-pinned base in their .pkr.hcl, so no IPSW var is passed here.
+  # github_token authenticates metal's nix flake-input fetches (unauthenticated GitHub API is
+  # 60/hr — one metal build exhausts it); it is used only during the build, never baked.
   PKR_VAR_github_owner="$GITHUB_OWNER" \
   PKR_VAR_vm_admin_user="admin" \
   PKR_VAR_vm_admin_pass="$admin_pass" \
+  PKR_VAR_github_token="${GITHUB_TOKEN:-}" \
     packer init "$REPO_ROOT/packer/"
   PKR_VAR_github_owner="$GITHUB_OWNER" \
   PKR_VAR_vm_admin_user="admin" \
   PKR_VAR_vm_admin_pass="$admin_pass" \
+  PKR_VAR_github_token="${GITHUB_TOKEN:-}" \
     packer build -only="tart-cli.$node" "$REPO_ROOT/packer/"
 }
 

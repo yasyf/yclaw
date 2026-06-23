@@ -83,7 +83,7 @@ ssh_guest true 2>/dev/null || die "sshd on $BUILDER_VM never came up."
 # TODO(human): the virtiofs share tag (`repo`) and the cirruslabs default creds (admin/admin)
 #   are unverified against a running builder — confirm the mount tag + login on first run.
 echo "[build-hermes-image] building inside $BUILDER_VM ..."
-ssh_guest bash -euo pipefail <<'GUEST'
+ssh_guest "YCLAW_GH_TOKEN='${GITHUB_TOKEN:-}' bash -euo pipefail" <<'GUEST'
 test -e /dev/kvm || { echo "FATAL: /dev/kvm missing — --nested did not expose nested virt." >&2; exit 1; }
 if ! command -v nix >/dev/null; then
   # UNPINNED INSTALLER (audit M7): `curl … | sh` of the rolling Determinate installer; a
@@ -95,6 +95,14 @@ if ! command -v nix >/dev/null; then
   curl --proto '=https' --tlsv1.2 -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm
 fi
 . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+# Authenticate nix's github flake-input fetches: the unauthenticated GitHub API is 60/hr and the
+# hermes closure exhausts it. Append the token (passed via the YCLAW_GH_TOKEN env) to this throwaway
+# builder's SYSTEM nix.conf so the client honors it (access-tokens is only honored from trusted/
+# system config, and the build runs as a non-root user). The token stays on the builder VM, never
+# in the hermes image.
+if [ -n "${YCLAW_GH_TOKEN:-}" ]; then
+  echo "access-tokens = github.com=$YCLAW_GH_TOKEN" | sudo tee -a /etc/nix/nix.conf >/dev/null
+fi
 sudo mkdir -p /mnt/repo
 mountpoint -q /mnt/repo || sudo mount -t virtiofs repo /mnt/repo
 cd /mnt/repo

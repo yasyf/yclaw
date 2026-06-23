@@ -38,6 +38,16 @@ variable "github_owner" {
   default = "@@UNSET_GITHUB_OWNER@@"
 }
 
+# GitHub token for nix's flake-input fetches: nix pulls each github: input via the API, which is
+# unauthenticated-rate-limited to 60/hr/IP — one metal build exhausts it. Used only at build time
+# via a temporary nix.conf that is removed afterward (NEVER written into the captured image). Set
+# via PKR_VAR_github_token (the wizard passes the host's `gh auth token`).
+variable "github_token" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
 source "tart-cli" "metal" {
   # Pinned by immutable digest (audit M8): a mutable :latest tag would let a registry-side change
   # silently mutate this SIP-on credential VM on rebuild. Resolved 2026-06-22 via:
@@ -78,6 +88,7 @@ build {
   # git / Xcode CLT (a `git clone` would pop the Command Line Tools dialog and fail), and nix
   # fetches github: refs with its own fetcher, as the nix-darwin ref already does.
   provisioner "shell" {
+    environment_vars = ["YCLAW_GH_TOKEN=${var.github_token}"]
     inline = [
       "set -euo pipefail",
       # The vanilla base has no Homebrew (only the cirruslabs *-base images add it on top), but
@@ -98,9 +109,11 @@ build {
       # Nix to PATH); the originals are kept as *.before-nix-darwin.
       "for f in zshenv zshrc zprofile bashrc; do sudo mv -f \"/etc/$f\" \"/etc/$f.before-nix-darwin\" 2>/dev/null || true; done",
       ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh",
-      "sudo NIX_CONFIG='experimental-features = nix-command flakes' \\",
-      "  nix run nix-darwin/nix-darwin-25.05#darwin-rebuild -- \\",
-      "  build --flake github:${var.github_owner}/yclaw#metal",
+      # Build-time GitHub auth (see the github_token var): without it, nix's flake-input fetches hit
+      # the unauthenticated GitHub API rate limit (60/hr) and a single build exhausts it. The token
+      # comes from the redacted YCLAW_GH_TOKEN env (set on this provisioner), so it is not in the
+      # logged command and is never written into the captured image.
+      "sudo NIX_CONFIG=\"experimental-features = nix-command flakes\naccess-tokens = github.com=$YCLAW_GH_TOKEN\" nix run nix-darwin/nix-darwin-25.05#darwin-rebuild -- build --flake github:${var.github_owner}/yclaw#metal",
     ]
   }
 
