@@ -24,6 +24,12 @@ for _ in $(seq 1 60); do [ -S /nix/var/nix/daemon-socket/socket ] && break; slee
 export HOME="${HOME:-/var/root}" USER="${USER:-root}"
 . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 
+# nix-darwin activation refuses to overwrite unrecognized /etc shell files. The Determinate Nix
+# install (re)creates /etc/{zshenv,zshrc,bashrc} for the non-interactive PATH and they are present
+# again by first boot (the packer build's rename does not survive), so rename them here, right
+# before the switch, so nix-darwin can claim them. Idempotent; runs as root (this is a LaunchDaemon).
+for f in zshenv zshrc zprofile bashrc; do mv -f "/etc/$f" "/etc/$f.before-nix-darwin" 2>/dev/null || true; done
+
 # `darwin-rebuild switch` builds + sets the generation + activates, but has been observed to exit
 # non-zero (134) at a late user-launchd step BEFORE postActivation (the tailnet join) runs. The
 # generation is set by then, so re-run the now-current system's activate (idempotent, rc=0) to
