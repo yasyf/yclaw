@@ -173,13 +173,17 @@ done
 
 # --- 6. build the macOS guest images (metal + bluebubbles) via packer --------
 
-# The yclaw keychain holds the per-VM admin passwords; unlock it once, then feed packer its
-# inputs as PKR_VAR_* env exports (NOT in-tree @@token@@ substitution). vm_admin_user is always
-# `admin` to match darwin/metal.nix's primaryUser. metal applies github:$GITHUB_OWNER/yclaw#metal.
-_yclaw_keychain_unlock
+# The yclaw keychain holds the per-VM admin passwords, fed to packer as PKR_VAR_* env exports (NOT
+# in-tree @@token@@ substitution). vm_admin_user is always `admin` to match darwin/metal.nix's
+# primaryUser. metal applies github:$GITHUB_OWNER/yclaw#metal.
 
 build_macos_image() {
   local node="$1" admin_service="$2" admin_pass
+  # Re-unlock the keychain right before each read: the keychain auto-locks after 300s, and a build
+  # ahead of this one (metal takes ~6 min) trips that, so a single up-front unlock would have
+  # re-locked by the second build — a locked read then pops a GUI prompt / fails (exit 152)
+  # non-interactively. _yclaw_keychain_unlock is programmatic (login-keychain password), no prompt.
+  _yclaw_keychain_unlock
   admin_pass="$(security find-generic-password -a "$USER" -s "$admin_service" -w "$YCLAW_KEYCHAIN")"
   [[ -n "$admin_pass" ]] || die "no $admin_service in $YCLAW_KEYCHAIN — collect_secrets should have generated it."
   log "Building $node image via packer (-only=tart-cli.$node) ..."
