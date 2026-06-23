@@ -29,10 +29,19 @@ export HOME="${HOME:-/var/root}" USER="${USER:-root}"
 # generation is set by then, so re-run the now-current system's activate (idempotent, rc=0) to
 # complete activation: the homebrew bundle (omlx + tailscale) and postActivation (tailscaled
 # install-system-daemon + the tailnet join).
-NIX_CONFIG='experimental-features = nix-command flakes' \
-  nix run nix-darwin/nix-darwin-25.05#darwin-rebuild -- \
-  switch --flake github:@@GITHUB_OWNER@@/yclaw#metal \
-  || echo "metal-activate: darwin-rebuild switch exited non-zero; completing via /run/current-system/activate"
+# Retry the switch a few times: the build authenticated nix's GitHub fetches, but first boot is
+# unauthenticated, so resolving the flake ref can transiently hit the 60/hr API rate limit (which
+# recovers ~1/min). The flake INPUTS are already cached in the image store, so only the ref-resolve
+# needs the API.
+switched=""
+for attempt in 1 2 3 4; do
+  if NIX_CONFIG='experimental-features = nix-command flakes' \
+       nix run nix-darwin/nix-darwin-25.05#darwin-rebuild -- \
+       switch --flake github:@@GITHUB_OWNER@@/yclaw#metal; then switched=1; break; fi
+  echo "metal-activate: darwin-rebuild switch attempt $attempt failed; retrying in 90s"
+  sleep 90
+done
+[ -n "$switched" ] || echo "metal-activate: switch did not succeed in 4 attempts; completing via /run/current-system/activate"
 [ -x /run/current-system/activate ] && /run/current-system/activate || true
 
 # Success = metal actually joined the tailnet (the real criterion, not the switch exit code).
