@@ -1,8 +1,13 @@
 # Packer template: the macOS "metal" guest (cirruslabs/tart) — the locked-down, SIP-on
 # credential + AI services VM (omlx, mlx-audio STT, CLIProxyAPI, agent-vault). Holds no
-# iMessage/BlueBubbles. Clones the cirruslabs SIP-ON vanilla Tahoe base, installs Nix +
-# nix-darwin, and applies `darwinConfigurations.metal` (darwin/metal.nix) so every service
-# is declarative.
+# iMessage/BlueBubbles. Clones the cirruslabs SIP-ON vanilla Tahoe base, installs Nix, and
+# PRE-BUILDS `darwinConfigurations.metal` (darwin/metal.nix) into the image's store.
+#
+# The image holds NO secrets: nix-darwin ACTIVATION copies metal's age key and decrypts its sops
+# secrets from the `metalsecrets` virtiofs share, which the host's tart runner mounts only at
+# RUNTIME — so `darwin-rebuild switch` cannot run at build time. The build runs `darwin-rebuild
+# build` (validates the config + bakes the closure, no activation), and a baked first-boot
+# LaunchDaemon (metal-activate.sh) runs the `switch` once the share is mounted. See that script.
 #
 # The base is cirruslabs' `macos-tahoe-vanilla` (admin/admin + Remote Login + passwordless sudo,
 # CI-built from a pinned IPSW). It is SIP-ON: their *-base images run `csrutil disable` ON TOP of
@@ -64,23 +69,46 @@ build {
     environment_vars = ["VM_ADMIN_USER=${var.vm_admin_user}", "VM_ADMIN_OLD_PASS=${var.install_default_admin_password}", "VM_ADMIN_PASS=${var.vm_admin_pass}"]
   }
 
-  # Install Nix (Determinate) + nix-darwin, clone the repo, and apply `.#metal`. Everything
-  # the services need (omlx via Homebrew, the mlx-audio STT venv, the nix-built cliproxy +
-  # agent-vault, the pf/app-firewall lockdown, sops-nix) is declared in darwin/metal.nix, so
-  # the provisioner is thin. The host shares the age key + secrets blob + model cache into the
-  # guest at RUN time via `tart run --dir=state:~/.yclaw/state` (see scripts/setup.sh).
+  # Install Nix (Determinate) and PRE-BUILD metal's system closure WITHOUT activating it.
+  # `darwin-rebuild build` validates darwin/metal.nix and bakes the whole closure (omlx, the
+  # mlx-audio STT venv, the nix-built cliproxy + agent-vault, the pf/app-firewall lockdown,
+  # sops-nix) into the image's store, but does NOT run activation — activation copies the age key
+  # and decrypts sops from the runtime-only metalsecrets share, so the `switch` is deferred to
+  # first boot (metal-activate.sh below). Build from the flake on GitHub: the vanilla base has no
+  # git / Xcode CLT (a `git clone` would pop the Command Line Tools dialog and fail), and nix
+  # fetches github: refs with its own fetcher, as the nix-darwin ref already does.
   provisioner "shell" {
     inline = [
       "set -euo pipefail",
       "curl -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm",
       ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh",
-      # Build straight from the flake on GitHub. The vanilla base has no git / Xcode CLT — a
-      # `git clone` would trigger the Command Line Tools install dialog and fail — and nix fetches
-      # github: refs with its own fetcher (as the nix-darwin ref below already does), so no system
-      # git is needed. Runs as root for system activation.
       "sudo NIX_CONFIG='experimental-features = nix-command flakes' \\",
       "  nix run nix-darwin/nix-darwin-25.05#darwin-rebuild -- \\",
-      "  switch --flake github:${var.github_owner}/yclaw#metal",
+      "  build --flake github:${var.github_owner}/yclaw#metal",
+    ]
+  }
+
+  # Stage the first-boot activator (a plain LaunchDaemon — nix-darwin is not yet activated, so it
+  # cannot be a nix-darwin daemon). It runs `darwin-rebuild switch` once the metalsecrets share is
+  # mounted at first boot, then self-disables via a sentinel. It loads at the next boot (the
+  # runtime boot under the tart runner), not during this build.
+  provisioner "file" {
+    source      = "${path.root}/metal-activate.sh"
+    destination = "/tmp/metal-activate.sh"
+  }
+  provisioner "file" {
+    source      = "${path.root}/com.yclaw.metal-activate.plist"
+    destination = "/tmp/com.yclaw.metal-activate.plist"
+  }
+  provisioner "shell" {
+    environment_vars = ["GH_OWNER=${var.github_owner}"]
+    inline = [
+      "set -euo pipefail",
+      # Bake the operator's GitHub owner into the activator (BSD sed needs the empty -i arg).
+      "sed -i '' \"s/@@GITHUB_OWNER@@/$GH_OWNER/g\" /tmp/metal-activate.sh",
+      "sudo install -m 755 /tmp/metal-activate.sh /usr/local/bin/metal-activate.sh",
+      "sudo install -m 644 /tmp/com.yclaw.metal-activate.plist /Library/LaunchDaemons/com.yclaw.metal-activate.plist",
+      "rm -f /tmp/metal-activate.sh /tmp/com.yclaw.metal-activate.plist",
     ]
   }
 
