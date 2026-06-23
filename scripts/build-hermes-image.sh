@@ -80,8 +80,9 @@ done
 ssh_guest true 2>/dev/null || die "sshd on $BUILDER_VM never came up."
 
 # 4. In-guest: prove real kvm, install Nix, build the image, drop it into the shared repo dir.
-# TODO(human): the virtiofs share tag (`repo`) and the cirruslabs default creds (admin/admin)
-#   are unverified against a running builder — confirm the mount tag + login on first run.
+# Verified against a running cirruslabs ubuntu builder: login is admin/admin, and tart exposes the
+# --dir shares under the single virtiofs tag `com.apple.virtio-fs.automount` (the `repo` share is a
+# subdir), mounted below.
 echo "[build-hermes-image] building inside $BUILDER_VM ..."
 ssh_guest "YCLAW_GH_TOKEN='${GITHUB_TOKEN:-}' bash -euo pipefail" <<'GUEST'
 test -e /dev/kvm || { echo "FATAL: /dev/kvm missing — --nested did not expose nested virt." >&2; exit 1; }
@@ -103,13 +104,17 @@ fi
 if [ -n "${YCLAW_GH_TOKEN:-}" ]; then
   echo "access-tokens = github.com=$YCLAW_GH_TOKEN" | sudo tee -a /etc/nix/nix.conf >/dev/null
 fi
-sudo mkdir -p /mnt/repo
-mountpoint -q /mnt/repo || sudo mount -t virtiofs repo /mnt/repo
-cd /mnt/repo
+# tart exposes ALL --dir shares to a Linux guest under a SINGLE virtiofs tag
+# `com.apple.virtio-fs.automount`, with each share as a subdir named by its --dir name (`repo`) —
+# there is no per-share `repo` tag, so `mount -t virtiofs repo` fails ("bad superblock"). Mount the
+# automount tag and use the repo subdir. (Verified against a running cirruslabs ubuntu builder.)
+sudo mkdir -p /mnt/shares
+mountpoint -q /mnt/shares || sudo mount -t virtiofs com.apple.virtio-fs.automount /mnt/shares
+cd /mnt/shares/repo
 nix --extra-experimental-features "nix-command flakes" \
   build .#packages.aarch64-linux.hermes-image --out-link /tmp/result-hermes --print-build-logs
-sudo install -d -m 755 /mnt/repo/result-hermes
-sudo cp -L /tmp/result-hermes/nixos.img /mnt/repo/result-hermes/nixos.img
+sudo install -d -m 755 /mnt/shares/repo/result-hermes
+sudo cp -L /tmp/result-hermes/nixos.img /mnt/shares/repo/result-hermes/nixos.img
 GUEST
 
 IMG="$OUT_LINK/nixos.img"
