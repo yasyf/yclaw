@@ -607,8 +607,8 @@ in
   # upstream module's isSystemUser hermes with no login session / static uid).
   #
   # NOTE: not yet live-validated — a `docker run -v /:/host` from a real code-exec session
-  # must be REFUSED while normal code-exec still works (see docs/SECURITY-HANDOFF.md). If a
-  # legitimate mount source lives outside stateDir, widen HERMES_DOCKER_PROXY_BIND_ROOTS.
+  # must be REFUSED while normal code-exec still works. If a legitimate mount source lives
+  # outside stateDir, widen HERMES_DOCKER_PROXY_BIND_ROOTS.
   users.users.hermes-docker-proxy = {
     isSystemUser = true;
     # Primary group `hermes` so the proxy's listening socket is connectable by the agent;

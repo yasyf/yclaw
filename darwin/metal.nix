@@ -204,7 +204,7 @@ let
   #     The host reaches `metal:14321` directly for the bootstrap CA fetch + Google-OAuth admin.
   # This is the PRIMARY hermes/host-only gate: the deployment tailnet is SHARED and its ACL is
   # allow-all, so the ACL does not restrict metal — pf does, here, dropping every OTHER tailnet node
-  # (sprite/gcp/zo/modal) and the sibling vmnet-LAN guests. Never fail-OPEN: with no resolvable source
+  # and the sibling vmnet-LAN guests. Never fail-OPEN: with no resolvable source
   # the anchor is fully CLOSED (lo0 only), never the whole CGNAT.
   #
   # $1 = poll attempts (1s apart) to wait for tailscaled + the hermes peer. A transient hermes

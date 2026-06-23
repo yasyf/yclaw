@@ -29,7 +29,7 @@ the shortest correct path for an operator who already has the repo cloned.
      There is no CI workflow for this (a force-replace workflow is unsafe on a shared
      tailnet); apply it by hand in the admin console or via the Tailscale API. The full
      default-deny east-west lockdown only takes effect on a tailnet where every node has an
-     explicit grant — see `docs/SECURITY-HANDOFF.md`.
+     explicit grant.
   2. **Create an OAuth client** with the `auth_keys` write scope that owns those three
      tags (their `tagOwners` already list `autogroup:admin`). Supply its id and secret at
      the first `just bootstrap` prompt.

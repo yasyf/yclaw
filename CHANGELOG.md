@@ -105,6 +105,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flake output are gone, and the host is provisioned by `scripts/setup.sh` (Homebrew
   `tart`, Tailscale, `gum`, `packer`, `restic`) alone. In-guest `metal` is still
   configured by nix-darwin (`darwinConfigurations.metal`).
+- `docs/SECURITY-HANDOFF.md`. A dated internal security-hardening handoff, not canonical
+  project documentation and not fit for a public repo; its durable architecture and
+  security rationale is covered by `docs/ARCHITECTURE.md` and `docs/DEPLOY.md`.
 
 ### Security
 - `metal` is hardened to SIP-on and tailnet-only. It is the sole credential
@@ -170,7 +173,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hermes (the runtime client, resolved by hostname at RUNTIME via `tailscale ip -4 hermes`) and the
   host admin machine (its tailnet IP, which `bootstrap.sh` injects over the SSH path; the host hits
   `metal:14321` for the bootstrap CA fetch and Google-OAuth admin, and its Mac is an existing tailnet
-  member metal cannot name-resolve) — and drops every OTHER tailnet node (sprite/gcp/zo/modal) and
+  member metal cannot name-resolve) — and drops every OTHER tailnet node and
   the sibling vmnet-LAN guests. The scope is resolved at activation, at every boot, and on a 5-minute
   refresh, never baked into the build: if hermes is rebuilt and its IP changes, the next refresh
   re-scopes with no `darwin-rebuild`. It never fails open — a transient hermes unresolve reuses the
