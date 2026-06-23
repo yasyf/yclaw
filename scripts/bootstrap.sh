@@ -301,6 +301,9 @@ if ! tart list --format json 2>/dev/null | jq -re '.[]? | select(.Name=="hermes"
 fi
 log "Disk-replacing hermes (APFS clonefile) ..."
 cp -c "$HERMES_IMG" "$HOME/.tart/vms/hermes/disk.img"
+# The built image is mode 0444 and APFS clonefile preserves it, so the clone is read-only and the
+# `tart set --disk-size` resize (and the VM's own writes) fail "permission denied". Make it writable.
+chmod u+w "$HOME/.tart/vms/hermes/disk.img"
 tart set hermes --disk-size 64   # grow the record so NixOS autoResize extends the FS
 
 # --- 8. (re)load the launchd agents ------------------------------------------
