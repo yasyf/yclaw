@@ -342,12 +342,20 @@ in
   # "Determinate detected". This forgoes the `nix.*` settings options (unused here).
   nix.enable = false;
 
+  # nix-darwin defaults `security.pam.services.sudo_local.enable = true`, which symlinks
+  # /etc/pam.d/sudo_local at activation. At metal's FIRST boot that write races macOS's own
+  # first-boot /etc/pam.d setup and fails ("Operation not permitted"), aborting activation before
+  # the Homebrew bundle + the tailnet join ever run. metal is headless (no Touch ID) so it needs no
+  # sudo_local — disable nix-darwin's management of it; stock sudo works fine without the file.
+  security.pam.services.sudo_local.enable = false;
+
   # --- Lockdown: typed nix-darwin options --------------------------------------
   # The hardening nix-darwin exposes as typed system.defaults; everything without a typed option
   # (Remote Login, sharing services, Gatekeeper, Spotlight, Siri, telemetry) is applied
   # imperatively in postActivation below. Guest login is killed and the `>console` login-window
-  # escape is disabled. Auto-login stays ON (set by packer) so omlx gets a GPU aqua session, so
-  # FileVault is deliberately NOT used (it would negate auto-login); sensitive state lives on the
+  # escape is disabled. Auto-login stays ON (set by packer, cirruslabs base default); it is NOT
+  # required for the GPU (services are UserName=admin daemons, MLX works headless), and FileVault is
+  # deliberately NOT used regardless (it would negate auto-login); sensitive state lives on the
   # host's ~/.yclaw/state and is backed up encrypted off-box.
   system.defaults.loginwindow = {
     GuestEnabled = false;
