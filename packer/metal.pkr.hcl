@@ -19,15 +19,9 @@
 # The wizard exports the build inputs as env before `packer build`:
 #   PKR_VAR_ipsw_url, PKR_VAR_github_owner, PKR_VAR_vm_admin_user, PKR_VAR_vm_admin_pass,
 #   PKR_VAR_repo_url. Required-but-unset vars keep a fail-loud "@@UNSET_*@@" sentinel default.
-
-packer {
-  required_plugins {
-    tart = {
-      source  = "github.com/cirruslabs/tart"
-      version = ">= 1.12.0"
-    }
-  }
-}
+# The plugin pin + the vm_admin_user/vm_admin_pass/install_default_admin_password vars are shared
+# in common.pkr.hcl (Packer loads every *.pkr.hcl in this dir together; build with
+# `packer build -only='tart-cli.metal' packer/`).
 
 variable "ipsw_url" {
   type        = string
@@ -48,67 +42,36 @@ variable "repo_url" {
   default = ""
 }
 
-variable "vm_name" {
-  type    = string
-  default = "metal"
-}
-
-# metal runs the 35B MLX model + the STT model + the Go services, so it is the heavy node.
-variable "cpu_count" {
-  type    = number
-  default = 10
-}
-
-variable "memory_gb" {
-  type    = number
-  default = 48
-}
-
-variable "disk_size_gb" {
-  type    = number
-  default = 200
-}
-
-# Local admin baked into the image. nix-darwin's primaryUser + launchd.user.agents target
-# this account, so it MUST be `admin` to match darwin/metal.nix (adminUser = "admin",
-# home /Users/admin).
-variable "vm_admin_user" {
-  type    = string
-  default = "admin"
-}
-
-# The real value comes from the env as PKR_VAR_vm_admin_pass, sourced from the dedicated
-# yclaw keychain ($HOME/Library/Keychains/yclaw.keychain-db, random-generated per-VM by
-# scripts/lib/secrets.sh, service yclaw-metal-admin-pass) after unlocking that keychain with
-# the login-keychain-stored yclaw-keychain-password — never prompted, never hardcoded. The
-# @@UNSET_VM_ADMIN_PASS@@ default is a fail-loud sentinel: build without exporting
-# PKR_VAR_vm_admin_pass and the image bakes the placeholder. See docs/DEPLOY.md step 3 for the
-# exact `PKR_VAR_vm_admin_pass=$(security ...)` invocation.
-variable "vm_admin_pass" {
-  type      = string
-  default   = "@@UNSET_VM_ADMIN_PASS@@"
-  sensitive = true
-}
-
 locals {
   clone_url = var.repo_url != "" ? var.repo_url : "https://github.com/${var.github_owner}/yclaw.git"
 }
 
-source "tart-cli" "tahoe" {
-  from_ipsw    = var.ipsw_url
-  vm_name      = var.vm_name
-  cpu_count    = var.cpu_count
-  memory_gb    = var.memory_gb
-  disk_size_gb = var.disk_size_gb
+source "tart-cli" "metal" {
+  from_ipsw = var.ipsw_url
+  vm_name   = "metal"
+  # metal runs the 35B MLX model + the STT model + the Go services, so it is the heavy node.
+  cpu_count    = 10
+  memory_gb    = 48
+  disk_size_gb = 200
   ssh_username = var.vm_admin_user
-  ssh_password = var.vm_admin_pass
+  # tart's from_ipsw install creates the admin account as admin/admin (same default the cirruslabs
+  # base ships); reset-admin-password.sh sets the real var.vm_admin_pass in the first provisioner.
+  ssh_password = var.install_default_admin_password
   headless     = true
-  # macOS Setup Assistant + first-boot account creation need slack before SSH.
+  # macOS Setup Assistant + first-boot account creation need slack before SSH; a fresh install
+  # boots slower than a clone, so allow a generous SSH timeout too.
   create_grace_time = "120s"
+  ssh_timeout       = "600s"
 }
 
 build {
-  sources = ["source.tart-cli.tahoe"]
+  sources = ["source.tart-cli.metal"]
+
+  # Reset the install-default admin password to the per-VM password (shared with bluebubbles).
+  provisioner "shell" {
+    script           = "${path.root}/reset-admin-password.sh"
+    environment_vars = ["VM_ADMIN_USER=${var.vm_admin_user}", "VM_ADMIN_PASS=${var.vm_admin_pass}"]
+  }
 
   # Install Nix (Determinate) + nix-darwin, clone the repo, and apply `.#metal`. Everything
   # the services need (omlx via Homebrew, the mlx-audio STT venv, the nix-built cliproxy +

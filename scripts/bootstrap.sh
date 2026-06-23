@@ -187,26 +187,27 @@ done
 _yclaw_keychain_unlock
 
 build_macos_image() {
-  local node="$1" admin_service="$2" pkr_file="$3" admin_pass
+  local node="$1" admin_service="$2" admin_pass
   admin_pass="$(security find-generic-password -a "$USER" -s "$admin_service" -w "$YCLAW_KEYCHAIN")"
   [[ -n "$admin_pass" ]] || die "no $admin_service in $YCLAW_KEYCHAIN — collect_secrets should have generated it."
-  log "Building $node image via packer ($pkr_file) ..."
+  log "Building $node image via packer (-only=tart-cli.$node) ..."
+  # Packer loads every packer/*.pkr.hcl together (shared common.pkr.hcl); -only picks this node.
   PKR_VAR_ipsw_url="$IPSW_URL" \
   PKR_VAR_github_owner="$GITHUB_OWNER" \
   PKR_VAR_vm_admin_user="admin" \
   PKR_VAR_vm_admin_pass="$admin_pass" \
   PKR_VAR_repo_url="" \
-    packer init "$REPO_ROOT/packer/$pkr_file"
+    packer init "$REPO_ROOT/packer/"
   PKR_VAR_ipsw_url="$IPSW_URL" \
   PKR_VAR_github_owner="$GITHUB_OWNER" \
   PKR_VAR_vm_admin_user="admin" \
   PKR_VAR_vm_admin_pass="$admin_pass" \
   PKR_VAR_repo_url="" \
-    packer build "$REPO_ROOT/packer/$pkr_file"
+    packer build -only="tart-cli.$node" "$REPO_ROOT/packer/"
 }
 
-build_macos_image metal       "$KC_SERVICE_METAL_ADMIN"       metal.pkr.hcl
-build_macos_image bluebubbles "$KC_SERVICE_BLUEBUBBLES_ADMIN" bluebubbles.pkr.hcl
+build_macos_image metal       "$KC_SERVICE_METAL_ADMIN"
+build_macos_image bluebubbles "$KC_SERVICE_BLUEBUBBLES_ADMIN"
 
 # Boot the freshly-built macOS guests now that their disks exist: re-load each runner (booted out
 # before the build) so RunAtLoad + KeepAlive starts and supervises it. The CA fetch below needs

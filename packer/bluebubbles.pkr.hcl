@@ -20,81 +20,38 @@
 # The wizard exports the build inputs as env before `packer build`:
 #   PKR_VAR_vm_admin_user, PKR_VAR_vm_admin_pass. The required vm_admin_pass keeps a
 #   fail-loud "@@UNSET_VM_ADMIN_PASS@@" sentinel default.
+# The plugin pin + the vm_admin_user/vm_admin_pass/install_default_admin_password vars are shared
+# in common.pkr.hcl; build with `packer build -only='tart-cli.bluebubbles' packer/`.
 
-packer {
-  required_plugins {
-    tart = {
-      source  = "github.com/cirruslabs/tart"
-      version = ">= 1.12.0"
-    }
-  }
-}
-
-variable "vm_name" {
-  type    = string
-  default = "bluebubbles"
-}
-
-# BB VM is the lightweight node — just enough to run BlueBubbles and expose
-# iMessage/Calendar/Mail as hermes actions.
-variable "cpu_count" {
-  type    = number
-  default = 2
-}
-
-variable "memory_gb" {
-  type    = number
-  default = 4
-}
-
-variable "disk_size_gb" {
-  type    = number
-  default = 64
-}
-
-# Local admin baked into the image — independent of the Apple ID that signs into
-# iMessage later. SSH uses this account until Tailscale SSH takes over. Defaults to
-# `admin` to match metal (darwin/metal.nix adminUser); override via PKR_VAR_vm_admin_user.
-variable "vm_admin_user" {
-  type    = string
-  default = "admin"
-}
-
-# The real value comes from the env as PKR_VAR_vm_admin_pass, sourced from the dedicated
-# yclaw keychain ($HOME/Library/Keychains/yclaw.keychain-db, random-generated per-VM by
-# scripts/lib/secrets.sh, service yclaw-bluebubbles-admin-pass) after unlocking that keychain
-# with the login-keychain-stored yclaw-keychain-password — never prompted, never hardcoded. The
-# @@UNSET_VM_ADMIN_PASS@@ default is a fail-loud sentinel: build without exporting
-# PKR_VAR_vm_admin_pass and the image bakes the placeholder. See docs/DEPLOY.md step 3 for the
-# exact `PKR_VAR_vm_admin_pass=$(security ...)` invocation.
-variable "vm_admin_pass" {
-  type      = string
-  default   = "@@UNSET_VM_ADMIN_PASS@@"
-  sensitive = true
-}
-
-source "tart-cli" "tahoe" {
+source "tart-cli" "bluebubbles" {
   # Pinned by immutable digest (audit M8): a mutable :latest tag let a registry-side
   # change silently mutate this SIP-off, credential-bearing iMessage VM on rebuild.
   # Resolved 2026-06-18 via:
   #   docker manifest inspect --verbose ghcr.io/cirruslabs/macos-tahoe-base:latest | jq -r '.Descriptor.digest'
   # Re-run that command and update the digest below on an intentional base bump.
   vm_base_name = "ghcr.io/cirruslabs/macos-tahoe-base@sha256:a8e1c8305758643f513fdccdd829c2243687c60791083dea42f73f0b7aeb435c"
-  vm_name      = var.vm_name
-  cpu_count    = var.cpu_count
-  memory_gb    = var.memory_gb
-  disk_size_gb = var.disk_size_gb
+  vm_name      = "bluebubbles"
+  # BB VM is the lightweight node — just enough to run BlueBubbles and expose iMessage/Calendar/Mail.
+  cpu_count    = 2
+  memory_gb    = 4
+  disk_size_gb = 64
   ssh_username = var.vm_admin_user
-  # The cloned base ships admin/admin; authenticate with that default, then the
-  # first provisioner resets the password to var.vm_admin_pass (PKR_VAR_vm_admin_pass).
-  ssh_password = "admin"
+  # The cloned base ships admin/admin; reset-admin-password.sh sets the real var.vm_admin_pass
+  # in the first provisioner.
+  ssh_password = var.install_default_admin_password
   headless     = true
   # Give the cloned base's guest agent + SSH a moment to come up before connecting.
   create_grace_time = "120s"
 }
 
 build {
-  sources = ["source.tart-cli.tahoe"]
+  sources = ["source.tart-cli.bluebubbles"]
+
+  # Reset the install-default admin password to the per-VM password (shared with metal).
+  provisioner "shell" {
+    script           = "${path.root}/reset-admin-password.sh"
+    environment_vars = ["VM_ADMIN_USER=${var.vm_admin_user}", "VM_ADMIN_PASS=${var.vm_admin_pass}"]
+  }
 
   # Install Homebrew, then the OSS Tailscale build (the App Store build does NOT
   # support `tailscale ssh`). Drop the daemon symlink where
@@ -106,8 +63,6 @@ build {
   provisioner "shell" {
     inline = [
       "set -euo pipefail",
-      # Reset the cloned base's default admin password (admin) to var.vm_admin_pass.
-      "sudo dscl . -passwd /Users/${var.vm_admin_user} '${var.vm_admin_pass}'",
       "/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"",
       "eval \"$(/opt/homebrew/bin/brew shellenv)\"",
       "brew install tailscale",
