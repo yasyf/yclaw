@@ -169,6 +169,15 @@ log "Genericity guard passed: no @@TAILNET_DOMAIN@@ in ${GENERIC_TREE[*]}."
 log "Applying host config: ./scripts/setup.sh ..."
 ./scripts/setup.sh
 
+# setup.sh (re)loads the com.yclaw.tart-* runners with RunAtLoad + KeepAlive, so each immediately
+# starts retrying `tart run <node>`. That races the packer builds and the hermes disk-replace below:
+# the instant a VM with the target name exists, KeepAlive boots it and packer's own start fails
+# ("VM <node> is already running"), or it boots hermes mid-clonefile and corrupts the disk. Boot all
+# three out now; each is re-loaded at its proper boot point once its disk is in place.
+for node in metal bluebubbles hermes; do
+  launchctl bootout "gui/$(id -u)/com.yclaw.tart-$node" 2>/dev/null || true
+done
+
 # --- 6. build the macOS guest images (metal + bluebubbles) via packer --------
 
 # The yclaw keychain holds the per-VM admin passwords; unlock it once, then feed packer its
@@ -199,12 +208,13 @@ build_macos_image() {
 build_macos_image metal       "$KC_SERVICE_METAL_ADMIN"       metal.pkr.hcl
 build_macos_image bluebubbles "$KC_SERVICE_BLUEBUBBLES_ADMIN" bluebubbles.pkr.hcl
 
-# Boot the freshly-built macOS guests now that their disks exist. setup.sh (step 5) loaded the
-# com.yclaw.tart-* agents before the images were built, so KeepAlive would eventually boot them —
-# but the CA fetch below needs metal up + agent-vault provisioned, so kickstart it explicitly.
+# Boot the freshly-built macOS guests now that their disks exist: re-load each runner (booted out
+# before the build) so RunAtLoad + KeepAlive starts and supervises it. The CA fetch below needs
+# metal up + agent-vault provisioned.
 for node in metal bluebubbles; do
-  launchctl kickstart -k "gui/$(id -u)/com.yclaw.tart-$node" 2>/dev/null \
-    || log "  (agent com.yclaw.tart-$node not loaded yet; ./scripts/setup.sh bootstraps it)"
+  launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.yclaw.tart-$node.plist" 2>/dev/null \
+    || log "  (could not load com.yclaw.tart-$node; ./scripts/setup.sh rewrites it on next run)"
+  launchctl kickstart -k "gui/$(id -u)/com.yclaw.tart-$node" 2>/dev/null || true
 done
 
 # --- 6b. authorize THIS host on metal's pf gate ------------------------------
@@ -283,10 +293,12 @@ tart set hermes --disk-size 64   # grow the record so NixOS autoResize extends t
 
 # --- 8. (re)load the launchd agents ------------------------------------------
 
-# metal + bluebubbles were booted in step 6; kickstart hermes now that its disk is in place.
-log "Reloading launchd agent com.yclaw.tart-hermes ..."
-launchctl kickstart -k "gui/$(id -u)/com.yclaw.tart-hermes" 2>/dev/null \
-  || log "  (agent com.yclaw.tart-hermes not yet loaded — ./scripts/setup.sh bootstraps it on next run)"
+# hermes was booted out before its disk-replace; load it now that its disk is in place
+# (RunAtLoad + KeepAlive starts it).
+log "Loading launchd agent com.yclaw.tart-hermes ..."
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.yclaw.tart-hermes.plist" 2>/dev/null \
+  || log "  (could not load com.yclaw.tart-hermes — ./scripts/setup.sh rewrites it on next run)"
+launchctl kickstart -k "gui/$(id -u)/com.yclaw.tart-hermes" 2>/dev/null || true
 
 # --- 8b. hermes onboarding (identity + Honcho peer) --------------------------
 
