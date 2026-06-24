@@ -11,7 +11,7 @@
 import http.server, json, os, subprocess, sys, time, urllib.parse, urllib.request
 
 VAULT = os.environ.get("VAULT_ADDR", "http://metal:14321")
-OWNER = os.environ.get("VAULT_OWNER", "admin@hermes.local")
+OWNER = os.environ.get("VAULT_OWNER", "admin@metal.local")
 VAULT_NAME = "hermes"
 KEY = "GOOGLE_OAUTH_TOKEN"
 PORT = 8723
@@ -45,8 +45,13 @@ def get_json(url, token):
 c = json.load(open(os.path.expanduser("~/.config/gws/client_secret.json")))
 c = c.get("installed") or c.get("web")
 CID, CSEC = c["client_id"], c["client_secret"]
+# Read the master password from the DEDICATED yclaw keychain explicitly — a bare lookup hits the
+# default search list, where a stale login-keychain item from an earlier deploy shadows the current
+# one (wrong password -> 401).
 MPW = subprocess.check_output(
-    ["security", "find-generic-password", "-s", "yclaw-agent-vault-master", "-w"]
+    ["security", "find-generic-password", "-a", os.environ["USER"],
+     "-s", "yclaw-agent-vault-master", "-w",
+     os.path.expanduser("~/Library/Keychains/yclaw.keychain-db")]
 ).decode().strip()
 
 token = post_json(VAULT + "/v1/auth/login", {"email": OWNER, "password": MPW, "device_label": "google-oauth"})["token"]
