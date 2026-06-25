@@ -199,6 +199,36 @@ restic restore latest --target ~/.yclaw/state
 just setup
 ```
 
+## Redeploy
+
+`just redeploy [node]` (`scripts/redeploy.sh <host|metal|hermes|bluebubbles|all>`,
+defaulting to `all`) pushes a config change to the running stack **in place**: every
+node keeps its identity and persistent state, nothing disk-replaces, and no step needs
+human input. One path per node:
+
+- **host** — re-applies the host config (`scripts/setup.sh`): Homebrew tooling and the
+  `com.yclaw.tart-*` launchd runners.
+- **metal** — runs `metal-redeploy` in the guest (`darwin-rebuild switch`); the MLX
+  services restart and the model-cache shares stay mounted.
+- **hermes** — in-guest `nixos-rebuild switch` against `/var/lib/yclaw-repo#hermes`
+  (the read-only repo share); node identity and `/var/lib/hermes` survive. Gated by a
+  `nixos-rebuild dry-activate`: a code deploy leaves the `var-lib-hermes`/`var-lib-tailscale`
+  virtiofs mounts untouched, but a change that would (re)mount a virtiofs tag mid-session hits
+  Apple's tag re-enumeration limit (`virtio-fs: tag not found`), so the gate auto-routes those
+  to the disk-replace fallback instead.
+- **bluebubbles** — `scripts/bluebubbles-setup.sh reconfigure` in the guest; re-applies
+  the server config and never touches the iMessage session on the VM disk.
+
+> **The BlueBubbles iMessage session is a single point of failure.** It lives only on the
+> `bluebubbles` VM disk. Redeploy never touches that disk, so the session survives a
+> redeploy — but it is **not** covered by `just backup`, which only snapshots
+> `~/.yclaw/state`. A scoped virtiofs mount for the session is infeasible: SQLite-WAL does
+> not work over a network/virtiofs filesystem, imagent's sandbox resolves symlinks before
+> path-matching, and the IDS registration is bound to the guest's hardware identity plus a
+> SEP-wrapped keychain. The workable backup — identity-pin the guest (`machineIdentifier`
+> + NVRAM/`auxiliaryStorage` + `hardwareModel`) and snapshot the whole disk on the same
+> host — is a deferred follow-up.
+
 ## Migrating an existing deployment
 
 Older deployments were seeded with the single global age key and one monolithic
@@ -212,9 +242,16 @@ keeps the old artifacts and never picks up the new per-host keys. Migrate explic
    produced; remove them so a stale share source can't be re-mounted.
    - On `metal`, remove the stale `/var/lib/sops-nix/key.txt` and the old bundle before
      `darwin-rebuild`, so first boot re-seeds the per-host key.
-   - `hermes` disk-replaces on deploy (root resets), so it re-seeds on the next
-     `just deploy hermes`. Deploy with a boot-and-reboot cycle; `switch` hits a
-     virtiofs remount quirk.
+   - `hermes` redeploys **in place** via in-guest `nixos-rebuild switch`, so it does not
+     re-seed the per-host key (no disk-replace; node identity and `/var/lib/hermes` are
+     preserved). A live `switch` is safe ONLY while it leaves the virtiofs mounts untouched:
+     Apple's Virtualization.framework cannot re-enumerate a virtiofs tag once it is unmounted
+     mid-session (`virtio-fs: tag not found`), so a `switch` that would start/stop/restart
+     `var-lib-hermes.mount` or `var-lib-tailscale.mount` strands the mount and blocks
+     `hermes-agent`. `scripts/redeploy.sh` reads `nixos-rebuild dry-activate` and auto-routes
+     exactly those cases to the disk-replace fallback. Re-seeding the per-host key is one such
+     reboot-class change, so migrate hermes with the fallback (`scripts/deploy-vm.sh`): it
+     resets root and re-seeds on first boot.
 2. **Drop the host age key.** The host no longer keeps an age key at
    `/var/lib/sops-nix/key.txt`; that vestigial install was removed.
 

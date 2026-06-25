@@ -346,6 +346,25 @@ in
   environment.systemPackages = [
     (pkgs.writeShellScriptBin "metal-mint-hermes-token"
       "exec /usr/bin/sudo -u ${adminUser} /usr/bin/env HOME=${lib.escapeShellArg vaultHome} ${pkgs.agent-vault}/bin/agent-vault agent rotate ${vaultName} --token-only")
+
+    # In-guest redeploy over `tailscale ssh root@metal -- metal-redeploy`: rebuild metal from the
+    # read-only repo virtiofs share. Runs as root (the only admin path), so no sudo. The GitHub token
+    # is sourced HERE, in-guest, from the sops static-keys bundle — the running guest has NO token in
+    # its nix.conf (nix.enable=false above, so nix-darwin manages no `nix.*` settings at all), yet
+    # darwin-rebuild must fetch the flake's github: inputs under github.com's anonymous rate limit.
+    # vault/static-keys decrypts to a dotenv KEY=VALUE block (manifest envblock), so source it like
+    # the master-password wrappers above to put $GITHUB_TOKEN in the env. The token rides into nix via
+    # a MULTI-LINE NIX_CONFIG (experimental-features + access-tokens) built right here on metal: such a
+    # value must NEVER be passed across `tailscale ssh` — the remote arg vector word-splits on the
+    # newline and the login shell runs a truncated command (the bootstrap.sh:240 lesson), so the
+    # token-bearing config is assembled in-guest, never shipped over the SSH boundary.
+    (pkgs.writeShellScriptBin "metal-redeploy" ''
+      set -euo pipefail
+      set -a; . ${lib.escapeShellArg staticKeysFile}; set +a
+      export NIX_CONFIG="experimental-features = nix-command flakes
+      access-tokens = github.com=$GITHUB_TOKEN"
+      exec /run/current-system/sw/bin/darwin-rebuild switch --flake ${lib.escapeShellArg "/Volumes/My Shared Files/repo#metal"}
+    '')
   ];
 
   # Nix is installed by the Determinate installer in-guest (it runs its own daemon), so

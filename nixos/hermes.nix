@@ -265,6 +265,36 @@ in
     options = [ "nofail" ];
   };
 
+  # --- Repo checkout (read-only) for in-VM rebuilds ----------------------------
+  # The host's ~/Code/yclaw checkout, shared read-only over virtiofs (tag `repo`, by the
+  # tart-hermes runner in scripts/setup.sh). The in-VM rebuild reads its flake from here
+  # (`nixos-rebuild switch --flake /var/lib/yclaw-repo#hermes`), so the guest rebuilds
+  # itself from the same source the host deploys. `nofail` so an image smoke-build that boots
+  # hermes without the share still comes up (the rebuild just isn't available until it's mounted).
+  fileSystems."/var/lib/yclaw-repo" = {
+    device = "repo";
+    fsType = "virtiofs";
+    options = [ "ro" "nofail" ];
+  };
+
+  # --- Persistent tailnet identity externalized to the host --------------------
+  # /var/lib/tailscale (the node key, machine identity, prefs) mounted from the host's
+  # ~/.yclaw/state/hermes-tailscale over virtiofs (tag `tailscalestate`, shared rw by the
+  # tart-hermes runner). Persisting it keeps ONE tailnet node across VM rebuilds instead of
+  # minting a fresh node (and a dangling stale one) on every redeploy. NO `nofail`: tailscaled
+  # must BLOCK on this mount (RequiresMountsFor below) — a missing share is a hard boot failure,
+  # never a silent fall-back to an empty in-VM dir that would churn the persisted node key.
+  fileSystems."/var/lib/tailscale" = {
+    device = "tailscalestate";
+    fsType = "virtiofs";
+  };
+
+  # Order tailscaled.service (the unit services.tailscale in nixos/common.nix generates) AFTER the
+  # /var/lib/tailscale mount: RequiresMountsFor pulls in + waits on the mount unit, so tailscaled
+  # can never start against an empty pre-mount dir and mint a fresh node into it. RequiresMountsFor
+  # (NOT `nofail` on the mount) — a race here would churn the persisted node key on every boot.
+  systemd.services.tailscaled.unitConfig.RequiresMountsFor = [ "/var/lib/tailscale" ];
+
   # --- Hermes agent gateway ----------------------------------------------------
   services.hermes-agent = {
     enable = true;

@@ -56,6 +56,13 @@ deploy-ai:
     cat "$config"
     echo "HUMAN: paste the Aperture config above into the Aperture dashboard (config-API write verb unverified — do not auto-PUT)."
 
+# In-place, state-preserving redeploy with ZERO human input: metal darwin-rebuild switch
+# (metal-redeploy), hermes nixos-rebuild switch (dry-activate-gated — aborts to the disk-replace
+# fallback if a stateful virtiofs mount would stop/restart), bb config reconfigure. The disk-replace
+# path (`just deploy hermes` → scripts/deploy-vm.sh) is the fallback for reboot-class changes.
+redeploy node="all":
+    ./scripts/redeploy.sh {{node}}
+
 # Smoke tests. Some checks need a live stack and stay commented scaffolding.
 smoke:
     #!/usr/bin/env bash

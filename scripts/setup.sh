@@ -42,7 +42,7 @@ HF_HUB_DIR="${HF_HOME:-$HOME_DIR/.cache/huggingface}/hub"
 
 # State subdirs the VMs read/write over the virtiofs shares (metal mounts narrow per-need shares,
 # hermes mounts its own hosts/hermes bundle + hermes/ runtime state).
-STATE_SUBDIRS=(hosts/hermes hosts/metal cli-proxy-api/auth agent-vault mlx-audio hermes)
+STATE_SUBDIRS=(hosts/hermes hosts/metal cli-proxy-api/auth agent-vault mlx-audio hermes hermes-tailscale)
 
 # pf VNC anchor: OFF by default. The host runs no VNC-exposed model services anymore, so there
 # is nothing to gate. Set ENABLE_VNC_ANCHOR=1 only if a VNC service is reintroduced on the host.
@@ -188,19 +188,24 @@ write_agent bluebubbles \
 # boot hangs once the virtio console ring fills. The `sops` share (ro) seeds the age key +
 # secrets for first-boot node-config seeding; the `hermesstate` share (rw) externalizes the
 # agent's persistent state (/var/lib/hermes — honcho memory, sessions) onto ~/.yclaw/state so it
-# survives a VM rebuild and is covered by `just backup`.
+# survives a VM rebuild and is covered by `just backup`. The `repo` share (ro) mounts this checkout
+# read-only so the in-VM nixos-rebuild can rebuild itself (`nixos-rebuild switch --flake
+# /var/lib/yclaw-repo#hermes`); the `tailscalestate` share (rw) externalizes /var/lib/tailscale
+# so the node keeps ONE persisted tailnet identity across rebuilds instead of minting a fresh node.
 #
 # Unlike metal (a macOS guest, which auto-mounts the `name:path` form at /Volumes/My Shared
 # Files/<name>), a Linux guest mounts each share by its EXPLICIT virtiofs tag — so these MUST use
 # the `path:[ro,]tag=<tag>` form. The `name:path` form would leave them on tart's default
 # `com.apple.virtio-fs.automount` tag, and common.nix's seedNodeConfig (tag `sops`) + nixos/hermes.nix's
-# fstab (tag `hermesstate`) would find no such device and the agent's stateDir mount would fail.
+# fstab (tags `hermesstate`/`repo`/`tailscalestate`) would find no such device and the matching mount would fail.
 write_agent hermes \
   run hermes \
   --no-graphics \
   --serial-path=/dev/null \
   "--dir=$HOME_DIR/.config/yclaw/vm-secrets:ro,tag=sops" \
-  "--dir=$STATE_DIR/hermes:tag=hermesstate"
+  "--dir=$STATE_DIR/hermes:tag=hermesstate" \
+  "--dir=$HOME_DIR/Code/yclaw:ro,tag=repo" \
+  "--dir=$STATE_DIR/hermes-tailscale:tag=tailscalestate"
 
 # --- 4. pf VNC anchor (optional, OFF by default) -----------------------------
 
