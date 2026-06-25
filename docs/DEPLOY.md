@@ -97,7 +97,7 @@ The wizard runs these stages autonomously:
    are absent, so re-running is safe:
 
    ```sh
-   tailscale ssh -t admin@hermes -- sudo -u hermes -H hermes-onboard
+   tailscale ssh admin@hermes -- sudo -u hermes -H hermes-onboard
    ```
 
 When the autonomous steps finish, the wizard prints the human gates and stops
@@ -105,8 +105,18 @@ cleanly.
 
 ## Clear the human gates
 
-These are one-time interactive steps the wizard can't perform. Do them in order,
-then verify.
+These are one-time interactive steps the wizard can't perform. Run the onboarding
+TUI, which drives them all in order, idempotently (already-done gates are skipped),
+inside a zellij session:
+
+```sh
+just onboard
+```
+
+It surfaces the Tailscale SSH re-auth URL, seeds the hermes identity, runs the two
+cli-proxy logins in their own panes, connects Google OAuth, and walks the Apple-ID
+bring-up — then runs `just validate` and `just smoke`. The manual equivalents below
+are the reference for what each gate does.
 
 1. **Apple-ID iMessage sign-in (2FA) on `bluebubbles`** — the one irreducibly-human
    step. Sign in with the dedicated Apple ID, complete 2FA, enable iMessage, then run
@@ -117,18 +127,22 @@ then verify.
    `just bb-harden`. `bluebubbles` enrollment is still a manual `tailscale up`, and it
    must advertise its tag: `tailscale up --advertise-tags=tag:bluebubbles`.
 2. **CLIProxyAPI Codex login on `metal`** (browser flow). `--no-browser` prints a URL
-   you approve in any browser, then paste the one-time code back — no SSH tunnel needed:
+   you approve in any browser; the redirect to `localhost:1455` fails to load, so copy
+   the full URL from the address bar and paste it back (the paste prompt arms after
+   ~15s) — no SSH tunnel needed:
 
    ```sh
    cli-proxy-api --codex-login --no-browser
    ```
 
 3. **CLIProxyAPI Gemini login on `metal`** (browser flow — the flag is `--login`,
-   not `--gemini-login`). `--no-browser` lets you approve in any browser and paste the
-   redirect URL back:
+   not `--gemini-login`). `--login --no-browser` has **no paste fallback** unless you
+   pass `--project_id`, so its `localhost:8085` callback must be reachable; `just onboard`
+   forwards it over `ssh -L`. By hand, run the login on `metal` with the port forwarded
+   from where your browser is:
 
    ```sh
-   cli-proxy-api --login --no-browser
+   ssh -L 8085:127.0.0.1:8085 root@metal -- cli-proxy-api --login --no-browser
    ```
 
 4. **agent-vault Google OAuth connect** (run on the host):

@@ -322,7 +322,7 @@ launchctl kickstart -k "gui/$(id -u)/com.yclaw.tart-hermes" 2>/dev/null || true
 # (remote cloud — see nixos/hermes.nix), so this only fills user-specific gaps. Runs as
 # the hermes user (sudo) so writes get service-correct ownership; admin is passwordless
 # wheel. Idempotent. If hermes isn't reachable yet, print the one-liner instead of blocking.
-ONBOARD_CMD="tailscale ssh -t admin@hermes -- sudo -u hermes -H hermes-onboard"
+ONBOARD_CMD="tailscale ssh admin@hermes -- sudo -u hermes -H hermes-onboard"
 log "Waiting for hermes to be reachable for onboarding (tailscale ssh admin@hermes) ..."
 hermes_up=0
 for _ in $(seq 1 60); do
@@ -355,31 +355,18 @@ cat <<EOF
 
 ================================================================================
   HUMAN GATES — credential ceremonies the providers keep human (Apple-ID 2FA, OAuth consent).
-  Do them in order, then verify. Everything mechanical is already automated.
-================================================================================
+  Bootstrap finished every autonomous step. Run the onboarding TUI to clear the gates:
 
-  [ ] 1. Apple-ID iMessage sign-in (2FA) on the bluebubbles VM — the one irreducibly-human step.
-         Sign in with the dedicated Apple ID, complete 2FA, enable iMessage, then run
-         scripts/bluebubbles-setup.sh on the guest. It auto-grants the BlueBubbles GUI
-         permissions (SIP-off) and auto-disables Screen Sharing once the server is healthy. If it
-         prints a HUMAN FALLBACK, finish those GUI grants over Screen Sharing, then: just bb-harden
+      just onboard
 
-  [ ] 2. CLIProxyAPI Codex login (metal, one-time browser flow):
-           cli-proxy-api --codex-login --no-browser   # ChatGPT subscription account
-                                                       # --no-browser prints a URL to approve from any
-                                                       # browser, then paste the code back (no SSH tunnel)
-
-  [ ] 3. CLIProxyAPI Gemini login (metal, one-time browser flow):
-           cli-proxy-api --login --no-browser    # NOTE: flag is --login, NOT --gemini-login
-                                                 # personal Google (free Code Assist); --no-browser =
-                                                 # approve in any browser, paste the redirect URL back
-
-  [ ] 4. agent-vault Google OAuth connect (run on the host):
-           ./scripts/connect-google-oauth.py
-         Open the printed CONSENT_URL, approve, and it finishes + verifies.
-
-================================================================================
-  Bootstrap finished the autonomous steps. Stopping cleanly at the gates above.
+  It drives them in order, idempotently (already-done gates are skipped), in a zellij session:
+    0. Tailscale SSH check  — approve the re-auth URL it surfaces.
+    A. hermes identity      — USER.md + SOUL.md + the Honcho peer.
+    B. CLIProxyAPI Codex    — one-time ChatGPT login (paste the failed redirect URL back).
+    C. CLIProxyAPI Gemini   — one-time personal-Google login (callback is port-forwarded; no paste).
+    D. agent-vault Google OAuth — approve one consent URL on this Mac.
+    E. Apple-ID iMessage    — sign in + 2FA over VNC, then BlueBubbles setup + harden.
+  Then it runs \`just validate\` + \`just smoke\`.
 ================================================================================
 EOF
 

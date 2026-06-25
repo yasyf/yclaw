@@ -13,6 +13,13 @@ default:
 bootstrap:
     ./scripts/bootstrap.sh
 
+# Post-bootstrap onboarding TUI: drives the human gates bootstrap stops at (Tailscale SSH check,
+# hermes identity, Codex + Gemini cli-proxy logins, agent-vault Google OAuth, Apple-ID/BlueBubbles)
+# then validate + smoke. Runs in a zellij session (tmux fallback); idempotent — already-done gates
+# are skipped. Mints no secrets. Set YCLAW_ONBOARD_NO_ZELLIJ=1 to run inline without a multiplexer.
+onboard:
+    ./scripts/onboard.sh
+
 # De-Nix'd host bring-up: Homebrew tart/gum, ~/.yclaw/state, and the com.yclaw.tart-* runners.
 setup:
     ./scripts/setup.sh

@@ -173,7 +173,7 @@ let
   cfg = config.services.hermes-agent;
 
   # --- End-of-bootstrap onboarding --------------------------------------------
-  # bootstrap.sh auto-launches this over `tailscale ssh -t admin@hermes -- sudo -u hermes -H
+  # bootstrap.sh auto-launches this over `tailscale ssh admin@hermes -- sudo -u hermes -H
   # hermes-onboard` once the VM is reachable. It collects the identity that yclaw's declarative
   # provisioning can't: the user profile (USER.md) and the agent persona (SOUL.md) — written
   # ONLY when absent, so the agent's own later edits are never clobbered — then confirms the

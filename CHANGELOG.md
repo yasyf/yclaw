@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `just onboard` (`scripts/onboard.sh`) — a guided TUI for the post-`bootstrap` human
+  gates, run in a zellij session (tmux fallback). It surfaces the Tailscale SSH
+  `action: check` re-auth URL the bootstrap probes used to swallow (a silent hang),
+  seeds the hermes identity, runs the Codex + Gemini cli-proxy logins as subprocesses in
+  their own panes (Gemini's `localhost:8085` callback forwarded over `ssh -L` since it
+  has no paste fallback), connects agent-vault Google OAuth, and walks the Apple-ID /
+  BlueBubbles bring-up over VNC — then runs `just validate` + `just smoke`. Every gate
+  is idempotent (already-done gates are skipped) and no secret is minted. Force an inline
+  run with `YCLAW_ONBOARD_NO_ZELLIJ=1`.
 - `LICENSE` — the project is now MIT-licensed.
 - A pre-commit secret guard (`.pre-commit-config.yaml`): a self-contained `pygrep`
   hook that blocks staged secret-shaped strings (Tailscale keys, OpenAI/GitHub
@@ -35,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   user-specific context the declarative build can't supply: your profile (`USER.md`),
   the agent persona (`SOUL.md`), and the Honcho peer identity. It runs as the `hermes`
   user, only writes files that are absent (so the agent's own later edits are never
-  overwritten), and is re-runnable: `tailscale ssh -t admin@hermes -- sudo -u hermes -H
+  overwritten), and is re-runnable: `tailscale ssh admin@hermes -- sudo -u hermes -H
   hermes-onboard`.
 - The `just bootstrap` recipe. The documented entrypoint (`scripts/bootstrap.sh`) had
   no matching recipe, so `just bootstrap` failed with "unknown recipe"; it now runs the

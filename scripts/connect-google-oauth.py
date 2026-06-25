@@ -42,9 +42,6 @@ def get_json(url, token):
     req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
     return json.load(urllib.request.urlopen(req, timeout=20))
 
-c = json.load(open(os.path.expanduser("~/.config/gws/client_secret.json")))
-c = c.get("installed") or c.get("web")
-CID, CSEC = c["client_id"], c["client_secret"]
 # Read the master password from the DEDICATED yclaw keychain explicitly — a bare lookup hits the
 # default search list, where a stale login-keychain item from an earlier deploy shadows the current
 # one (wrong password -> 401).
@@ -55,6 +52,17 @@ MPW = subprocess.check_output(
 ).decode().strip()
 
 token = post_json(VAULT + "/v1/auth/login", {"email": OWNER, "password": MPW, "device_label": "google-oauth"})["token"]
+
+# `check` is the idempotent done-detect (scripts/onboard.sh Gate D): report whether the credential is
+# already connected, then exit WITHOUT running the consent flow (so it needs no gws client file).
+if len(sys.argv) > 1 and sys.argv[1] == "check":
+    st = get_json(VAULT + f"/v1/credentials/oauth/status?vault={VAULT_NAME}&key={KEY}", token)
+    print("CONNECTED" if st.get("connected") else "NOT", flush=True)
+    sys.exit(0)
+
+c = json.load(open(os.path.expanduser("~/.config/gws/client_secret.json")))
+c = c.get("installed") or c.get("web")
+CID, CSEC = c["client_id"], c["client_secret"]
 
 auth = AUTH_URL + "?" + urllib.parse.urlencode({
     "client_id": CID, "redirect_uri": REDIRECT, "response_type": "code",
