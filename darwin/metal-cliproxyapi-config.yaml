@@ -11,7 +11,7 @@ port: 8317
 # OAuth tokens persist on the virtiofs state mount (survives VM rebuilds; launchd does NOT
 # expand ~, so the path is absolute). BACK THIS UP — the refresh tokens are rotating/single-use
 # and CLIProxyAPI must be their only holder (cliproxyapi.md §2).
-auth-dir: "/Volumes/My Shared Files/state/cli-proxy-api/auth"
+auth-dir: "/Volumes/My Shared Files/cliproxy/auth"
 
 # The static key clients present: Aperture injects `Authorization: Bearer @@APERTURE_STATIC_KEY@@`.
 # hermes reaches :8317 directly (pf-gated to hermes + the host), so it needs no bearer of its own —

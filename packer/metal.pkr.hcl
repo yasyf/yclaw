@@ -149,5 +149,5 @@ build {
   # HUMAN: the remaining bring-up is NOT scripted here (see the gates listed in the header):
   #   1. cliproxy --codex-login/--login   — device-code / VNC browser flow.
   #   2. scripts/connect-google-oauth.py  — VAULT_ADDR=http://metal:14321.
-  #   3. place the Qwen MLX model         — hf download onto /Volumes/My Shared Files/state/hf.
+  #   3. place the Qwen MLX model         — hf download onto /Volumes/My Shared Files/hfhub.
 }
