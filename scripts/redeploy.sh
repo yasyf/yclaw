@@ -44,6 +44,11 @@ redeploy_metal() {
 redeploy_hermes() {
   local dry rc hits
   log "Redeploying hermes (dry-activate gate → nixos-rebuild switch) ..."
+  # nix's libgit2 rejects the repo flake on the RO virtiofs share (host-owned, not root) unless root
+  # marks /var/lib/yclaw-repo a git safe.directory — needed by BOTH dry-activate and switch below.
+  # hermes's /root is ephemeral (wiped on a disk-replace fallback) and the guest has no git CLI, so
+  # (re)assert it each run by writing root's global gitconfig directly, idempotently.
+  tailscale ssh root@hermes -- 'grep -qsF /var/lib/yclaw-repo /root/.gitconfig || printf "[safe]\n\tdirectory = /var/lib/yclaw-repo\n" >> /root/.gitconfig'
   # The flake ref carries a `#` — single-quote it INSIDE the one remote-command string so the remote
   # login shell does not read `#hermes` as a comment (the tailscale ssh re-parse gotcha, bootstrap.sh).
   # dry-activate previews the unit actions without touching the system; capture stdout+stderr the same

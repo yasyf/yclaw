@@ -62,6 +62,11 @@ let
   # mlx-audio runs from a python venv (system python3 is 3.14); the wrapper builds it once.
   sttVenv = "/Volumes/My Shared Files/mlxaudio/venv";
 
+  # Share mountpoints the daemon preambles block on at boot (scripts/setup.sh mounts each here).
+  cliproxyShare = "/Volumes/My Shared Files/cliproxy";
+  mlxaudioShare = "/Volumes/My Shared Files/mlxaudio";
+  repoShare = "/Volumes/My Shared Files/repo";
+
   # Decrypted sops secret paths (sops-nix installs to /run/secrets/<name>).
   masterPasswordFile = config.sops.secrets."vault/master-password".path;
   staticKeysFile = config.sops.secrets."vault/static-keys".path;
@@ -85,6 +90,31 @@ let
     [ -n "$TSIP" ] || { echo "metal: FATAL no tailnet IPv4 from 'tailscale ip -4' after 120s — cannot bind tailnet-only" >&2; exit 1; }
   '';
 
+  # Shared daemon-boot preamble (reboot hardening). Each wrapper below is a launchd RunAtLoad daemon
+  # that, on a cold boot, races three not-yet-ready things: tart's ASYNC virtiofs share auto-mount,
+  # sops-nix's /run/secrets decrypt (tmpfs, empty until then), and a sane process env — launchd hands
+  # daemons an UNSET HOME and root's inaccessible CWD (/var/root, mode 700), so a Python daemon crashes
+  # resolving `~` and on `rich`'s import-time os.getcwd(). A wrapper that FAILS FAST on any of these is
+  # penalty-boxed by launchd ("respawning too quickly") and stays DOWN until a human kicks it. So BLOCK
+  # until every precondition holds — then the daemon starts cleanly on the first attempt and a reboot
+  # self-heals — and pin HOME + a readable CWD. Fail LOUD past 180s (KeepAlive re-waits) rather than
+  # exec'ing against a missing share/secret. `shares` are guest mountpoints; `secrets` are /run/secrets
+  # files the wrapper still sources/cats itself afterward.
+  mkDaemonPreamble =
+    { home, shares ? [ ], secrets ? [ ] }:
+    ''
+      export HOME=${lib.escapeShellArg home}
+      ${lib.concatMapStrings (m: ''
+        for _ in $(seq 1 180); do /sbin/mount | ${pkgs.gnugrep}/bin/grep -qF "on ${m} (" && break; sleep 1; done
+        /sbin/mount | ${pkgs.gnugrep}/bin/grep -qF "on ${m} (" || { echo "metal: FATAL virtiofs share not mounted after 180s: ${m}" >&2; exit 1; }
+      '') shares}
+      ${lib.concatMapStrings (f: ''
+        for _ in $(seq 1 180); do [ -s ${lib.escapeShellArg f} ] && break; sleep 1; done
+        [ -s ${lib.escapeShellArg f} ] || { echo "metal: FATAL sops secret not decrypted after 180s: ${f}" >&2; exit 1; }
+      '') secrets}
+      cd "$HOME"
+    '';
+
   # Wrappers: launchd has no EnvironmentFile, so each wrapper sources the secret/env it needs
   # and exec's the absolute binary. The daemons run as `adminUser` so they read the admin-owned
   # sops secrets; MLX/Metal GPU works headless from a daemon context — no login session needed.
@@ -93,13 +123,12 @@ let
   # this way cold-loads in ~14s).
   omlxWrapper = pkgs.writeShellScript "metal-omlx" ''
     set -euo pipefail
-    # launchd starts this daemon with HOME unset and an inaccessible CWD (root's /var/root, mode 700);
-    # omlx's Python deps crash resolving `~/.omlx/settings.json` and on `rich`'s import-time
-    # `os.getcwd()` (EX_CONFIG, 78), so pin both to the admin home.
-    export HOME=${lib.escapeShellArg home}
-    cd "$HOME"
+    ${mkDaemonPreamble {
+      inherit home;
+      shares = [ hfHubCache ];
+    }}
     export HF_HUB_CACHE=${lib.escapeShellArg hfHubCache}
-    mkdir -p "$HF_HUB_CACHE" ${lib.escapeShellArg "${home}/Library/Caches/omlx-kv"}
+    mkdir -p ${lib.escapeShellArg "${home}/Library/Caches/omlx-kv"}
     ${resolveTailscaleIp}
     exec /opt/homebrew/bin/omlx serve \
       --host "$TSIP" --port 8000 \
@@ -116,12 +145,12 @@ let
   sttServerPy = ./stt-server.py;
   sttWrapper = pkgs.writeShellScript "metal-mlx-audio" ''
     set -euo pipefail
-    # Same launchd HOME-unset / inaccessible-CWD hazard as omlx (this is a Python daemon too).
-    export HOME=${lib.escapeShellArg home}
-    cd "$HOME"
+    ${mkDaemonPreamble {
+      inherit home;
+      shares = [ hfHubCache mlxaudioShare ];
+    }}
     export HF_HUB_CACHE=${lib.escapeShellArg hfHubCache}
     export STT_MODEL=${(import ../nixos/models.nix).stt} STT_PORT=8765
-    mkdir -p "$HF_HUB_CACHE"
     ${resolveTailscaleIp}
     export STT_HOST="$TSIP"
     VENV=${lib.escapeShellArg sttVenv}
@@ -140,14 +169,11 @@ let
   cliproxyConfigRendered = "/Volumes/My Shared Files/cliproxy/config.yaml";
   cliproxyWrapper = pkgs.writeShellScript "metal-cliproxy" ''
     set -euo pipefail
-    # Pin HOME + a readable CWD: launchd hands daemons root's inaccessible CWD, which trips any
-    # child that calls getcwd() (defensive — cli-proxy-api is Go, but keep all wrappers consistent).
-    export HOME=${lib.escapeShellArg home}
-    cd "$HOME"
-    # Wait for sops-nix to decrypt the key. /run/secrets is tmpfs (empty on a cold boot) and this
-    # RunAtLoad agent can win the race against the sops secret-install daemon; without the wait the
-    # `cat` fails under `set -e` and the service crash-loops until kicked.
-    for _ in $(seq 1 60); do [ -s ${lib.escapeShellArg apertureKeyFile} ] && break; sleep 1; done
+    ${mkDaemonPreamble {
+      inherit home;
+      shares = [ cliproxyShare ];
+      secrets = [ apertureKeyFile ];
+    }}
     KEY=$(cat ${lib.escapeShellArg apertureKeyFile})
     mkdir -p ${lib.escapeShellArg "/Volumes/My Shared Files/cliproxy/auth"}
     ${pkgs.gnused}/bin/sed -e "s|@@APERTURE_STATIC_KEY@@|$KEY|g" \
@@ -159,11 +185,11 @@ let
   # Foreground server (launchd supervises); master password from the sops env file.
   agentVaultWrapper = pkgs.writeShellScript "metal-agent-vault" ''
     set -euo pipefail
-    export HOME=${lib.escapeShellArg vaultHome}
-    mkdir -p "$HOME"
-    cd "$HOME"
-    # Wait for sops-nix to decrypt on boot (tmpfs /run/secrets, RunAtLoad-vs-sops race).
-    for _ in $(seq 1 60); do [ -s ${lib.escapeShellArg masterPasswordFile} ] && break; sleep 1; done
+    ${mkDaemonPreamble {
+      home = vaultHome;
+      shares = [ vaultHome ];
+      secrets = [ masterPasswordFile ];
+    }}
     set -a; . ${lib.escapeShellArg masterPasswordFile}; set +a
     # Proxy rate limits (instance-wide — agent-vault has no per-vault knob). hermes is the SOLE
     # proxy consumer, so instance-wide == per-vault here. Tune these to taste; LOCK pins them so a
@@ -179,11 +205,11 @@ let
   # first boot, ensure the `hermes` vault, replace-all the service rules, (re)set the static keys.
   agentVaultProvision = pkgs.writeShellScript "metal-agent-vault-provision" ''
     set -euo pipefail
-    export HOME=${lib.escapeShellArg vaultHome}
-    mkdir -p "$HOME"
-    cd "$HOME"
-    # Wait for sops-nix to decrypt on boot (tmpfs /run/secrets, RunAtLoad-vs-sops race).
-    for _ in $(seq 1 60); do [ -s ${lib.escapeShellArg masterPasswordFile} ] && break; sleep 1; done
+    ${mkDaemonPreamble {
+      home = vaultHome;
+      shares = [ vaultHome ];
+      secrets = [ masterPasswordFile ];
+    }}
     set -a; . ${lib.escapeShellArg masterPasswordFile}; set +a
     ADDR=http://127.0.0.1:14321
     owner=${adminUser}@metal.local
@@ -377,7 +403,12 @@ in
       set -a; . ${lib.escapeShellArg staticKeysFile}; set +a
       export NIX_CONFIG="experimental-features = nix-command flakes
       access-tokens = github.com=$GITHUB_TOKEN"
-      exec /run/current-system/sw/bin/darwin-rebuild switch --flake ${lib.escapeShellArg "/Volumes/My Shared Files/repo#metal"}
+      # nix's libgit2 refuses to evaluate the repo flake from the virtiofs share (owned by the host
+      # user, not root) unless the path is a git safe.directory — set it idempotently for root.
+      ${pkgs.git}/bin/git config --global --get-all safe.directory 2>/dev/null \
+        | ${pkgs.gnugrep}/bin/grep -qxF ${lib.escapeShellArg repoShare} \
+        || ${pkgs.git}/bin/git config --global --add safe.directory ${lib.escapeShellArg repoShare}
+      exec /run/current-system/sw/bin/darwin-rebuild switch --flake ${lib.escapeShellArg "${repoShare}#metal"}
     '')
   ];
 
