@@ -93,6 +93,11 @@ let
   # this way cold-loads in ~14s).
   omlxWrapper = pkgs.writeShellScript "metal-omlx" ''
     set -euo pipefail
+    # launchd starts this daemon with HOME unset and an inaccessible CWD (root's /var/root, mode 700);
+    # omlx's Python deps crash resolving `~/.omlx/settings.json` and on `rich`'s import-time
+    # `os.getcwd()` (EX_CONFIG, 78), so pin both to the admin home.
+    export HOME=${lib.escapeShellArg home}
+    cd "$HOME"
     export HF_HUB_CACHE=${lib.escapeShellArg hfHubCache}
     mkdir -p "$HF_HUB_CACHE" ${lib.escapeShellArg "${home}/Library/Caches/omlx-kv"}
     ${resolveTailscaleIp}
@@ -111,6 +116,9 @@ let
   sttServerPy = ./stt-server.py;
   sttWrapper = pkgs.writeShellScript "metal-mlx-audio" ''
     set -euo pipefail
+    # Same launchd HOME-unset / inaccessible-CWD hazard as omlx (this is a Python daemon too).
+    export HOME=${lib.escapeShellArg home}
+    cd "$HOME"
     export HF_HUB_CACHE=${lib.escapeShellArg hfHubCache}
     export STT_MODEL=${(import ../nixos/models.nix).stt} STT_PORT=8765
     mkdir -p "$HF_HUB_CACHE"
@@ -132,6 +140,10 @@ let
   cliproxyConfigRendered = "/Volumes/My Shared Files/cliproxy/config.yaml";
   cliproxyWrapper = pkgs.writeShellScript "metal-cliproxy" ''
     set -euo pipefail
+    # Pin HOME + a readable CWD: launchd hands daemons root's inaccessible CWD, which trips any
+    # child that calls getcwd() (defensive — cli-proxy-api is Go, but keep all wrappers consistent).
+    export HOME=${lib.escapeShellArg home}
+    cd "$HOME"
     # Wait for sops-nix to decrypt the key. /run/secrets is tmpfs (empty on a cold boot) and this
     # RunAtLoad agent can win the race against the sops secret-install daemon; without the wait the
     # `cat` fails under `set -e` and the service crash-loops until kicked.
@@ -149,6 +161,7 @@ let
     set -euo pipefail
     export HOME=${lib.escapeShellArg vaultHome}
     mkdir -p "$HOME"
+    cd "$HOME"
     # Wait for sops-nix to decrypt on boot (tmpfs /run/secrets, RunAtLoad-vs-sops race).
     for _ in $(seq 1 60); do [ -s ${lib.escapeShellArg masterPasswordFile} ] && break; sleep 1; done
     set -a; . ${lib.escapeShellArg masterPasswordFile}; set +a
@@ -168,6 +181,7 @@ let
     set -euo pipefail
     export HOME=${lib.escapeShellArg vaultHome}
     mkdir -p "$HOME"
+    cd "$HOME"
     # Wait for sops-nix to decrypt on boot (tmpfs /run/secrets, RunAtLoad-vs-sops race).
     for _ in $(seq 1 60); do [ -s ${lib.escapeShellArg masterPasswordFile} ] && break; sleep 1; done
     set -a; . ${lib.escapeShellArg masterPasswordFile}; set +a
