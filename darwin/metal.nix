@@ -43,6 +43,17 @@ let
   home = "/Users/${adminUser}";
   logs = "${home}/Library/Logs";
 
+  # /nix is a SEPARATE Determinate-Nix APFS volume, mounted late at boot. A RunAtLoad LaunchDaemon can
+  # win the race and try to exec its /nix-store program before /nix is mounted; launchd reports "could
+  # not execute program" and exits the service 78 (via xpcproxy) → "respawning too quickly" penalty box
+  # → the service stays DOWN across a reboot until a human kicks it. waitNix prefixes a daemon's
+  # ProgramArguments with a trampoline on the LOCAL root volume (always present at boot; written by the
+  # preActivation script below) that blocks until the real /nix program is executable, then execs it —
+  # so no daemon fast-fails on the /nix race and a reboot (incl. the auto-security-update reboots and
+  # `just redeploy`) self-heals. The preamble inside each wrapper handles the LATER share/secret races.
+  nixWaitTrampoline = "/usr/local/lib/yclaw/metal-wait-nix";
+  waitNix = args: [ nixWaitTrampoline ] ++ args;
+
   # Narrow per-need virtiofs shares (scripts/setup.sh mounts each at /Volumes/My Shared Files/<name>):
   # metalsecrets holds ONLY metal's age key + its own secrets bundle, so metal never sees
   # hosts/hermes/ or state/hermes/. The runtime dirs are the only other state metal owns.
@@ -484,7 +495,7 @@ in
   # so omlx/mlx-audio do NOT need a GUI session. All ProgramArguments are absolute (launchd does
   # not use PATH or expand ~). RunAtLoad + KeepAlive = restart-always, except the provision oneshot.
   launchd.daemons.omlx.serviceConfig = {
-    ProgramArguments = [ "${omlxWrapper}" ];
+    ProgramArguments = waitNix [ "${omlxWrapper}" ];
     UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = true;
@@ -493,7 +504,7 @@ in
   };
 
   launchd.daemons.mlx-audio.serviceConfig = {
-    ProgramArguments = [ "${sttWrapper}" ];
+    ProgramArguments = waitNix [ "${sttWrapper}" ];
     UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = true;
@@ -502,7 +513,7 @@ in
   };
 
   launchd.daemons.cliproxy.serviceConfig = {
-    ProgramArguments = [ "${cliproxyWrapper}" ];
+    ProgramArguments = waitNix [ "${cliproxyWrapper}" ];
     UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = true;
@@ -511,7 +522,7 @@ in
   };
 
   launchd.daemons.agent-vault.serviceConfig = {
-    ProgramArguments = [ "${agentVaultWrapper}" ];
+    ProgramArguments = waitNix [ "${agentVaultWrapper}" ];
     UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = true;
@@ -522,7 +533,7 @@ in
   # Provision runs once at load and exits (KeepAlive=false). It waits for the server's /health
   # before registering, so no explicit ordering against agent-vault is needed.
   launchd.daemons.agent-vault-provision.serviceConfig = {
-    ProgramArguments = [ "${agentVaultProvision}" ];
+    ProgramArguments = waitNix [ "${agentVaultProvision}" ];
     UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = false;
@@ -541,7 +552,7 @@ in
   # bootSetupScript (defined above) re-applies all of it at every boot: raise the cap, reload + enable
   # pf and fail LOUD if it does not come up, then re-resolve the allowed sources and re-scope the anchor.
   launchd.daemons.metal-boot-setup.serviceConfig = {
-    ProgramArguments = [ "${bootSetupScript}" ];
+    ProgramArguments = waitNix [ "${bootSetupScript}" ];
     RunAtLoad = true;
     KeepAlive = false;
     StandardOutPath = "/var/log/metal-boot-setup.log";
@@ -554,7 +565,7 @@ in
   # the sticky last-known IP, and an unchanged source set skips the reload, so established pf state is
   # left intact.
   launchd.daemons.metal-pf-refresh.serviceConfig = {
-    ProgramArguments = [ "${pfAnchorScript}" "3" ];
+    ProgramArguments = waitNix [ "${pfAnchorScript}" "3" ];
     StartInterval = 300;
     RunAtLoad = false;
     StandardOutPath = "/var/log/metal-pf-refresh.log";
@@ -569,6 +580,17 @@ in
   # sops-nix's postActivation install, so the key is in place when sops decrypts. Fail loud if
   # the share key is absent — a node with no age key cannot decrypt any secret.
   system.activationScripts.preActivation.text = ''
+    # Trampoline on the LOCAL root volume (NOT /nix) so launchd can always exec it at boot; it blocks
+    # until the real /nix program ($1) is executable, surviving the /nix-volume mount race. See waitNix.
+    install -d -m 0755 /usr/local/lib /usr/local/lib/yclaw
+    cat > ${nixWaitTrampoline} <<'TRAMPOLINE'
+#!/bin/sh
+i=0
+while [ ! -x "$1" ] && [ "$i" -lt 300 ]; do sleep 1; i=$((i+1)); done
+exec "$@"
+TRAMPOLINE
+    chmod 0755 ${nixWaitTrampoline}
+
     if [ ! -s /var/lib/sops-nix/key.txt ]; then
       if [ -s ${lib.escapeShellArg "${metalSecrets}/key.txt"} ]; then
         mkdir -p /var/lib/sops-nix
