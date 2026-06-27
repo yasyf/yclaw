@@ -91,6 +91,14 @@ PLIST
 
   local domain="gui/$(id -u)"
   launchctl bootout "$domain/$label" 2>/dev/null || true
+  # bootout is async — it signals the tart VM and returns before the service fully leaves the
+  # domain. Bootstrapping the same label while it is still stopping races launchd and fails with
+  # "5: Input/output error". Wait for the label to drain out of the domain (bounded) first.
+  local _i
+  for _i in $(seq 1 30); do
+    launchctl print "$domain/$label" >/dev/null 2>&1 || break
+    sleep 1
+  done
   launchctl bootstrap "$domain" "$plist"
   log "Loaded LaunchAgent $label."
 }
