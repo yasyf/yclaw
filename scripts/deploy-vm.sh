@@ -61,6 +61,15 @@ if ! tart list --format json 2>/dev/null | jq -re --arg n "$node" '.[]? | select
   tart create --linux "$node" --disk-size "$disk_gb"
 fi
 
+# hermes joins as an EPHEMERAL tailnet node, which Tailscale reaps shortly after it disconnects — so
+# this disk-replace strands the old node and the booting image cannot reconnect with the persisted
+# node key (it's gone): it must join FRESH via a NEW auth key. Re-mint one into hermes's sops bundle +
+# node-config share BEFORE the replace, so the new image's first-boot seedNodeConfig installs it.
+# (In-guest `nixos-rebuild switch` via scripts/redeploy.sh never disconnects hermes, so it needs none
+# of this — this is the heavyweight disk-replace fallback.)
+echo "Re-minting hermes's ephemeral tailnet auth key (the disk-replace reaps the old node) ..."
+"${repo_root}/scripts/remint-hermes-authkey.sh"
+
 # Boot the node's launchd runner OUT before the clonefile: setup.sh loads it RunAtLoad + KeepAlive,
 # so a running runner would boot the VM mid-clonefile and corrupt the disk (same reason bootstrap
 # boots every node out before replacing). It's re-loaded once the new disk is in place.
