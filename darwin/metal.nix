@@ -98,15 +98,16 @@ let
   # penalty-boxed by launchd ("respawning too quickly") and stays DOWN until a human kicks it. So BLOCK
   # until every precondition holds — then the daemon starts cleanly on the first attempt and a reboot
   # self-heals — and pin HOME + a readable CWD. Fail LOUD past 180s (KeepAlive re-waits) rather than
-  # exec'ing against a missing share/secret. `shares` are guest mountpoints; `secrets` are /run/secrets
-  # files the wrapper still sources/cats itself afterward.
+  # exec'ing against a missing share/secret. `shares` are paths under tart's single AppleVirtIOFS
+  # automount (an `[ -e ]` access triggers + verifies the on-demand mount, since the per-share paths
+  # never appear in `mount`); `secrets` are /run/secrets files the wrapper still sources/cats itself.
   mkDaemonPreamble =
     { home, shares ? [ ], secrets ? [ ] }:
     ''
       export HOME=${lib.escapeShellArg home}
       ${lib.concatMapStrings (m: ''
-        for _ in $(seq 1 180); do /sbin/mount | ${pkgs.gnugrep}/bin/grep -qF "on ${m} (" && break; sleep 1; done
-        /sbin/mount | ${pkgs.gnugrep}/bin/grep -qF "on ${m} (" || { echo "metal: FATAL virtiofs share not mounted after 180s: ${m}" >&2; exit 1; }
+        for _ in $(seq 1 180); do [ -e ${lib.escapeShellArg m} ] && break; sleep 1; done
+        [ -e ${lib.escapeShellArg m} ] || { echo "metal: FATAL virtiofs share not present after 180s: ${m}" >&2; exit 1; }
       '') shares}
       ${lib.concatMapStrings (f: ''
         for _ in $(seq 1 180); do [ -s ${lib.escapeShellArg f} ] && break; sleep 1; done
