@@ -5,7 +5,7 @@
 #   host        → ./scripts/setup.sh (idempotent host bring-up; the `deploy host` path is setup.sh)
 #   metal       → metal-redeploy over tailscale ssh (darwin-rebuild switch on the metal guest)
 #   hermes      → nixos-rebuild switch over tailscale ssh, GATED by a dry-activate: if a STATEFUL
-#                 virtiofs mount (var-lib-hermes / var-lib-tailscale) would be started/stopped/restarted,
+#                 virtiofs mount (var-lib-hermes) would be started/stopped/restarted,
 #                 that is a reboot-class change `switch` cannot apply live — Apple's Virtualization.framework
 #                 virtiofs CANNOT re-enumerate a tag once it is unmounted mid-session (`virtio-fs: tag <X>
 #                 not found`), so the remount lands `failed` and hermes-agent's RequiresMountsFor blocks
@@ -67,7 +67,7 @@ redeploy_hermes() {
   # a healthy code deploy leaves the mounts unchanged, so they appear in none of these lists.
   hits="$(printf '%s\n' "$dry" \
     | grep -E 'would (start|stop|restart) ' \
-    | grep -E 'var-lib-hermes\.mount|var-lib-tailscale\.mount' || true)"
+    | grep -E 'var-lib-hermes\.mount' || true)"
   if [ -n "$hits" ]; then
     printf '%s\n' "$hits" >&2
     die "hermes switch would stop/restart a stateful virtiofs mount (above) — a reboot-class change. Use the disk-replace fallback: ./scripts/deploy-vm.sh hermes"

@@ -277,23 +277,14 @@ in
     options = [ "ro" "nofail" ];
   };
 
-  # --- Persistent tailnet identity externalized to the host --------------------
-  # /var/lib/tailscale (the node key, machine identity, prefs) mounted from the host's
-  # ~/.yclaw/state/hermes-tailscale over virtiofs (tag `tailscalestate`, shared rw by the
-  # tart-hermes runner). Persisting it keeps ONE tailnet node across VM rebuilds instead of
-  # minting a fresh node (and a dangling stale one) on every redeploy. NO `nofail`: tailscaled
-  # must BLOCK on this mount (RequiresMountsFor below) — a missing share is a hard boot failure,
-  # never a silent fall-back to an empty in-VM dir that would churn the persisted node key.
-  fileSystems."/var/lib/tailscale" = {
-    device = "tailscalestate";
-    fsType = "virtiofs";
-  };
-
-  # Order tailscaled.service (the unit services.tailscale in nixos/common.nix generates) AFTER the
-  # /var/lib/tailscale mount: RequiresMountsFor pulls in + waits on the mount unit, so tailscaled
-  # can never start against an empty pre-mount dir and mint a fresh node into it. RequiresMountsFor
-  # (NOT `nofail` on the mount) — a race here would churn the persisted node key on every boot.
-  systemd.services.tailscaled.unitConfig.RequiresMountsFor = [ "/var/lib/tailscale" ];
+  # NOTE: /var/lib/tailscale is deliberately NOT externalized to a host share. hermes joins as an
+  # EPHEMERAL node (scripts/lib/secrets.sh `_ts_mint_key`, `"ephemeral": True`), which Tailscale reaps
+  # shortly after it disconnects — so persisting the node key cannot preserve identity across a
+  # disk-replace anyway. Worse, a virtiofs mount over /var/lib/tailscale COLLIDES with the tailscale
+  # module's `StateDirectory = "tailscale"` (systemd cannot own a state dir that is a mountpoint) and
+  # tailscaled.service then FAILS to start. The disk-replace fallback re-mints a fresh ephemeral
+  # authkey instead (scripts/deploy-vm.sh → scripts/remint-hermes-authkey.sh); in-guest switch never
+  # disconnects hermes, so it keeps its node naturally.
 
   # --- Hermes agent gateway ----------------------------------------------------
   services.hermes-agent = {

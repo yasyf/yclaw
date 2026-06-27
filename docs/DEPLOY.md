@@ -226,7 +226,7 @@ human input. One path per node:
   services restart and the model-cache shares stay mounted.
 - **hermes** — in-guest `nixos-rebuild switch` against `/var/lib/yclaw-repo#hermes`
   (the read-only repo share); node identity and `/var/lib/hermes` survive. Gated by a
-  `nixos-rebuild dry-activate`: a code deploy leaves the `var-lib-hermes`/`var-lib-tailscale`
+  `nixos-rebuild dry-activate`: a code deploy leaves the `var-lib-hermes`
   virtiofs mounts untouched, but a change that would (re)mount a virtiofs tag mid-session hits
   Apple's tag re-enumeration limit (`virtio-fs: tag not found`), so the gate auto-routes those
   to the disk-replace fallback instead.
@@ -261,7 +261,7 @@ keeps the old artifacts and never picks up the new per-host keys. Migrate explic
      preserved). A live `switch` is safe ONLY while it leaves the virtiofs mounts untouched:
      Apple's Virtualization.framework cannot re-enumerate a virtiofs tag once it is unmounted
      mid-session (`virtio-fs: tag not found`), so a `switch` that would start/stop/restart
-     `var-lib-hermes.mount` or `var-lib-tailscale.mount` strands the mount and blocks
+     `var-lib-hermes.mount` strands the mount and blocks
      `hermes-agent`. `scripts/redeploy.sh` reads `nixos-rebuild dry-activate` and auto-routes
      exactly those cases to the disk-replace fallback. Re-seeding the per-host key is one such
      reboot-class change, so migrate hermes with the fallback (`scripts/deploy-vm.sh`): it
