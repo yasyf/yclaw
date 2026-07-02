@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Mint a FRESH ephemeral hermes tailnet auth key and re-encrypt hermes's sops bundle with it, refresh
-# the node-config share, and wipe the stale /var/lib/tailscale pre-seed.
+# Mint a FRESH hermes tailnet auth key and re-encrypt hermes's sops bundle with it, refresh
+# the node-config share, and wipe any stale /var/lib/tailscale pre-seed.
 #
-# WHY: hermes joins as an EPHEMERAL, single-use, tagged node (scripts/lib/secrets.sh `_ts_mint_key`,
-# `"ephemeral": True`). Tailscale REAPS an ephemeral node shortly after it disconnects — so any
-# disk-replace (scripts/deploy-vm.sh) or reboot strands the old node, and the booting image can NOT
-# reconnect with the persisted node key (it's gone): it must join FRESH via a new auth key. Persisting
-# /var/lib/tailscale can't preserve an ephemeral identity, so the disk-replace path re-mints instead.
+# WHY: hermes joins as a PERSISTENT, single-use, tagged node (scripts/lib/secrets.sh `_ts_mint_key`).
+# A persistent node survives an ordinary disconnect (reboot, sleep, blip): it reconnects from the node
+# key persisted on its own disk (/var/lib/tailscale), so a reboot needs NONE of this. A disk-replace
+# (scripts/deploy-vm.sh) is different — it throws away the whole VM disk, and with it the node key, so
+# the fresh image boots with empty tailscale state and must join FRESH via a new auth key. This script
+# mints that key and re-seeds hermes's bundle; deploy-vm.sh separately DELETES the old (now non-reaping)
+# hermes device so the new node keeps the `hermes` MagicDNS name instead of drifting to `hermes-1`.
 # In-guest `nixos-rebuild switch` (scripts/redeploy.sh) never disconnects hermes, so it needs none of this.
 #
 # Reads ONLY the dedicated yclaw keychain (the Tailscale OAuth client + the BlueBubbles server password)
@@ -20,7 +22,7 @@ node_config_dir="$HOME/.config/yclaw/vm-secrets"
 
 [ -f "$YCLAW_KEYCHAIN" ] || _secrets_fail "no yclaw keychain at $YCLAW_KEYCHAIN — run \`just bootstrap\` first."
 
-# --- mint a fresh ephemeral authkey via the OAuth client (keychain) ----------------------------------
+# --- mint a fresh authkey via the OAuth client (keychain) --------------------------------------------
 _yclaw_keychain_unlock
 TS_OAUTH_ID="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_TS_OAUTH_ID" -w "$YCLAW_KEYCHAIN")"
 TS_OAUTH_SECRET="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_TS_OAUTH_SECRET" -w "$YCLAW_KEYCHAIN")"
@@ -75,8 +77,9 @@ SOPS_AGE_KEY_FILE="$age_key" sops --decrypt --config /dev/null --input-type yaml
 # Refresh the tart-hermes `sops` share source so the next first-boot seedNodeConfig installs the new key.
 install -m 600 "$YCLAW_STATE/hosts/hermes/secrets.sops.yaml" "$node_config_dir/secrets.sops.yaml"
 
-# Wipe the /var/lib/tailscale pre-seed: the ephemeral node is reaped, so the booting image must join
-# FRESH (empty state → uses the authkey) rather than reconnect with the dead node key.
+# Wipe any /var/lib/tailscale pre-seed: the disk-replace gives the new image empty tailscale state, so
+# it joins FRESH via the authkey (deploy-vm.sh deletes the old device) rather than reconnect with a
+# stale node key.
 rm -f "$YCLAW_STATE/hermes-tailscale"/* 2>/dev/null || true
 
-echo "remint-hermes-authkey: fresh ephemeral authkey minted, hermes bundle + vm-secrets share refreshed, pre-seed wiped."
+echo "remint-hermes-authkey: fresh authkey minted, hermes bundle + vm-secrets share refreshed, pre-seed wiped."

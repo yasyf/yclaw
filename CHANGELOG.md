@@ -57,6 +57,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the tailnet over the Tailscale API. The next `just bootstrap` regenerates the rest.
 
 ### Changed
+- Tailnet nodes are now **persistent** (non-ephemeral), so the always-on stack survives a
+  host sleep, reboot, or network blip instead of being stranded off the tailnet. Previously
+  `_ts_mint_key` (`scripts/lib/secrets.sh`) minted `ephemeral` auth keys; Tailscale reaps an
+  ephemeral node ~30–60 min after it disconnects, and the single-use key is already spent, so a
+  reaped `metal`/`hermes` could not rejoin without a human re-mint — and every management path is
+  `tailscale ssh`, so the whole stack went dark. The nodes are tagged (`tag:<host>`), and tagged
+  devices have key-expiry disabled by default, so they reconnect from on-disk `tailscaled` state
+  with no re-auth. The key's redemption window rose from 2 h to 24 h (`expirySeconds`) so a cold
+  `just bootstrap` whose packer/hermes/model builds run for hours can't expire it before first
+  boot. Because a persistent node no longer self-reaps, teardown and disk-replace now delete the
+  old device explicitly: `nuke-tailnet` moved to `scripts/nuke-tailnet.sh` (accepts a node filter),
+  `just destroy` deletes the VMs' tailnet registrations, and `scripts/deploy-vm.sh` deletes the old
+  `hermes` device before the fresh image joins so MagicDNS keeps the `hermes` name.
 - Lower iMessage reply latency. hermes now calls metal's model upstreams directly
   (cliproxy `:8317`, omlx `:8000`) instead of routing through the hosted Aperture
   node, removing a ~0.5 s WAN round-trip per call; cliproxy's `:8317` is `pf`-gated to

@@ -106,7 +106,9 @@ bb-harden:
 
 # Tear down every yclaw tart VM (boot out launchd agents first so KeepAlive can't relaunch),
 # then remove the runner plists. Covers metal, hermes, bluebubbles, and the retired `vault`
-# VM whose disk lingers at ~/.tart/vms/vault. Leaves host state/keychain alone — use `nuke`.
+# VM whose disk lingers at ~/.tart/vms/vault. Also deletes the VMs' tailnet device registrations
+# (persistent nodes don't self-reap, so leaving them drifts MagicDNS to hermes-1/metal-1 on the
+# next deploy). Leaves host state/keychain alone — use `nuke`.
 destroy:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -121,6 +123,10 @@ destroy:
       tart stop "$vm" 2>/dev/null || true
       tart delete "$vm" 2>/dev/null || true
     done
+    # yclaw nodes are PERSISTENT tailnet nodes now (they don't self-reap), so delete their device
+    # registrations too — else a later redeploy drifts MagicDNS to hermes-1/metal-1. Best-effort:
+    # skips cleanly if TAILSCALE_API_KEY is unset (scripts/nuke-tailnet.sh).
+    ./scripts/nuke-tailnet.sh || true
 
 # From-zero acceptance test: destroy then bring the host back up.
 rebuild: destroy setup
@@ -128,8 +134,8 @@ rebuild: destroy setup
 # Clean slate: destroy every VM, then wipe host secret/agent state + the generated keychain
 # items so the next `just bootstrap` regenerates everything fresh. PRESERVES the operator-supplied
 # Tailscale OAuth client (yclaw-ts-oauth-client-{id,secret}) and the large, content-addressed
-# model caches (set WIPE_MODELS=1 to drop those too). After this, mint lingering tailnet device
-# entries with `just nuke-tailnet`.
+# model caches (set WIPE_MODELS=1 to drop those too). `destroy` already deletes the VMs' tailnet
+# device registrations (persistent nodes don't self-reap), so the next bootstrap re-mints cleanly.
 nuke: destroy
     #!/usr/bin/env bash
     set -euo pipefail
@@ -160,36 +166,14 @@ nuke: destroy
       done
       echo "nuke: cleared generated keychain passwords; preserved yclaw-ts-oauth-client-{id,secret}"
     fi
-    echo "nuke: clean slate. Next: just nuke-tailnet (optional), then just bootstrap."
+    echo "nuke: clean slate (tailnet devices deleted by destroy). Next: just bootstrap."
 
-# Delete lingering yclaw device registrations from the tailnet (ephemeral metal/hermes keys
-# auto-reap; the manually-joined bluebubbles node is the one that lingers). Needs TAILSCALE_API_KEY
-# (the same key in .env). No-op with a message if it's unset.
-nuke-tailnet:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    [ -f .env ] && set -a && . ./.env && set +a || true
-    if [ -z "${TAILSCALE_API_KEY:-}" ]; then
-      echo "nuke-tailnet: TAILSCALE_API_KEY unset (check .env) — skipping; delete yclaw devices by hand in the admin console" >&2
-      exit 0
-    fi
-    api="https://api.tailscale.com/api/v2"
-    devices="$(curl -sf -u "${TAILSCALE_API_KEY}:" "$api/tailnet/-/devices")"
-    # Match by hostname AND by tag — old pre-migration nodes joined untagged, new ones carry tag:<host>.
-    echo "$devices" | jq -r '
-      .devices[]
-      | ((.hostname // "") | ascii_downcase) as $h
-      | ((.name // "") | ascii_downcase | split(".")[0]) as $n
-      | select(
-          ([$h, $n] | any(. == "hermes" or . == "metal" or . == "bluebubbles" or . == "vault"))
-          or ((.tags // []) | any(. == "tag:hermes" or . == "tag:metal" or . == "tag:bluebubbles"))
-        )
-      | "\(.id)\t\(.hostname)\t\((.tags // []) | join(","))"
-    ' | while IFS=$'\t' read -r id hostname tags; do
-          echo "nuke-tailnet: deleting device $hostname (tags: ${tags:-none})"
-          curl -sf -o /dev/null -X DELETE -u "${TAILSCALE_API_KEY}:" "$api/device/$id" || echo "  (delete failed for $id)" >&2
-        done
-    echo "nuke-tailnet: done."
+# Delete yclaw device registrations from the tailnet (scripts/nuke-tailnet.sh). yclaw nodes are
+# PERSISTENT now, so they no longer self-reap on disconnect — teardown/redeploy delete them
+# explicitly. Pass a node (metal|hermes|bluebubbles) to delete just that one; no arg deletes all.
+# Needs TAILSCALE_API_KEY (the same key in .env); no-op with a message if it's unset.
+nuke-tailnet node="all":
+    ./scripts/nuke-tailnet.sh {{node}}
 
 # Back up the irreplaceable host state (~/.yclaw/state) via restic. Set YCLAW_RESTIC_REPO
 # + RESTIC_PASSWORD first (a B2/S3 URL or a local/NAS path). Skips the large, regenerable caches.

@@ -20,7 +20,7 @@ the shortest correct path for an operator who already has the repo cloned.
   `macos-tahoe-vanilla`, `bluebubbles` the SIP-off `macos-tahoe-base` — so no operator-supplied
   IPSW is needed.)
 - **A Tailscale OAuth client, set up before bootstrap.** `collect_secrets` no longer
-  takes one reusable auth key; it mints a fresh ephemeral, single-use, tagged key per
+  takes one reusable auth key; it mints a fresh persistent, single-use, tagged key per
   node from an OAuth client (stored in the yclaw keychain as `yclaw-ts-oauth-client-id`
   and `yclaw-ts-oauth-client-secret`). Two steps, in order:
   1. **Add the yclaw tags to the ACL.** `tailnet/policy.hujson` is the reference for the
@@ -38,8 +38,13 @@ the shortest correct path for an operator who already has the repo cloned.
 
   Order matters: the ACL and `tagOwners` must exist before the first node advertises its
   tag, or `tailscale up --advertise-tags=tag:<node>` is rejected. The OAuth access token
-  is short-lived (~1h); the minted node keys live two hours (`expirySeconds`) and are
-  redeemed at each node's first boot.
+  is short-lived (~1h); each minted key is single-use with a 24h redemption window
+  (`expirySeconds`), redeemed at that node's first boot. The nodes are **persistent**
+  (non-ephemeral) and tagged — tagged devices have key-expiry disabled by default — so they
+  keep their registration across a reboot, sleep, or network blip and reconnect from on-disk
+  tailscaled state with no re-auth. That is what stops the always-on stack from being stranded
+  off the tailnet. Because a persistent node no longer self-reaps, teardown (`just destroy` /
+  `nuke`) and the hermes disk-replace delete the old device explicitly (`scripts/nuke-tailnet.sh`).
 
 First boot is **long** — hours. It pulls the cirruslabs base images, builds the
 guests, and pulls the model weights.
@@ -69,7 +74,7 @@ The wizard runs these stages autonomously:
    only to that host's recipient and carrying only that host's secrets, per
    `nixos/secrets-manifest.json`. The host persists no age key of its own; each VM
    decrypts only what it owns. It also exchanges the Tailscale OAuth client for a
-   short-lived access token and mints one ephemeral, single-use, tagged auth key per
+   short-lived access token and mints one persistent, single-use, tagged auth key per
    node, so each guest joins the tailnet under its own `tag:<node>`.
 4. **Assemble the hermes node-config share** at `~/.config/yclaw/vm-secrets`:
    hermes's `hosts/hermes/{key.txt,secrets.sops.yaml}` staged in as `key.txt` and

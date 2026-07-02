@@ -19,7 +19,7 @@ These literal tokens appear in committed configs and scripts and must be resolve
 
 | Token | What | Where it lives | How the human supplies it |
 |---|---|---|---|
-| `@@TS_AUTHKEY@@` | Tailscale auth key (reusable/ephemeral) for VM join | `nixos/common.nix` | bootstrap prompt, into sops `tailscale/authkey` |
+| `@@TS_AUTHKEY@@` | Tailscale auth key (persistent, single-use, tagged) for VM join | `nixos/common.nix` | minted per-node via the Tailscale OAuth client, into sops `tailscale/authkey` |
 | `@@VM_ADMIN_PASS@@` | Password for the baked-in `admin` user (per-VM) | `darwin/metal.nix`, packer var default | generated per-VM into the yclaw keychain; packer reads it as `PKR_VAR_vm_admin_pass` (see below) |
 | `@@APPLE_ID@@` | Dedicated Apple ID for iMessage (on the bluebubbles VM) | `scripts/bluebubbles-setup.sh` | **interactive (human gate)** |
 | `@@APPLE_ID_PW@@` | Password for the dedicated Apple ID | `scripts/bluebubbles-setup.sh` | **interactive (human gate)** |

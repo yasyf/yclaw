@@ -24,8 +24,8 @@
 #   yclaw-metal-admin-pass          admin account baked into the metal guest image (packer)
 #   yclaw-bluebubbles-admin-pass    admin account baked into the bluebubbles guest image (packer)
 #   yclaw-bluebubbles-server-pass   BlueBubbles server password (also rendered into sops hermes/env)
-#   yclaw-ts-oauth-client-id        Tailscale OAuth client id (mints per-node ephemeral tagged keys)
-#   yclaw-ts-oauth-client-secret    Tailscale OAuth client secret (mints per-node ephemeral tagged keys)
+#   yclaw-ts-oauth-client-id        Tailscale OAuth client id (mints per-node persistent tagged keys)
+#   yclaw-ts-oauth-client-secret    Tailscale OAuth client secret (mints per-node persistent tagged keys)
 
 YCLAW_STATE="${YCLAW_STATE:-$HOME/.yclaw/state}"
 YCLAW_KEYCHAIN="$HOME/Library/Keychains/yclaw.keychain-db"
@@ -78,12 +78,25 @@ _yclaw_keychain_lock() {
   security lock-keychain "$YCLAW_KEYCHAIN"
 }
 
-# Mint ONE ephemeral, single-use, pre-authorized, TAGGED tailnet auth key for $1 (host short
-# name, e.g. `hermes` → tag:hermes) via the Tailscale keys API. Reads the global TS_ACCESS_TOKEN
-# (the OAuth access token exchanged in collect_secrets). The JSON body is built with python3
-# json.dumps and the response parsed with json.load — never shell interpolation — so a tag or
-# host name can never break out of the request. FATAL on an empty/garbled response or a key that
+# Mint ONE persistent (non-ephemeral), single-use, pre-authorized, TAGGED tailnet auth key for $1
+# (host short name, e.g. `hermes` → tag:hermes) via the Tailscale keys API. Reads the global
+# TS_ACCESS_TOKEN (the OAuth access token exchanged in collect_secrets). The JSON body is built with
+# python3 json.dumps and the response parsed with json.load — never shell interpolation — so a tag
+# or host name can never break out of the request. FATAL on an empty/garbled response or a key that
 # is not a `tskey-…` string. Echoes the minted key on stdout.
+#
+# NON-ephemeral is load-bearing for an ALWAYS-ON server: an ephemeral node is auto-reaped ~30-60min
+# after it disconnects (host sleep, reboot, network blip), and its single-use key is already spent —
+# so the node cannot rejoin without a human re-mint, stranding the whole stack (every management path
+# is `tailscale ssh`). A persistent, TAGGED node instead keeps its registration across a disconnect
+# and — because tagged devices have key-expiry disabled by default — reconnects from its on-disk
+# tailscaled state with NO authkey. The key stays single-use: it seeds the node's FIRST join only;
+# thereafter identity lives in persisted state (metal /Library/Tailscale, hermes /var/lib/tailscale,
+# both on each VM's own disk). A disk-replace/rebuild is the only thing that loses it, and those
+# paths re-mint AND explicitly delete the old device (persistent nodes no longer self-reap) — see
+# scripts/deploy-vm.sh + scripts/nuke-tailnet.sh. expirySeconds is the redemption WINDOW (how long
+# Tailscale accepts this key), not the node lifetime: 24h so a cold `just bootstrap` whose packer /
+# hermes / model builds run for hours cannot expire the key before the node's first boot redeems it.
 _ts_mint_key() {
   local host="$1" body resp key
   body="$(python3 - "$host" <<'PY'
@@ -91,10 +104,10 @@ import json, sys
 host = sys.argv[1]
 print(json.dumps({
     "capabilities": {"devices": {"create": {
-        "reusable": False, "ephemeral": True, "preauthorized": True,
+        "reusable": False, "ephemeral": False, "preauthorized": True,
         "tags": [f"tag:{host}"],
     }}},
-    "expirySeconds": 7200,
+    "expirySeconds": 86400,
     "description": f"yclaw bootstrap {host}",
 }))
 PY
@@ -151,7 +164,7 @@ collect_secrets() {
 
   # Tailscale OAuth client: the operator supplies it ONCE (an admin-tagged client with the
   # `auth_keys` write scope and the device tags it may mint), persisted in the yclaw keychain and
-  # reused thereafter. We exchange it for a short-lived access token, then mint ONE ephemeral,
+  # reused thereafter. We exchange it for a short-lived access token, then mint ONE persistent,
   # single-use, tagged key per tailnet-joining host that owns `tailscale/authkey` — so no reusable
   # fleet-wide key ever exists. REQUIRED: there is no fallback to a shared key (per-node is the point).
   if TS_OAUTH_ID="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_TS_OAUTH_ID" -w "$YCLAW_KEYCHAIN" 2>/dev/null)"; then
@@ -184,7 +197,7 @@ collect_secrets() {
     # set -e abort on a failed mint (and _ts_mint_key itself _secrets_fails before returning empty).
     ts_authkey="$(_ts_mint_key "$host")"
     export "TS_AUTHKEY_$(printf '%s' "$host" | tr a-z A-Z)=$ts_authkey"
-    _secrets_ok "Minted ephemeral tag:$host auth key for $host (single-use, 2h)."
+    _secrets_ok "Minted persistent tag:$host auth key for $host (single-use, 24h redemption window)."
   done
 
   # Vault master password: generate once, persist in the dedicated yclaw keychain, reuse thereafter.

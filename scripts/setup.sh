@@ -198,9 +198,9 @@ write_agent bluebubbles \
 # agent's persistent state (/var/lib/hermes — honcho memory, sessions) onto ~/.yclaw/state so it
 # survives a VM rebuild and is covered by `just backup`. The `repo` share (ro) mounts this checkout
 # read-only so the in-VM nixos-rebuild can rebuild itself (`nixos-rebuild switch --flake
-# /var/lib/yclaw-repo#hermes`). (/var/lib/tailscale is NOT externalized — hermes is an ephemeral
-# tailnet node, reaped on disconnect, and a mount there collides with tailscaled's StateDirectory;
-# the disk-replace fallback re-mints a fresh authkey instead. See nixos/hermes.nix.)
+# /var/lib/yclaw-repo#hermes`). (/var/lib/tailscale is NOT externalized — a mount there collides with
+# tailscaled's StateDirectory; hermes is a PERSISTENT tailnet node whose on-disk key survives a reboot
+# anyway, and only a disk-replace re-mints. See nixos/hermes.nix.)
 #
 # Unlike metal (a macOS guest, which auto-mounts the `name:path` form at /Volumes/My Shared
 # Files/<name>), a Linux guest mounts each share by its EXPLICIT virtiofs tag — so these MUST use

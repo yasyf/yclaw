@@ -277,13 +277,14 @@ in
     options = [ "ro" "nofail" ];
   };
 
-  # NOTE: /var/lib/tailscale is deliberately NOT externalized to a host share. hermes joins as an
-  # EPHEMERAL node (scripts/lib/secrets.sh `_ts_mint_key`, `"ephemeral": True`), which Tailscale reaps
-  # shortly after it disconnects — so persisting the node key cannot preserve identity across a
-  # disk-replace anyway. Worse, a virtiofs mount over /var/lib/tailscale COLLIDES with the tailscale
-  # module's `StateDirectory = "tailscale"` (systemd cannot own a state dir that is a mountpoint) and
-  # tailscaled.service then FAILS to start. The disk-replace fallback re-mints a fresh ephemeral
-  # authkey instead (scripts/deploy-vm.sh → scripts/remint-hermes-authkey.sh); in-guest switch never
+  # NOTE: /var/lib/tailscale is deliberately NOT externalized to a host share. hermes joins as a
+  # PERSISTENT node (scripts/lib/secrets.sh `_ts_mint_key`), so the node key on its own VM disk here
+  # DOES survive a reboot — hermes reconnects with no authkey, exactly what an always-on server needs.
+  # We must not mount a share over it anyway: a virtiofs mount over /var/lib/tailscale COLLIDES with the
+  # tailscale module's `StateDirectory = "tailscale"` (systemd cannot own a state dir that is a
+  # mountpoint) and tailscaled.service then FAILS to start. Only a disk-replace loses the node key (the
+  # whole disk is rebuilt); that path re-mints a fresh authkey AND deletes the old device (scripts/
+  # deploy-vm.sh → scripts/remint-hermes-authkey.sh + scripts/nuke-tailnet.sh). In-guest switch never
   # disconnects hermes, so it keeps its node naturally.
 
   # --- Hermes agent gateway ----------------------------------------------------

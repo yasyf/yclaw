@@ -61,14 +61,21 @@ if ! tart list --format json 2>/dev/null | jq -re --arg n "$node" '.[]? | select
   tart create --linux "$node" --disk-size "$disk_gb"
 fi
 
-# hermes joins as an EPHEMERAL tailnet node, which Tailscale reaps shortly after it disconnects — so
-# this disk-replace strands the old node and the booting image cannot reconnect with the persisted
-# node key (it's gone): it must join FRESH via a NEW auth key. Re-mint one into hermes's sops bundle +
-# node-config share BEFORE the replace, so the new image's first-boot seedNodeConfig installs it.
-# (In-guest `nixos-rebuild switch` via scripts/redeploy.sh never disconnects hermes, so it needs none
-# of this — this is the heavyweight disk-replace fallback.)
-echo "Re-minting hermes's ephemeral tailnet auth key (the disk-replace reaps the old node) ..."
+# hermes is a PERSISTENT tailnet node (scripts/lib/secrets.sh `_ts_mint_key`): an ordinary reboot
+# reconnects from its on-disk node key with no re-mint. This disk-replace is the exception — it throws
+# away the whole VM disk (and its node key), so the fresh image boots with empty tailscale state and
+# must join FRESH via a NEW auth key. Re-mint one into hermes's sops bundle + node-config share BEFORE
+# the replace, so the new image's first-boot seedNodeConfig installs it. (In-guest `nixos-rebuild
+# switch` via scripts/redeploy.sh never disconnects hermes, so it needs none of this — this is the
+# heavyweight disk-replace fallback.)
+echo "Re-minting hermes's tailnet auth key (the disk-replace gives the new image empty state) ..."
 "${repo_root}/scripts/remint-hermes-authkey.sh"
+
+# Persistent nodes no longer self-reap, so the OLD hermes device would linger and steal the `hermes`
+# MagicDNS name (the new node drifts to `hermes-1`, breaking `tailscale ssh hermes`). Delete it now,
+# before the fresh image joins. Best-effort: skips cleanly if TAILSCALE_API_KEY is unset.
+echo "Deleting the old hermes tailnet device (persistent nodes don't auto-reap) ..."
+"${repo_root}/scripts/nuke-tailnet.sh" hermes || echo "  (could not delete old hermes device — check TAILSCALE_API_KEY in .env)"
 
 # Boot the node's launchd runner OUT before the clonefile: setup.sh loads it RunAtLoad + KeepAlive,
 # so a running runner would boot the VM mid-clonefile and corrupt the disk (same reason bootstrap
