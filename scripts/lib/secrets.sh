@@ -310,10 +310,14 @@ PY
   # Resolved per-host sops creation rules for `sops edit hosts/<host>/secrets.sops.yaml`.
   # The bundles themselves are encrypted above via the explicit --age recipient (which
   # overrides creation_rules), so this file is only for interactive edits.
-  printf '%s' "$recipients" | python3 - "$sops_rendered" <<'PY'
+  # Pass $recipients ("host pub" lines) as a FILE argument, never piped to stdin: `python3 - <<PY`
+  # already binds stdin to the program source, so a `printf … | python3 - <<PY` pipe is dropped and
+  # the program then fails to read it (matches the argv/open idiom used everywhere else here).
+  recip_file="$(mktemp)"; printf '%s' "$recipients" > "$recip_file"
+  python3 - "$sops_rendered" "$recip_file" <<'PY'
 import sys
 out, rules = sys.argv[1], ["creation_rules:"]
-for line in sys.stdin:
+for line in open(sys.argv[2]):
     line = line.strip()
     if not line:
         continue
@@ -322,6 +326,7 @@ for line in sys.stdin:
               "    key_groups:", "      - age:", f"          - {pub}"]
 open(out, "w").write("\n".join(rules) + "\n")
 PY
+  rm -f "$recip_file"
 
   # All yclaw-secret reads are done (the per-host bundle encryption above reads the keychain
   # passwords from the exported env, and _ts_mint_key read TS_ACCESS_TOKEN earlier) — re-lock
