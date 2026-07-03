@@ -14,6 +14,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Load persisted bootstrap inputs from .env (reused API keys + the non-secret answers) so re-runs
+# are non-interactive. .env is gitignored; scripts/nuke-tailnet.sh sources it the same way.
+# shellcheck disable=SC1091
+if [ -f .env ]; then set -a; . ./.env; set +a; fi
+
 RUNTIME_DIR="$REPO_ROOT/secrets/runtime"
 VALUES_FILE="$RUNTIME_DIR/values.env"            # resolved non-secret values; gitignored
 
