@@ -320,10 +320,8 @@ in
     # Full declarative config.yaml. Nix attrset,
     # deep-merged + rendered to ~/.hermes/config.yaml. No secrets here.
     settings = {
-      # ── Model plane (direct to metal — Aperture bypassed to cut ~0.5s TTFB/call) ──
-      # The hosted `ai` (Aperture) node sits ~150ms WAN away; routing every model call
-      # through it added a measured ~0.5s TTFB per call (paid again on each tool round).
-      # We now hit metal's upstreams directly: gpt-5.5 + gemini → cliproxy :8317,
+      # ── Model plane (direct to metal) ──
+      # gpt-5.5 + gemini → cliproxy :8317,
       # Qwen → omlx :8000. Bare `metal` resolves via MagicDNS and is in NO_PROXY, so these
       # stay DIRECT (no agent-vault MITM hop). cliproxy's :8317 is pf-gated to hermes + the host,
       # so hermes reaches it with no bearer ("the tailnet is the auth"); omlx :8000 needs no key either.

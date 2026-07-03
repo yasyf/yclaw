@@ -51,7 +51,7 @@
   networking.firewall.enable = lib.mkDefault false;
 
   # --- Tailscale (each VM is its own tailnet node) -----------------------------
-  # Per-node tailscaled so MagicDNS resolves `ai`, `hermes`, `bluebubbles`, `metal`.
+  # Per-node tailscaled so MagicDNS resolves `hermes`, `bluebubbles`, `metal`.
   services.tailscale = {
     enable = true;
     authKeyFile = config.sops.secrets."tailscale/authkey".path;
