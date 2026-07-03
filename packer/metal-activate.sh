@@ -24,12 +24,6 @@ for _ in $(seq 1 60); do [ -S /nix/var/nix/daemon-socket/socket ] && break; slee
 export HOME="${HOME:-/var/root}" USER="${USER:-root}"
 . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 
-# nix-darwin activation refuses to overwrite unrecognized /etc shell files. The Determinate Nix
-# install (re)creates /etc/{zshenv,zshrc,bashrc} for the non-interactive PATH and they are present
-# again by first boot (the packer build's rename does not survive), so rename them here, right
-# before activation, so nix-darwin can claim them. Idempotent; runs as root (this is a LaunchDaemon).
-for f in zshenv zshrc zprofile bashrc; do mv -f "/etc/$f" "/etc/$f.before-nix-darwin" 2>/dev/null || true; done
-
 # Activate the PRE-BUILT closure (baked store path) — NOT `darwin-rebuild switch --flake`, which
 # re-resolves the flake ref over the rate-limited GitHub API on an unauthenticated first boot.
 # `darwin-rebuild activate` does no flake/GitHub access; set the system profile first (activate does
@@ -38,7 +32,22 @@ for f in zshenv zshrc zprofile bashrc; do mv -f "/etc/$f" "/etc/$f.before-nix-da
 # (omlx + tailscale) and postActivation (tailscaled install-system-daemon + the tailnet join).
 TOPLEVEL="@@METAL_TOPLEVEL@@"
 nix-env -p /nix/var/nix/profiles/system --set "$TOPLEVEL" || echo "metal-activate: nix-env --set returned non-zero"
-"$TOPLEVEL/sw/bin/darwin-rebuild" activate || echo "metal-activate: darwin-rebuild activate returned non-zero"
+
+# nix-darwin activation refuses to overwrite unrecognized /etc shell files, and the Determinate Nix
+# daemon RE-CREATES /etc/{zshenv,zshrc,bashrc} at first boot — racing this activation. A single
+# up-front rename loses when the daemon recreates them AFTER we rename but BEFORE activate checks,
+# and a fresh metal then strands off the tailnet (activate aborts "Unexpected files in /etc"). So
+# re-rename right before EACH attempt and retry: a one-shot recreate cannot win a retry loop. Once
+# activate succeeds nix-darwin owns /etc/* (they still source the nix profile, so the Determinate
+# daemon is satisfied and stops recreating them).
+activated=""
+for attempt in 1 2 3 4 5; do
+  for f in zshenv zshrc zprofile bashrc; do mv -f "/etc/$f" "/etc/$f.before-nix-darwin" 2>/dev/null || true; done
+  if "$TOPLEVEL/sw/bin/darwin-rebuild" activate; then activated=1; break; fi
+  echo "metal-activate: activate attempt $attempt failed (likely the Determinate /etc race) — re-renaming, retry in 5s"
+  sleep 5
+done
+[ -n "$activated" ] || echo "metal-activate: darwin-rebuild activate did not succeed after 5 attempts"
 
 # Success = metal actually joined the tailnet (the real criterion, not the activate exit code).
 joined=""
