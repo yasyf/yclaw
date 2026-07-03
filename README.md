@@ -1,48 +1,84 @@
-# yclaw
+# ![yclaw](docs/assets/readme-banner.webp)
 
-![yclaw banner](docs/assets/readme-banner.webp)
+**Root the agent's VM. The keys were never there.** hermes-agent answers your iMessage from a sandboxed Linux VM; a locked-down macOS guest injects every credential on the wire, outside the sandbox.
 
-Reproducible, always-on home server for the Nous [`hermes-agent`](https://github.com/NousResearch/hermes-agent) on Apple Silicon — the agent never touches your credentials.
+[![build-images](https://github.com/yasyf/yclaw/actions/workflows/build-images.yml/badge.svg)](https://github.com/yasyf/yclaw/actions/workflows/build-images.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-## What and why
+## Get started
 
-`yclaw` runs a personal agent that reaches you over iMessage and the open internet without ever holding an API key. The agent lives sandboxed in a Linux VM. A separate, locked-down macOS guest is the sole credential custodian: it brokers every secret and injects it on the wire, and the LLM-subscription OAuth lives there too, out of the agent's reach. The whole stack rebuilds from this repo — that destroy-and-rebuild is the acceptance test.
+```bash
+git clone https://github.com/yasyf/yclaw && cd yclaw
+just bootstrap   # preflight, encrypt secrets, build + boot the VMs
+just onboard     # TUI for the one-time human gates, then validate + smoke
+```
 
-## Topology
+<img src="docs/assets/demo.png" alt="Terminal running 'just --list' — yclaw's bootstrap, onboard, validate, and teardown recipes" width="700">
 
-Four nodes on your tailnet, reached by Tailscale MagicDNS names:
+`just bootstrap` preflights the host tools, mints per-host age keys, encrypts each guest's secrets, builds the macOS and Linux images, boots the four nodes, and stops at the handful of gates it can't script — the iMessage 2FA, the Codex/Gemini logins, and the `agent-vault` Google OAuth. First boot is long: it pulls the base images and the model weights. Set up an Apple Silicon Mac and a Tailscale OAuth client first — [docs/DEPLOY.md](docs/DEPLOY.md) has the prerequisites and the full walkthrough.
 
-- **metal** — the locked-down macOS guest and sole credential custodian. Runs the local Qwen inference server (`omlx`), speech-to-text, the Codex/Gemini OAuth proxy (CLIProxyAPI), and the `agent-vault` credential broker.
-- **bluebubbles** — a separate macOS guest that bridges iMessage. Holds no credentials.
-- **hermes** — the Linux gateway that runs `hermes-agent` in a Docker sandbox. It holds no API credentials and reaches the internet only through `agent-vault` on metal; its agent state is backed up off-VM.
-- **ai** — a hosted Tailscale Aperture node that routes model traffic by model id.
+Driving with an agent? Paste this:
 
-Models fall back from `gpt-5.5` to `gemini-3-pro-preview` to the local Qwen MLX model. Real secrets never reach the agent: `agent-vault` injects the API keys and OAuth bearers on the wire.
+```text
+Set up yclaw (https://github.com/yasyf/yclaw) on this Apple Silicon Mac.
+Read docs/DEPLOY.md first: add the tag:hermes/metal/bluebubbles ACL block and create the Tailscale OAuth client, then run `just bootstrap`.
+When the wizard prints the human gates, hand them to me, then drive `just onboard`.
+First goal: `just validate` and `just smoke` pass, with hermes answering `tailscale ssh admin@hermes -- hermes doctor`.
+```
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the model plane and the credential-custody model.
+---
 
-## Deploy
+## Use cases
 
-One command builds and boots everything:
+### Run an always-on personal agent you text over iMessage
+
+Standing up a personal agent you can reach from your phone means wiring a message bridge, a gateway, and a model plane by hand. yclaw boots all of it as launchd-managed [tart](https://tart.run) VMs from one Mac:
 
 ```bash
 just bootstrap
 ```
 
-It runs preflight checks, prompts for the non-secret values, encrypts the runtime secrets, builds the VM images, and boots the guests — then prints the one-time interactive steps it can't script: the iMessage sign-in on bluebubbles, the Codex/Gemini browser logins on metal, and the `agent-vault` Google OAuth connect.
+`bluebubbles` bridges iMessage, `hermes` runs [`hermes-agent`](https://github.com/NousResearch/hermes-agent) in a Docker sandbox, and a message from an allowlisted handle routes to the agent — model calls falling back `gpt-5.5` → `gemini-3-pro-preview` → a local Qwen MLX model. Text your home channel and the agent answers.
 
-Prerequisites, the full walkthrough, and what to back up are in [docs/DEPLOY.md](docs/DEPLOY.md).
+### Keep every API key and OAuth token out of the agent's reach
+
+An agent that holds your keys can leak them — through a prompt injection, a log line, or a rogue tool call. yclaw never puts a credential inside the sandbox:
+
+```bash
+just validate
+```
+
+The `hermes` VM holds no API keys; `agent-vault` on `metal` injects each bearer on the wire, and the LLM-subscription OAuth lives on `metal` too. The hermes image build fails loudly if a secret-shaped string leaks into its closure, and `just validate` probes the per-VM isolation over `tailscale ssh`, reporting PASS/FAIL per control.
+
+### Destroy the whole stack and rebuild it from the repo in one command
+
+Home servers rot: you tweak by hand until nothing reproduces. yclaw treats destroy-and-rebuild as the acceptance test:
+
+```bash
+just rebuild
+```
+
+`rebuild` runs `destroy` — booting out the launchd runners and deleting every tart VM — then `setup` to bring the host back, so the whole stack comes back from this repo alone. The irreplaceable state (`~/.yclaw/state/hosts/` and `agent-vault/`) lives on the host and is captured by `just backup`.
+
+## How it works
+
+Four nodes on your tailnet, reached by Tailscale MagicDNS names:
+
+- **metal** — the locked-down macOS guest and sole credential custodian. Runs the local Qwen inference server (`omlx`), speech-to-text, the Codex/Gemini OAuth proxy (CLIProxyAPI), and the `agent-vault` broker.
+- **bluebubbles** — a separate macOS guest that bridges iMessage. Holds no credentials.
+- **hermes** — the Linux gateway that runs `hermes-agent` in a Docker sandbox. Holds no API credentials and reaches the internet only through `agent-vault` on `metal`; its agent state is backed up off-VM.
+- **ai** — a hosted Tailscale Aperture node that routes model traffic by model id.
+
+Real secrets never reach the agent — `agent-vault` injects the API keys and OAuth bearers on the wire. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the model plane and the credential-custody model in full.
 
 ## Hardware
 
-Apple Silicon only. metal is sized for a 35B MLX model (~42 GB of wired GPU memory on a 48 GB guest) — on a smaller Mac, point it at a smaller model. Budget ~20-25 GB for the model cache plus the VM disks, and expect a long first boot while macOS installs and the models download.
+Apple Silicon only. `metal` is sized for a 35B MLX model (~42 GB of wired GPU memory on a 48 GB guest) — on a smaller Mac, point it at a smaller model in `nixos/models.nix`. Budget ~20-25 GB for the model cache on top of the VM disks, and expect a long first boot while macOS installs and the models download.
 
-## Documentation
+## More on yclaw
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — topology, model plane, credential custody.
-- [docs/DEPLOY.md](docs/DEPLOY.md) — prerequisites, the deploy walkthrough, backup and restore.
+- [docs/DEPLOY.md](docs/DEPLOY.md) — prerequisites, the deploy walkthrough, the human gates, backup and restore.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — topology, the model plane, credential custody.
 - [AGENTS.md](AGENTS.md) / [CLAUDE.md](CLAUDE.md) — conventions for agents working in this repo.
 
-## License
-
-SPDX-License-Identifier: MIT. See [LICENSE](LICENSE).
+Status: personal infrastructure I run at home — the layout and the deploy flow still move. Licensed under [MIT](LICENSE).
