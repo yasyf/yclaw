@@ -1,6 +1,5 @@
 # Shared base for every NixOS Linux VM (just hermes now). Booted by tart from a
-# nixos-generators `raw-efi` image. NOT imported by ai.nix (Aperture is a hosted
-# Tailscale service, not a VM — see nixos/ai.nix).
+# nixos-generators `raw-efi` image.
 {
   config,
   lib,

@@ -30,7 +30,7 @@ setup:
 build-hermes-image:
     ./scripts/build-hermes-image.sh
 
-# Apply one node. hermes→rebuild image + tart disk-replace; ai→deploy-ai.
+# Apply one node. hermes→rebuild image + tart disk-replace.
 # The de-Nix'd host writes its VM runners as `com.yclaw.tart-<node>` (scripts/setup.sh);
 # deploy-vm.sh uses the same com.yclaw.tart-* labels.
 deploy node:
@@ -44,24 +44,11 @@ deploy node:
       hermes)
         ./scripts/deploy-vm.sh "{{node}}"
         ;;
-      ai)
-        just deploy-ai
-        ;;
       *)
-        echo "unknown node: {{node}} (expected hermes|ai)" >&2
+        echo "unknown node: {{node}} (expected hermes)" >&2
         exit 1
         ;;
     esac
-
-# Build the Aperture config and print it for the human to paste into the dashboard.
-# The Aperture config-API write verb is unverified — do NOT auto-PUT; a human
-# pastes the printed config manually into the Aperture dashboard.
-deploy-ai:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    config="$(nix build --no-link --print-out-paths .#packages.aarch64-darwin.aperture-config)"
-    cat "$config"
-    echo "HUMAN: paste the Aperture config above into the Aperture dashboard (config-API write verb unverified — do not auto-PUT)."
 
 # In-place, state-preserving redeploy with ZERO human input: metal darwin-rebuild switch
 # (metal-redeploy), hermes nixos-rebuild switch (dry-activate-gated — aborts to the disk-replace
@@ -77,11 +64,6 @@ smoke:
 
     # config integrity
     nix flake check
-
-    # model plane + Aperture routing (bare `ai` stays in NO_PROXY, DIRECT)
-    curl -sf http://ai/v1/chat/completions \
-      -H 'Content-Type: application/json' \
-      -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"ping"}]}'
 
     # per-VM health via tailscale ssh
     for vm in hermes; do
@@ -143,7 +125,7 @@ nuke: destroy
     # Secret + agent state under ~/.yclaw/state (keep model weight caches by default). The hermes
     # agent writes some skill files read-only (mode 444 inside 555 dirs), so make each tree
     # writable before removing it — otherwise rm cannot unlink them and aborts under `set -e`.
-    for d in age vm-secrets hosts agent-vault cli-proxy-api hermes bluebubbles aperture-backup mlx-audio; do
+    for d in age vm-secrets hosts agent-vault cli-proxy-api hermes bluebubbles mlx-audio; do
       [ -e "$state/$d" ] && chmod -R u+w "$state/$d" 2>/dev/null || true
       rm -rf "$state/$d"
     done

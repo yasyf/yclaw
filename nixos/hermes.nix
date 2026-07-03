@@ -31,7 +31,7 @@ let
   # BLUEBUBBLES_PASSWORD is the one secret and lives in the sops "hermes/env" file,
   # appended AFTER this file (environmentFiles order), so the secret never hits the store.
   hermesEnvFile = pkgs.writeText "hermes.env" ''
-    NO_PROXY=ai,metal,bluebubbles,.ts.net,localhost,127.0.0.1
+    NO_PROXY=metal,bluebubbles,.ts.net,localhost,127.0.0.1
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
     REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt

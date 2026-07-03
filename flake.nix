@@ -163,16 +163,12 @@
       packages.${linuxSystem} = {
         agent-vault = pkgsLinux.agent-vault;
         hermes-docker-proxy = pkgsLinux.hermes-docker-proxy;
-        # Aperture is a hosted Tailscale service, not a VM: ai.nix renders the providers
-        # JSON we paste into the Aperture dashboard. See nixos/ai.nix.
-        aperture-config = pkgsLinux.callPackage ./nixos/ai.nix { };
         hermes-image = mkImage hermesModules;
       };
 
       packages.${darwinSystem} = {
         cli-proxy-api = pkgsDarwin.cli-proxy-api;
         hermes-docker-proxy = pkgsDarwin.hermes-docker-proxy;
-        aperture-config = pkgsDarwin.callPackage ./nixos/ai.nix { };
       };
 
       formatter.${linuxSystem} = pkgsLinux.nixfmt-rfc-style;

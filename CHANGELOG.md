@@ -129,6 +129,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pasted back — no SSH tunnel to `metal` required.
 
 ### Removed
+- The Aperture/`ai` model-routing deploy path. `nixos/ai.nix`, the `just deploy-ai`
+  recipe, the `aperture-config` flake outputs, and `just smoke`'s `http://ai`
+  model-plane curl are gone: hermes calls metal's cliproxy (`:8317`) and omlx
+  (`:8000`) directly over the tailnet, so the model plane goes direct to
+  `metal:8317` and the hosted Aperture node is out of the hot path — no longer built
+  or deployed. The `aperture/static-key` sops secret stays: it is cliproxy's own
+  inbound API-key allowlist entry (the name is a misnomer), not an Aperture credential.
+- `scripts/uninstall-nix.sh` and its `docs/DEPLOY.md` "Migrating an existing
+  deployment" section. Stale pre-migration artifacts from when the macOS host still
+  ran Nix; the host is now provisioned by `scripts/setup.sh` alone.
 - The `tailscale-acl.yml` GitOps workflow. It force-replaced the whole tailnet ACL
   with `tailnet/policy.hujson` on push — destructive on a shared tailnet (it would
   deauthorize non-yclaw nodes). The yclaw tags are added to the ACL additively

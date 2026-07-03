@@ -6,8 +6,7 @@ test, and the agent is isolated in a Linux VM that never holds a credential.
 
 ## Topology
 
-A bare macOS host boots three `tart` guests on one tailnet; a hosted node fronts
-the model plane. The host stays minimal: Homebrew provides `tart`, Tailscale,
+A bare macOS host boots three `tart` guests on one tailnet. The host stays minimal: Homebrew provides `tart`, Tailscale,
 `gum`, `packer`, and `restic`, and `scripts/setup.sh` supervises the guests via
 `com.yclaw.tart-*` launchd agents. All persistent state and secrets live outside
 the repo in `~/.yclaw/state`; generated passwords live in a dedicated keychain at
@@ -49,14 +48,6 @@ of host-specific identity and lets the same artifact serve any tailnet.
   in `/var/lib/hermes` (honcho memory, sessions) is externalized to the host's
   `~/.yclaw/state/hermes` over virtiofs, so it survives a VM rebuild and is backed
   up.
-- **ai** — a hosted Tailscale Aperture node, not a VM, that routes `http://ai/v1` by
-  model id to the metal upstreams. hermes does **not** route model calls through it:
-  the hosted node is a WAN round-trip (~150 ms) away and added ~0.5 s of TTFB per
-  call, so hermes instead calls cliproxy (`http://metal:8317`, for `gpt-5.5` and
-  `gemini-3-pro-preview`) and omlx (`http://metal:8000`, for the local Qwen) directly
-  over the tailnet, presenting cliproxy's static bearer itself. Aperture is retained
-  for the dashboard-managed routing config (`nixos/ai.nix`, `just deploy-ai`) but is
-  out of the hot path. The fallback chain lives in hermes.
 
 The model ids are not guessed anywhere — `nixos/models.nix` is the single source
 for the Qwen and STT ids, and hermes' default plus fallback providers

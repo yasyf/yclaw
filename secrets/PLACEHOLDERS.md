@@ -24,7 +24,7 @@ These literal tokens appear in committed configs and scripts and must be resolve
 | `@@APPLE_ID@@` | Dedicated Apple ID for iMessage (on the bluebubbles VM) | `scripts/bluebubbles-setup.sh` | **interactive (human gate)** |
 | `@@APPLE_ID_PW@@` | Password for the dedicated Apple ID | `scripts/bluebubbles-setup.sh` | **interactive (human gate)** |
 | `@@BLUEBUBBLES_PASSWORD@@` | BlueBubbles server password | `nixos/hermes.nix`, `scripts/bluebubbles-setup.sh` | generated into the yclaw keychain, rendered into sops `hermes/env` (see below) |
-| `@@APERTURE_STATIC_KEY@@` | Static bearer CLIProxyAPI requires on metal:8317 (Aperture used to inject it; hermes now presents it directly) | `darwin/metal-cliproxyapi-config.yaml`, `darwin/metal.nix`, `nixos/ai.nix`, `nixos/hermes.nix` | `secrets.sh` mints `openssl rand -hex 32` if unset, into sops `aperture/static-key` **and** `hermes/env` |
+| `@@APERTURE_STATIC_KEY@@` | Static bearer CLIProxyAPI requires on metal:8317 (Aperture used to inject it; hermes now presents it directly) | `darwin/metal-cliproxyapi-config.yaml`, `darwin/metal.nix`, `nixos/hermes.nix` | `secrets.sh` mints `openssl rand -hex 32` if unset, into sops `aperture/static-key` **and** `hermes/env` |
 | `@@AGE_PUBLIC_KEY@@` | Public half of the sops age key | `.sops.yaml` (template only) | `secrets.sh` mints the age key, renders the public half into `~/.yclaw/state/sops.yaml`; the committed `.sops.yaml` keeps the placeholder |
 | `@@AGENT_VAULT_CA_PEM@@` | agent-vault MITM CA the hermes VM trusts | `nixos/agent-vault-ca.pem`, `nixos/hermes.nix` | bootstrap fetches the real public CA from metal and overwrites the file (CA is public; safe to commit) |
 

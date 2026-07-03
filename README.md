@@ -62,12 +62,11 @@ just rebuild
 
 ## How it works
 
-Four nodes on your tailnet, reached by Tailscale MagicDNS names:
+Three nodes on your tailnet, reached by Tailscale MagicDNS names:
 
 - **metal** — the locked-down macOS guest and sole credential custodian. Runs the local Qwen inference server (`omlx`), speech-to-text, the Codex/Gemini OAuth proxy (CLIProxyAPI), and the `agent-vault` broker.
 - **bluebubbles** — a separate macOS guest that bridges iMessage. Holds no credentials.
 - **hermes** — the Linux gateway that runs `hermes-agent` in a Docker sandbox. Holds no API credentials and reaches the internet only through `agent-vault` on `metal`; its agent state is backed up off-VM.
-- **ai** — a hosted Tailscale Aperture node that routes model traffic by model id.
 
 Real secrets never reach the agent — `agent-vault` injects the API keys and OAuth bearers on the wire. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the model plane and the credential-custody model in full.
 

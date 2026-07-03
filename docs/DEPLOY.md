@@ -248,35 +248,7 @@ human input. One path per node:
 > + NVRAM/`auxiliaryStorage` + `hardwareModel`) and snapshot the whole disk on the same
 > host — is a deferred follow-up.
 
-## Migrating an existing deployment
-
-Older deployments were seeded with the single global age key and one monolithic
-bundle. Seeding is idempotent — it writes only what's missing — so a plain rebuild
-keeps the old artifacts and never picks up the new per-host keys. Migrate explicitly:
-
-1. **Re-run secret collection** (`scripts/collect-secrets.sh`) to mint the per-host
-   keypairs and bundles and the per-node tailnet keys. This needs the OAuth client
-   from the prerequisites. The old artifacts under `~/.yclaw/state` —
-   `age/key.txt`, the top-level `secrets.sops.yaml`, and `vm-secrets/` — are no longer
-   produced; remove them so a stale share source can't be re-mounted.
-   - On `metal`, remove the stale `/var/lib/sops-nix/key.txt` and the old bundle before
-     `darwin-rebuild`, so first boot re-seeds the per-host key.
-   - `hermes` redeploys **in place** via in-guest `nixos-rebuild switch`, so it does not
-     re-seed the per-host key (no disk-replace; node identity and `/var/lib/hermes` are
-     preserved). A live `switch` is safe ONLY while it leaves the virtiofs mounts untouched:
-     Apple's Virtualization.framework cannot re-enumerate a virtiofs tag once it is unmounted
-     mid-session (`virtio-fs: tag not found`), so a `switch` that would start/stop/restart
-     `var-lib-hermes.mount` strands the mount and blocks
-     `hermes-agent`. `scripts/redeploy.sh` reads `nixos-rebuild dry-activate` and auto-routes
-     exactly those cases to the disk-replace fallback. Re-seeding the per-host key is one such
-     reboot-class change, so migrate hermes with the fallback (`scripts/deploy-vm.sh`): it
-     resets root and re-seeds on first boot.
-2. **Drop the host age key.** The host no longer keeps an age key at
-   `/var/lib/sops-nix/key.txt`; that vestigial install was removed.
-
 ## Operator actions not automated
 
 - **Rotate the Tailscale API key** kept in the gitignored `.env` before going
   public.
-- **Remove host Nix once the stack is proven** by running
-  `scripts/uninstall-nix.sh` (destructive — it reboots the host).
