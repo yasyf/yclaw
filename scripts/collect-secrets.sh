@@ -26,7 +26,7 @@ gum style --border rounded --padding "1 2" --margin "1 0" --border-foreground 84
   "✓ per-host secrets encrypted → $YCLAW_STATE/hosts/<host>/secrets.sops.yaml" \
   "✓ per-host age keys staged for the VMs → $YCLAW_STATE/hosts/<host>/key.txt" \
   "✓ dedicated yclaw keychain → $YCLAW_KEYCHAIN (unlock pw in login Keychain: $KC_SERVICE_KEYCHAIN_PASS)" \
-  "✓ vault master password in yclaw keychain ($KC_SERVICE)" \
+  "✓ vault master password in yclaw keychain ($KC_SERVICE_AGENT_VAULT_MASTER)" \
   "✓ metal admin password in yclaw keychain ($KC_SERVICE_METAL_ADMIN)" \
   "✓ bluebubbles admin password in yclaw keychain ($KC_SERVICE_BLUEBUBBLES_ADMIN)" \
   "✓ BlueBubbles server password in yclaw keychain ($KC_SERVICE_BLUEBUBBLES_SERVER)" \

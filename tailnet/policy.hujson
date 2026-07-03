@@ -30,6 +30,7 @@
   //     omlx 8000, STT 8765) — mirrors the metal pf anchor's allowed port set.
   //   * hermes -> bluebubbles: the BlueBubbles REST API, served over tailnet HTTPS on :443.
   // Nothing reaches back the other way; metal and bluebubbles never initiate east-west.
+  // These ports are MIRRORED in machines.json (machines.*.services.*.port) — keep the two in sync.
   "grants": [
     {
       "src": ["tag:hermes"],

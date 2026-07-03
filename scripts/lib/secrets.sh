@@ -27,16 +27,22 @@
 #   yclaw-ts-oauth-client-id        Tailscale OAuth client id (mints per-node persistent tagged keys)
 #   yclaw-ts-oauth-client-secret    Tailscale OAuth client secret (mints per-node persistent tagged keys)
 
-YCLAW_STATE="${YCLAW_STATE:-$HOME/.yclaw/state}"
-YCLAW_KEYCHAIN="$HOME/Library/Keychains/yclaw.keychain-db"
-KC_SERVICE_KEYCHAIN_PASS="yclaw-keychain-password"
-KC_SERVICE="yclaw-agent-vault-master"
-KC_SERVICE_METAL_ADMIN="yclaw-metal-admin-pass"
-KC_SERVICE_BLUEBUBBLES_ADMIN="yclaw-bluebubbles-admin-pass"
-KC_SERVICE_BLUEBUBBLES_SERVER="yclaw-bluebubbles-server-pass"
-KC_SERVICE_TS_OAUTH_ID="yclaw-ts-oauth-client-id"
-KC_SERVICE_TS_OAUTH_SECRET="yclaw-ts-oauth-client-secret"
 SECRETS_LIB_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# machines.json (read via manifest.sh) is the source of truth for the state path + keychain service
+# names — this module derives them rather than hardcoding literals that could drift.
+# shellcheck source=scripts/lib/manifest.sh
+source "$(dirname "${BASH_SOURCE[0]}")/manifest.sh"
+
+YCLAW_STATE="${YCLAW_STATE:-$HOME/$(manifest_get '.host_paths.state_dir_rel')}"
+YCLAW_KEYCHAIN="$HOME/Library/Keychains/yclaw.keychain-db"
+KC_SERVICE_KEYCHAIN_PASS="$(manifest_get '.host_paths.keychain.login_unlock')"
+KC_SERVICE_AGENT_VAULT_MASTER="$(manifest_get '.host_paths.keychain.agent_vault_master')"
+KC_SERVICE_METAL_ADMIN="$(manifest_get '.machines.metal.admin_pass_keychain')"
+KC_SERVICE_BLUEBUBBLES_ADMIN="$(manifest_get '.machines.bluebubbles.admin_pass_keychain')"
+KC_SERVICE_BLUEBUBBLES_SERVER="$(manifest_get '.machines.bluebubbles.services.bluebubbles.password_keychain')"
+KC_SERVICE_TS_OAUTH_ID="$(manifest_get '.host_paths.keychain.ts_oauth_client_id')"
+KC_SERVICE_TS_OAUTH_SECRET="$(manifest_get '.host_paths.keychain.ts_oauth_client_secret')"
 
 _secrets_ask()  { gum input --password --prompt "  $1 ❯ "; }
 _secrets_note() { gum style --foreground 244 "  $*"; }
@@ -76,6 +82,26 @@ _yclaw_keychain_unlock() {
 # Call this AFTER the last keychain read.
 _yclaw_keychain_lock() {
   security lock-keychain "$YCLAW_KEYCHAIN"
+}
+
+# Unlock the yclaw keychain, read <service>'s password, then ALWAYS re-lock (even on failure).
+# Prints the value; dies if the item is missing.
+kc_read() {
+  local service="$1" val rc
+  _yclaw_keychain_unlock
+  val="$(security find-generic-password -a "$USER" -s "$service" -w "$YCLAW_KEYCHAIN" 2>/dev/null)" && rc=0 || rc=$?
+  _yclaw_keychain_lock
+  [ "$rc" -eq 0 ] || _secrets_fail "keychain item not found: $service (in $YCLAW_KEYCHAIN)"
+  printf '%s' "$val"
+}
+
+# True (0) if <service> exists in the yclaw keychain; always re-locks. No output.
+kc_has() {
+  local service="$1" rc
+  _yclaw_keychain_unlock
+  security find-generic-password -a "$USER" -s "$service" -w "$YCLAW_KEYCHAIN" >/dev/null 2>&1 && rc=0 || rc=$?
+  _yclaw_keychain_lock
+  return "$rc"
 }
 
 # Mint ONE persistent (non-ephemeral), single-use, pre-authorized, TAGGED tailnet auth key for $1
@@ -118,6 +144,47 @@ PY
   key="$(printf '%s' "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("key",""))')"
   [ "${key:0:6}" = "tskey-" ] || _secrets_fail "Tailscale key mint for $host did not return a tskey-… key."
   printf '%s' "$key"
+}
+
+# Build <host>'s sops plaintext (per nixos/secrets-manifest.json + the exported secret env) into
+# <plaintext-file>, then sops-encrypt it to <out-file> for <host>'s age recipient
+# (hosts/<host>/key.txt). Secret values are read from the environment (see collect_secrets).
+encrypt_host_bundle() {
+  local host="$1" plain="$2" out="$3"
+  local manifest="$SECRETS_LIB_REPO/nixos/secrets-manifest.json" pub
+  pub="$(age-keygen -y "$YCLAW_STATE/hosts/$host/key.txt")"
+  [ "${pub:0:4}" = "age1" ] || _secrets_fail "could not derive age public key for $host."
+  # Built in Python so secret values are written literally (no shell/YAML interpolation), and the
+  # YAML key paths stay byte-identical to what sops-nix navigates.
+  python3 - "$manifest" "$host" "$plain" <<'PY'
+import os, sys, json
+from collections import OrderedDict
+manifest = json.load(open(sys.argv[1]))
+host, out = sys.argv[2], sys.argv[3]
+e, catalog = os.environ, manifest["catalog"]
+groups = OrderedDict()
+for key in manifest["hosts"][host]["secrets"]:
+    top, leaf = key.split("/", 1)
+    groups.setdefault(top, []).append((leaf, catalog[key]))
+parts = []
+for top, leaves in groups.items():
+    parts.append(f"{top}:\n")
+    for leaf, spec in leaves:
+        if spec["kind"] == "scalar":
+            parts.append(f"  {leaf}: {json.dumps(e[spec['var']])}\n")
+        elif spec["kind"] == "perhost":
+            perhost_var = "{}_{}".format(spec["var"], host.upper())
+            parts.append(f"  {leaf}: {json.dumps(e[perhost_var])}\n")
+        else:
+            parts.append(f"  {leaf}: |\n")
+            for v in spec["vars"]:
+                parts.append(f"    {v}={e[v]}\n")
+open(out, "w").write("".join(parts))
+PY
+  # --input-type/--output-type yaml are REQUIRED: the mktemp file has no .yaml extension, so sops
+  # would otherwise wrap the document in a `data:` blob sops-nix cannot navigate (it extracts by key
+  # path). --config /dev/null ignores any ambient .sops.yaml — the explicit --age is authoritative.
+  sops --encrypt --config /dev/null --input-type yaml --output-type yaml --age "$pub" "$plain" > "$out"
 }
 
 # Prompt for the external API secrets, generate/reuse the age key + the dedicated-keychain
@@ -196,18 +263,18 @@ collect_secrets() {
     # mask a mint failure under `set -e` and silently export an empty key. A bare assignment lets
     # set -e abort on a failed mint (and _ts_mint_key itself _secrets_fails before returning empty).
     ts_authkey="$(_ts_mint_key "$host")"
-    export "TS_AUTHKEY_$(printf '%s' "$host" | tr a-z A-Z)=$ts_authkey"
+    export "TS_AUTHKEY_$(printf '%s' "$host" | tr '[:lower:]' '[:upper:]')=$ts_authkey"
     _secrets_ok "Minted persistent tag:$host auth key for $host (single-use, 24h redemption window)."
   done
 
   # Vault master password: generate once, persist in the dedicated yclaw keychain, reuse thereafter.
-  if AGENT_VAULT_MASTER_PASSWORD="$(security find-generic-password -a "$USER" -s "$KC_SERVICE" -w "$YCLAW_KEYCHAIN" 2>/dev/null)"; then
-    _secrets_note "Reusing vault master password from yclaw keychain ($KC_SERVICE)."
+  if AGENT_VAULT_MASTER_PASSWORD="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_AGENT_VAULT_MASTER" -w "$YCLAW_KEYCHAIN" 2>/dev/null)"; then
+    _secrets_note "Reusing vault master password from yclaw keychain ($KC_SERVICE_AGENT_VAULT_MASTER)."
   else
     AGENT_VAULT_MASTER_PASSWORD="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32)"
-    security add-generic-password -U -a "$USER" -s "$KC_SERVICE" \
+    security add-generic-password -U -a "$USER" -s "$KC_SERVICE_AGENT_VAULT_MASTER" \
       -l 'yclaw agent-vault master password' -w "$AGENT_VAULT_MASTER_PASSWORD" "$YCLAW_KEYCHAIN"
-    _secrets_ok "Generated vault master password → yclaw keychain ($KC_SERVICE)."
+    _secrets_ok "Generated vault master password → yclaw keychain ($KC_SERVICE_AGENT_VAULT_MASTER)."
   fi
 
   # metal admin password: generate once, persist in the dedicated yclaw keychain, reuse thereafter.
@@ -268,41 +335,7 @@ collect_secrets() {
     recipients="$recipients$host $pub"$'\n'
 
     plain="$(mktemp)"; trap 'rm -f "$plain"' EXIT
-    # Built in Python so secret values are written literally (no shell/YAML interpolation),
-    # and the YAML key paths stay byte-identical to what sops-nix navigates.
-    python3 - "$manifest" "$host" "$plain" <<'PY'
-import os, sys, json
-from collections import OrderedDict
-manifest = json.load(open(sys.argv[1]))
-host, out = sys.argv[2], sys.argv[3]
-e, catalog = os.environ, manifest["catalog"]
-groups = OrderedDict()
-for key in manifest["hosts"][host]["secrets"]:
-    top, leaf = key.split("/", 1)
-    groups.setdefault(top, []).append((leaf, catalog[key]))
-parts = []
-for top, leaves in groups.items():
-    parts.append(f"{top}:\n")
-    for leaf, spec in leaves:
-        if spec["kind"] == "scalar":
-            parts.append(f"  {leaf}: {json.dumps(e[spec['var']])}\n")
-        elif spec["kind"] == "perhost":
-            perhost_var = "{}_{}".format(spec["var"], host.upper())
-            parts.append(f"  {leaf}: {json.dumps(e[perhost_var])}\n")
-        else:
-            parts.append(f"  {leaf}: |\n")
-            for v in spec["vars"]:
-                parts.append(f"    {v}={e[v]}\n")
-open(out, "w").write("".join(parts))
-PY
-
-    # --input-type/--output-type yaml are REQUIRED: the mktemp file has no .yaml extension, so
-    # sops would otherwise treat it as binary and wrap the document in a `data:` blob that
-    # sops-nix cannot navigate (it extracts secrets by key path like tailscale/authkey).
-    # --config /dev/null ignores any ambient .sops.yaml (e.g. the repo's, when collect_secrets
-    # runs from the repo root): the explicit --age recipient is the single authoritative key.
-    sops --encrypt --config /dev/null --input-type yaml --output-type yaml --age "$pub" "$plain" \
-      > "$YCLAW_STATE/hosts/$host/secrets.sops.yaml"
+    encrypt_host_bundle "$host" "$plain" "$YCLAW_STATE/hosts/$host/secrets.sops.yaml"
     rm -f "$plain"; trap - EXIT
     _secrets_ok "Encrypted $host bundle → hosts/$host/secrets.sops.yaml"
   done

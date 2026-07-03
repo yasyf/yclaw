@@ -17,7 +17,6 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO/scripts/lib/secrets.sh"
-manifest="$REPO/nixos/secrets-manifest.json"
 node_config_dir="$HOME/.config/yclaw/vm-secrets"
 
 [ -f "$YCLAW_KEYCHAIN" ] || _secrets_fail "no yclaw keychain at $YCLAW_KEYCHAIN — run \`just bootstrap\` first."
@@ -37,36 +36,12 @@ export BLUEBUBBLES_PASSWORD
 _yclaw_keychain_lock
 
 # --- re-encrypt ONLY hermes's bundle (authkey + hermes/env) to hermes's age recipient -----------------
-# Mirrors scripts/lib/secrets.sh's per-host bundle builder, restricted to hermes (whose catalog entries
-# are all keychain-backed, so no API keys are needed).
+# encrypt_host_bundle (scripts/lib/secrets.sh) builds + encrypts hermes's bundle; hermes's catalog
+# entries are all keychain-backed, so no API keys are needed.
 age_key="$YCLAW_STATE/hosts/hermes/key.txt"
 [ -s "$age_key" ] || _secrets_fail "no hermes age key at $age_key."
-pub="$(age-keygen -y "$age_key")"
 plain="$(mktemp)"; trap 'rm -f "$plain"' EXIT
-python3 - "$manifest" hermes "$plain" <<'PY'
-import os, sys, json
-from collections import OrderedDict
-manifest = json.load(open(sys.argv[1])); host, out = sys.argv[2], sys.argv[3]
-e, catalog = os.environ, manifest["catalog"]
-groups = OrderedDict()
-for key in manifest["hosts"][host]["secrets"]:
-    top, leaf = key.split("/", 1); groups.setdefault(top, []).append((leaf, catalog[key]))
-parts = []
-for top, leaves in groups.items():
-    parts.append(f"{top}:\n")
-    for leaf, spec in leaves:
-        if spec["kind"] == "scalar":
-            parts.append(f"  {leaf}: {json.dumps(e[spec['var']])}\n")
-        elif spec["kind"] == "perhost":
-            parts.append(f"  {leaf}: {json.dumps(e['{}_{}'.format(spec['var'], host.upper())])}\n")
-        else:
-            parts.append(f"  {leaf}: |\n")
-            for v in spec["vars"]:
-                parts.append(f"    {v}={e[v]}\n")
-open(out, "w").write("".join(parts))
-PY
-sops --encrypt --config /dev/null --input-type yaml --output-type yaml --age "$pub" "$plain" \
-  > "$YCLAW_STATE/hosts/hermes/secrets.sops.yaml"
+encrypt_host_bundle hermes "$plain" "$YCLAW_STATE/hosts/hermes/secrets.sops.yaml"
 rm -f "$plain"; trap - EXIT
 
 # Verify the new bundle decrypts to the fresh authkey before we rely on it.

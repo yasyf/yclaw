@@ -1,0 +1,264 @@
+{
+  "_comment": "CANONICAL machines manifest — the single source of truth for the yclaw fleet's nodes, services, tailnet tags, virtiofs shares, keychain services, and host state paths. Consumed by THREE readers: (1) bash via jq (scripts/lib/manifest.sh: manifest_get / manifest_list), (2) nix via builtins.fromJSON, (3) the future yclaw Python CLI. Ports here MIRROR tailnet/policy.hujson (hermes->metal tcp:8000,8765,8317,14321,14322 and hermes->bluebubbles tcp:443) and darwin/metal.nix's pf anchor port set — keep the three in sync. Health kind=http is used ONLY for endpoints verified to answer an unauthenticated GET (omlx /v1/models, agent-vault /v1/mitm/ca.pem); every other port is kind=tcp (reachability only). Debloat label lists are per-node and copied VERBATIM from darwin/metal.nix and scripts/bluebubbles-setup.sh — bluebubbles is a deliberate SUBSET of metal, never merge them.",
+  "machines": {
+    "metal": {
+      "os": "macos",
+      "managed_by": "nix-darwin",
+      "tart_vm": "metal",
+      "tag": "tag:metal",
+      "ssh": { "transport": "tailscale", "user": "root" },
+      "admin_pass_keychain": "yclaw-metal-admin-pass",
+      "shares": ["metalsecrets", "agentvault", "hfhub", "mlxaudio", "cliproxy", "repo"],
+      "services": {
+        "omlx": {
+          "launchd": { "domain": "system", "label": "org.nixos.omlx" },
+          "port": 8000,
+          "health": { "kind": "http", "url": "http://metal:8000/v1/models" },
+          "logs": [
+            "/Users/admin/Library/Logs/omlx/omlx.log",
+            "/Users/admin/Library/Logs/omlx/omlx.error.log"
+          ]
+        },
+        "mlx-audio": {
+          "launchd": { "domain": "system", "label": "org.nixos.mlx-audio" },
+          "port": 8765,
+          "health": { "kind": "tcp", "host": "metal", "port": 8765 },
+          "logs": [
+            "/Users/admin/Library/Logs/mlx-audio/stt.log",
+            "/Users/admin/Library/Logs/mlx-audio/stt.error.log"
+          ]
+        },
+        "cliproxy": {
+          "launchd": { "domain": "system", "label": "org.nixos.cliproxy" },
+          "port": 8317,
+          "health": { "kind": "tcp", "host": "metal", "port": 8317 },
+          "logs": [
+            "/Users/admin/Library/Logs/cliproxy/proxy.log",
+            "/Users/admin/Library/Logs/cliproxy/proxy.error.log"
+          ]
+        },
+        "agent-vault": {
+          "launchd": { "domain": "system", "label": "org.nixos.agent-vault" },
+          "port": 14321,
+          "mitm_port": 14322,
+          "health": { "kind": "http", "url": "http://metal:14321/v1/mitm/ca.pem" },
+          "logs": [
+            "/Users/admin/Library/Logs/agent-vault/server.log",
+            "/Users/admin/Library/Logs/agent-vault/server.error.log"
+          ]
+        },
+        "agent-vault-provision": {
+          "launchd": { "domain": "system", "label": "org.nixos.agent-vault-provision" },
+          "oneshot": true,
+          "logs": [
+            "/Users/admin/Library/Logs/agent-vault/provision.log",
+            "/Users/admin/Library/Logs/agent-vault/provision.error.log"
+          ]
+        },
+        "metal-boot-setup": {
+          "launchd": { "domain": "system", "label": "org.nixos.metal-boot-setup" },
+          "oneshot": true,
+          "logs": [
+            "/var/log/metal-boot-setup.log",
+            "/var/log/metal-boot-setup.error.log"
+          ]
+        },
+        "metal-pf-refresh": {
+          "launchd": { "domain": "system", "label": "org.nixos.metal-pf-refresh" },
+          "oneshot": true,
+          "start_interval": 300,
+          "logs": [
+            "/var/log/metal-pf-refresh.log",
+            "/var/log/metal-pf-refresh.error.log"
+          ]
+        }
+      }
+    },
+    "hermes": {
+      "os": "nixos",
+      "managed_by": "nixos",
+      "tart_vm": "hermes",
+      "tag": "tag:hermes",
+      "ssh": { "transport": "tailscale", "user": "root" },
+      "admin_pass_keychain": null,
+      "shares": ["sops", "hermesstate", "repo"],
+      "services": {
+        "hermes-agent": { "systemd": "hermes-agent.service" },
+        "hermes-docker-proxy": { "systemd": "hermes-docker-proxy.service" },
+        "docker": { "systemd": "docker.service" },
+        "tailscaled": { "systemd": "tailscaled.service" }
+      }
+    },
+    "bluebubbles": {
+      "os": "macos",
+      "managed_by": "bluebubbles-setup.sh",
+      "tart_vm": "bluebubbles",
+      "tag": "tag:bluebubbles",
+      "ssh": { "transport": "tailscale", "user": "root" },
+      "admin_pass_keychain": "yclaw-bluebubbles-admin-pass",
+      "shares": [],
+      "services": {
+        "bluebubbles": {
+          "port": 1234,
+          "serve_port": 443,
+          "health": { "kind": "http", "url": "https://bluebubbles/api/v1/ping" },
+          "password_keychain": "yclaw-bluebubbles-server-pass",
+          "password_query_param": "password"
+        }
+      }
+    },
+    "host": {
+      "os": "macos",
+      "managed_by": "setup.sh",
+      "tart_vm": null,
+      "tag": null,
+      "ssh": null,
+      "admin_pass_keychain": null,
+      "shares": null,
+      "services": {
+        "tart-metal": {
+          "launchd": { "domain": "gui", "label": "com.yclaw.tart-metal" },
+          "logs": [
+            "~/Library/Logs/Tart/metal.log",
+            "~/Library/Logs/Tart/metal.error.log"
+          ]
+        },
+        "tart-hermes": {
+          "launchd": { "domain": "gui", "label": "com.yclaw.tart-hermes" },
+          "logs": [
+            "~/Library/Logs/Tart/hermes.log",
+            "~/Library/Logs/Tart/hermes.error.log"
+          ]
+        },
+        "tart-bluebubbles": {
+          "launchd": { "domain": "gui", "label": "com.yclaw.tart-bluebubbles" },
+          "logs": [
+            "~/Library/Logs/Tart/bluebubbles.log",
+            "~/Library/Logs/Tart/bluebubbles.error.log"
+          ]
+        }
+      }
+    }
+  },
+  "host_paths": {
+    "state_dir_rel": ".yclaw/state",
+    "node_config_dir_rel": ".config/yclaw/vm-secrets",
+    "state_subdirs_mounts": [
+      "hosts/hermes",
+      "hosts/metal",
+      "cli-proxy-api/auth",
+      "agent-vault",
+      "mlx-audio",
+      "hermes"
+    ],
+    "state_subdirs_wipe": [
+      "age",
+      "vm-secrets",
+      "hosts",
+      "agent-vault",
+      "cli-proxy-api",
+      "hermes",
+      "bluebubbles",
+      "mlx-audio"
+    ],
+    "keychain_generated_services": [
+      "yclaw-agent-vault-master",
+      "yclaw-metal-admin-pass",
+      "yclaw-bluebubbles-admin-pass",
+      "yclaw-bluebubbles-server-pass"
+    ],
+    "keychain": {
+      "login_unlock": "yclaw-keychain-password",
+      "agent_vault_master": "yclaw-agent-vault-master",
+      "ts_oauth_client_id": "yclaw-ts-oauth-client-id",
+      "ts_oauth_client_secret": "yclaw-ts-oauth-client-secret"
+    }
+  },
+  "debloat": {
+    "metal": {
+      "system": [
+        "com.apple.metadata.mds",
+        "com.apple.backupd",
+        "com.apple.backupd-helper",
+        "com.apple.modelmanagerd",
+        "com.apple.cloudd",
+        "com.apple.contextstored",
+        "com.apple.coreduetd",
+        "com.apple.ospredictiond",
+        "com.apple.locationd",
+        "com.apple.mediaremoted",
+        "com.apple.nfcd",
+        "com.apple.analyticsd",
+        "com.apple.audioanalyticsd",
+        "com.apple.wifianalyticsd",
+        "com.apple.ecosystemanalyticsd",
+        "com.apple.osanalytics.osanalyticshelper",
+        "com.apple.rtcreportingd",
+        "com.apple.dprivacyd",
+        "com.apple.triald.system",
+        "com.apple.SubmitDiagInfo",
+        "com.apple.rapportd",
+        "com.apple.icloud.searchpartyd",
+        "com.apple.icloud.findmydeviced"
+      ],
+      "gui": [
+        "com.apple.photoanalysisd",
+        "com.apple.mediaanalysisd",
+        "com.apple.generativeexperiencesd",
+        "com.apple.intelligenceplatformd",
+        "com.apple.knowledgeconstructiond",
+        "com.apple.cloudd",
+        "com.apple.bird",
+        "com.apple.commerce",
+        "com.apple.protectedcloudstorage.protectedcloudkeysyncing",
+        "com.apple.ContextStoreAgent",
+        "com.apple.assistantd",
+        "com.apple.Siri.agent",
+        "com.apple.siriactionsd",
+        "com.apple.siriinferenced",
+        "com.apple.siriknowledged",
+        "com.apple.sirittsd",
+        "com.apple.SiriTTSTrainingAgent",
+        "com.apple.parsecd",
+        "com.apple.suggestd",
+        "com.apple.proactived",
+        "com.apple.proactiveeventtrackerd",
+        "com.apple.geoanalyticsd",
+        "com.apple.inputanalyticsd",
+        "com.apple.gamed",
+        "com.apple.ScreenTimeAgent",
+        "com.apple.ScreenTimeSettingsAgent",
+        "com.apple.familycircled",
+        "com.apple.dprivacyd",
+        "com.apple.triald",
+        "com.apple.BiomeAgent",
+        "com.apple.biomesyncd",
+        "com.apple.AMPLibraryAgent"
+      ]
+    },
+    "bluebubbles": {
+      "system": [
+        "com.apple.metadata.mds",
+        "com.apple.backupd",
+        "com.apple.backupd-helper",
+        "com.apple.modelmanagerd",
+        "com.apple.analyticsd",
+        "com.apple.osanalytics.osanalyticshelper",
+        "com.apple.ecosystemanalyticsd",
+        "com.apple.rtcreportingd",
+        "com.apple.SubmitDiagInfo"
+      ],
+      "gui": [
+        "com.apple.generativeexperiencesd",
+        "com.apple.intelligenceplatformd",
+        "com.apple.assistantd",
+        "com.apple.Siri.agent",
+        "com.apple.photoanalysisd",
+        "com.apple.mediaanalysisd",
+        "com.apple.gamed",
+        "com.apple.ScreenTimeAgent",
+        "com.apple.familycircled"
+      ]
+    }
+  }
+}
