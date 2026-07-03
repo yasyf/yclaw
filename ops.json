@@ -1,0 +1,1 @@
+{"v":1,"lamport":1,"ops":[{"kind":"create_task","nonce":"1c8e295de60d68577e081219e92838a8","title":"Follow-up: rename aperture/static-key secret to cliproxy/api-key (needs re-encryption + state migration)","description":"","type":"task","priority":2,"branch":"","parent":"","labels":null}]}
