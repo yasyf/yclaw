@@ -1,0 +1,1 @@
+{"v":1,"lamport":1,"ops":[{"kind":"create_task","nonce":"7763c5ef13e24c019185f522c3814b67","title":"yclaw cleanup pass: dead-code deletion, machines.json + scripts/lib foundations, metal launchd conversion, guests/packer, docs","description":"","type":"task","priority":2,"branch":"","parent":"","labels":null}]}
