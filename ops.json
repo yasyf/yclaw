@@ -1,0 +1,1 @@
+{"v":1,"lamport":1,"ops":[{"kind":"create_task","nonce":"f5a8d9755bbd4b2fe291e0f5f9158ada","title":"Carry agent-vault AGENT_VAULT_HOME patch; rebase on any flake.lock bump of agent-vault-src; consider upstreaming","description":"","type":"task","priority":2,"branch":"","parent":"","labels":null}]}
