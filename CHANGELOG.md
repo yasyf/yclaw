@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Guest macOS slimming, encoded in provisioning so it survives image rebuilds. `metal`
+  (aggressive) disables ~55 non-essential launchd jobs in its `postActivation` — the Spotlight
+  `mds` daemon, Time Machine, photo/media analysis, Apple Intelligence, iCloud, Continuity,
+  Find My, Siri, Game Center, Screen Time, location, and the analytics / telemetry / experiment /
+  differential-privacy stack — across both the `system/` and the auto-login `gui/<uid>` launchd
+  domains, and pins `pmset` to never sleep. Domains were read off the host's own macOS 26
+  `/System/Library/Launch{Daemons,Agents}` (the guests share that base), not guessed; every call
+  is `|| true`. `bluebubbles` gets a deliberately narrow safe subset (`bluebubbles-setup.sh
+  debloat`, also run by `setup` / `reconfigure`) that never touches the Apple-ID / push /
+  iMessage / iCloud / Private-API stack. Local crash diagnostics (`ReportCrash`, `spindump`) and
+  automatic security updates stay on; only Apple's telemetry upload (`SubmitDiagInfo`) is cut.
+  `just validate` §8 asserts the overrides landed, omlx still serves, and crash logging is preserved.
 - `just onboard` (`scripts/onboard.sh`) — a guided TUI for the post-`bootstrap` human
   gates, run in a zellij session (tmux fallback). It surfaces the Tailscale SSH
   `action: check` re-auth URL the bootstrap probes used to swallow (a silent hang),

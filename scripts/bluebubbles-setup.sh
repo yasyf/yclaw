@@ -58,6 +58,44 @@ cmd_harden() {
   log "Screen Sharing disabled. (Re-run 'bluebubbles-setup.sh' with no args to re-enable it for maintenance.)"
 }
 
+# --- debloat: disable non-essential macOS services (SAFE subset — never the iMessage stack) ----
+# Run from BOTH setup and reconfigure (not harden alone, which redeploy skips), and standalone via
+# the `debloat` subcommand (needs no secrets). SIP is off here, so `bootout` (stop the running job
+# now) then `disable` (persist the override across reboot) both work. SYSTEM jobs (LaunchDaemons)
+# need sudo and the `system/` domain; the signed-in user's LaunchAgents live in `gui/<uid>/`. Every
+# call is best-effort (`|| true`): a label absent on this build is a harmless no-op. Domains match
+# darwin/metal.nix (same cirruslabs macos-tahoe base). This list is deliberately NARROW: it touches
+# NOTHING in the Apple-ID / push / iMessage / iCloud / Private-API path — apsd, imagent,
+# identityservicesd, akd, AppleAccountd, cloudd, bird, contextstored, IMDPersistenceAgent, soagent,
+# Messages, BlueBubbles all stay up. KEPT too: ReportCrash + spindump (local crash diagnostics) —
+# only the Apple telemetry SUBMISSION (SubmitDiagInfo) is cut.
+cmd_debloat() {
+  log "Debloat: disabling non-essential macOS services (iMessage/push/iCloud stack untouched) ..."
+  mdutil -i off -a >/dev/null 2>&1 || true
+  tmutil disable >/dev/null 2>&1 || true
+  local uid L
+  uid="$(id -u)"
+  for L in \
+    com.apple.metadata.mds \
+    com.apple.backupd com.apple.backupd-helper \
+    com.apple.modelmanagerd \
+    com.apple.analyticsd com.apple.osanalytics.osanalyticshelper \
+    com.apple.ecosystemanalyticsd com.apple.rtcreportingd com.apple.SubmitDiagInfo; do
+    sudo launchctl bootout "system/$L" >/dev/null 2>&1 || true
+    sudo launchctl disable "system/$L" >/dev/null 2>&1 || true
+  done
+  for L in \
+    com.apple.generativeexperiencesd com.apple.intelligenceplatformd \
+    com.apple.assistantd com.apple.Siri.agent \
+    com.apple.photoanalysisd com.apple.mediaanalysisd \
+    com.apple.gamed com.apple.ScreenTimeAgent com.apple.familycircled; do
+    launchctl bootout "gui/$uid/$L" >/dev/null 2>&1 || true
+    launchctl disable "gui/$uid/$L" >/dev/null 2>&1 || true
+  done
+  pmset -a powernap 0 womp 0 sleep 0 disksleep 0 >/dev/null 2>&1 || true
+  log "Debloat complete (safe subset; iMessage/push/iCloud/Private-API stack left intact)."
+}
+
 # --- best-effort TCC csreq blob --------------------------------------------------------------
 # Convert an app's code-signing requirement string into the binary blob TCC stores in its `csreq`
 # column, via the Security framework (ctypes — no PyObjC needed). Prints lowercase hex on success;
@@ -331,6 +369,9 @@ BlueBubbles server/helper may predate Tahoe support (server issue #776) — upda
 Tahoe-compatible server+helper version; the GUI grants alone cannot fix a non-injecting helper.
 FALLBACK
   fi
+
+  # Slim the OS once bring-up is settled (safe subset; never the iMessage stack).
+  cmd_debloat
 }
 
 # --- reconfigure: re-apply the idempotent config WITHOUT the Screen-Sharing dance -------------
@@ -349,7 +390,8 @@ cmd_reconfigure() {
   serve_tailnet
   install_rest_anchor
   install_vnc_anchor
-  log "Reconfigure complete — config, TCC grants, tailnet serve, and pf anchors re-applied (Screen Sharing untouched)."
+  cmd_debloat
+  log "Reconfigure complete — config, TCC grants, tailnet serve, pf anchors, and debloat re-applied (Screen Sharing untouched)."
 }
 
 # --- dispatch (BEFORE any env guard, so `harden` needs no secrets) ----------------------------
@@ -357,5 +399,6 @@ case "${1:-setup}" in
   setup)       cmd_setup ;;
   reconfigure) cmd_reconfigure ;;
   harden)      cmd_harden ;;
-  *) die "unknown subcommand: '$1' (expected: setup | reconfigure | harden)" ;;
+  debloat)     cmd_debloat ;;
+  *) die "unknown subcommand: '$1' (expected: setup | reconfigure | harden | debloat)" ;;
 esac

@@ -718,6 +718,55 @@ TRAMPOLINE
       /usr/sbin/spctl --global-enable >/dev/null 2>&1 || true
       /usr/bin/mdutil -a -i off >/dev/null 2>&1 || true
 
+      # --- Aggressive debloat: disable non-essential background daemons + agents -----------------
+      # metal is a headless MLX compute node: no Apple ID, no iCloud, no Time Machine target, no
+      # local user activity. The OS's indexing, media-analysis, Apple-Intelligence, telemetry,
+      # proactivity, Siri, location, Game-Center, Screen-Time, Continuity, Find-My and
+      # experiment/differential-privacy subsystems are pure overhead here — periodic CPU/RAM spikes
+      # plus attack surface. `launchctl disable` writes the persistent
+      # override db (survives reboot), so no bootSetupScript duplication is needed. System jobs
+      # (/System/Library/LaunchDaemons) are addressed in the `system/` domain; the auto-login admin
+      # session's per-user agents (/System/Library/LaunchAgents) in `gui/<uid>/`, mirroring the
+      # `for BIN in …` allowlist loop above. Domains were read off this build's own
+      # /System/Library/Launch{Daemons,Agents} (the guests share the cirruslabs macos-tahoe base),
+      # not guessed. All `|| true`: SIP is ON (a protected label is refused silently), the GUI
+      # session may be down on the very first activation, and a label absent on this build no-ops.
+      # KEPT ENABLED deliberately: ReportCrash + spindump (LOCAL crash diagnostics — only the Apple
+      # telemetry SUBMISSION is cut, via SubmitDiagInfo) and softwareupdated (security updates, set
+      # further down). tmutil kills Time Machine's auto-schedule; the backupd daemons are belt-and-braces.
+      ADMIN_UID=$(/usr/bin/id -u ${adminUser})
+      /usr/bin/tmutil disable >/dev/null 2>&1 || true
+      for L in \
+        com.apple.metadata.mds \
+        com.apple.backupd com.apple.backupd-helper \
+        com.apple.modelmanagerd \
+        com.apple.cloudd com.apple.contextstored \
+        com.apple.coreduetd com.apple.ospredictiond \
+        com.apple.locationd com.apple.mediaremoted com.apple.nfcd \
+        com.apple.analyticsd com.apple.audioanalyticsd com.apple.wifianalyticsd \
+        com.apple.ecosystemanalyticsd com.apple.osanalytics.osanalyticshelper \
+        com.apple.rtcreportingd com.apple.dprivacyd com.apple.triald.system com.apple.SubmitDiagInfo \
+        com.apple.rapportd com.apple.icloud.searchpartyd com.apple.icloud.findmydeviced; do
+        /bin/launchctl disable "system/$L" >/dev/null 2>&1 || true
+      done
+      for L in \
+        com.apple.photoanalysisd com.apple.mediaanalysisd \
+        com.apple.generativeexperiencesd com.apple.intelligenceplatformd com.apple.knowledgeconstructiond \
+        com.apple.cloudd com.apple.bird com.apple.commerce \
+        com.apple.protectedcloudstorage.protectedcloudkeysyncing com.apple.ContextStoreAgent \
+        com.apple.assistantd com.apple.Siri.agent com.apple.siriactionsd com.apple.siriinferenced \
+        com.apple.siriknowledged com.apple.sirittsd com.apple.SiriTTSTrainingAgent \
+        com.apple.parsecd com.apple.suggestd \
+        com.apple.proactived com.apple.proactiveeventtrackerd \
+        com.apple.geoanalyticsd com.apple.inputanalyticsd com.apple.gamed \
+        com.apple.ScreenTimeAgent com.apple.ScreenTimeSettingsAgent com.apple.familycircled \
+        com.apple.dprivacyd com.apple.triald com.apple.BiomeAgent com.apple.biomesyncd \
+        com.apple.AMPLibraryAgent; do
+        /bin/launchctl disable "gui/$ADMIN_UID/$L" >/dev/null 2>&1 || true
+      done
+      # Power: a headless always-on server must never nap or sleep (a sleeping VM drops the services).
+      /usr/bin/pmset -a powernap 0 womp 0 sleep 0 disksleep 0 >/dev/null 2>&1 || true
+
       # Reduce surface / noise: Siri, analytics submission, AirDrop, Handoff, Wi-Fi power. The
       # user-domain writes go through the admin login session (auto-login is on); best-effort and
       # re-applied each activation. The VM uses virtio ethernet, so -setairportpower usually

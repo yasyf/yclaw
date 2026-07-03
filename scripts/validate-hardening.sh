@@ -114,6 +114,30 @@ done
 if tailscale ssh root@hermes -- true 2>/dev/null; then ok "admin \`tailscale ssh root@hermes\` works (additive admin-ssh rule)"
 else no "\`tailscale ssh root@hermes\` failed (the additive admin-ssh rule)"; fi
 
+# --- 8. Guest slimming -------------------------------------------------------
+
+hdr "8. Guest slimming — non-essential daemons disabled, services + crash logs intact"
+mdis="$("${metal_ssh[@]}" launchctl print-disabled system 2>/dev/null || true)"
+for L in com.apple.metadata.mds com.apple.backupd com.apple.analyticsd com.apple.SubmitDiagInfo com.apple.modelmanagerd; do
+  if grep -qE "\"$L\"[[:space:]]*=>[[:space:]]*(disabled|true)" <<<"$mdis"; then ok "system daemon disabled: $L"
+  else no "system daemon NOT disabled: $L (debloat override missing)"; fi
+done
+madmin_uid="$("${metal_ssh[@]}" id -u admin 2>/dev/null || true)"
+mgui="$("${metal_ssh[@]}" launchctl print-disabled "gui/${madmin_uid}" 2>/dev/null || true)"
+for L in com.apple.photoanalysisd com.apple.generativeexperiencesd com.apple.assistantd com.apple.gamed; do
+  if grep -qE "\"$L\"[[:space:]]*=>[[:space:]]*(disabled|true)" <<<"$mgui"; then ok "user agent disabled: $L"
+  else no "user agent NOT disabled: $L (debloat override missing)"; fi
+done
+# Local crash diagnostics were intentionally KEPT — assert they are NOT disabled.
+for L in com.apple.ReportCrash.Root com.apple.spindump; do
+  if grep -qE "\"$L\"[[:space:]]*=>[[:space:]]*(disabled|true)" <<<"$mdis"; then no "$L is disabled (local crash diagnostics must stay ENABLED)"
+  else ok "$L left enabled (local crash diagnostics preserved)"; fi
+done
+# Slimming did not break the compute plane — omlx still answers over the tailnet.
+if "${hermes_ssh[@]}" curl -sf --max-time 8 http://metal:8000/v1/models >/dev/null 2>&1; then ok "omlx still serves after slimming (metal:8000)"
+else no "omlx does NOT serve after slimming (metal:8000)"; fi
+manual "bluebubbles slimming (deferred until it rejoins the tailnet): \`tailscale ssh admin@bluebubbles -- launchctl print-disabled system | grep -E 'metadata.mds|analyticsd'\` shows the debloat overrides, and iMessage send/receive still works."
+
 # --- summary -----------------------------------------------------------------
 
 hdr "Summary"
