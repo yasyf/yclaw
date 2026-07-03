@@ -1,0 +1,1 @@
+{"v":1,"lamport":1,"ops":[{"kind":"create_task","nonce":"a5775dc5818eb5d5752a8d0998dda4c5","title":"Build yclaw Python debug CLI (uv/click): ssh, wait, logs, status, doctor, restart, bounce, vm, secret","description":"","type":"task","priority":2,"branch":"","parent":"","labels":null}]}
