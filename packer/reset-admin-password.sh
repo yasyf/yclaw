@@ -10,3 +10,9 @@
 # password is the cirruslabs base's install default.
 set -euo pipefail
 sudo dscl . -passwd "/Users/${VM_ADMIN_USER}" "${VM_ADMIN_OLD_PASS}" "${VM_ADMIN_PASS}"
+
+# Disable auto-login on these headless (every-service-is-a-daemon) guests: its stale /etc/kcpassword
+# still holds the pre-rotation password, so each boot fires a FAILED login that accrues an account
+# lockout ("account locked, try again in N minutes"). Drop the password blob and the auto-login key.
+sudo rm -f /etc/kcpassword
+sudo defaults delete /Library/Preferences/com.apple.loginwindow autoLoginUser || true

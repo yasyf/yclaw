@@ -132,6 +132,13 @@ build {
     source      = "${path.root}/com.yclaw.metal-activate.plist"
     destination = "/tmp/com.yclaw.metal-activate.plist"
   }
+  # Ship the shared bounded-polling helpers the activator sources at runtime. metal-activate.sh
+  # runs before nix-darwin is activated (so the nix store's copy isn't on any path yet); baking
+  # wait.sh at a fixed image path lets the activator source it with zero dependencies.
+  provisioner "file" {
+    source      = "${path.root}/../scripts/lib/wait.sh"
+    destination = "/tmp/wait.sh"
+  }
   provisioner "shell" {
     inline = [
       "set -euo pipefail",
@@ -140,9 +147,11 @@ build {
       # arg; use a | delimiter since the store path contains slashes.
       "TOP=$(cat /etc/yclaw-metal-toplevel)",
       "sed -i '' \"s|@@METAL_TOPLEVEL@@|$TOP|g\" /tmp/metal-activate.sh",
+      "sudo install -d /usr/local/lib/yclaw",
+      "sudo install -m 644 /tmp/wait.sh /usr/local/lib/yclaw/wait.sh",
       "sudo install -m 755 /tmp/metal-activate.sh /usr/local/bin/metal-activate.sh",
       "sudo install -m 644 /tmp/com.yclaw.metal-activate.plist /Library/LaunchDaemons/com.yclaw.metal-activate.plist",
-      "rm -f /tmp/metal-activate.sh /tmp/com.yclaw.metal-activate.plist",
+      "rm -f /tmp/metal-activate.sh /tmp/com.yclaw.metal-activate.plist /tmp/wait.sh",
     ]
   }
 

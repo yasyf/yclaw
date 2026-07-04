@@ -11,14 +11,19 @@ set -uo pipefail
 exec >>/var/log/metal-activate.log 2>&1
 echo "=== metal-activate $(date) ==="
 
+# Bounded, fail-loud polling helpers, shipped into the image at /usr/local/lib/yclaw/wait.sh by
+# packer/metal.pkr.hcl (source: scripts/lib/wait.sh). Replaces this activator's hand-rolled loops.
+# shellcheck source=scripts/lib/wait.sh
+. /usr/local/lib/yclaw/wait.sh
+
 [ -f /var/lib/metal-activated ] && { echo "already activated; nothing to do"; exit 0; }
 
 key="/Volumes/My Shared Files/metalsecrets/key.txt"
-for _ in $(seq 1 120); do [ -s "$key" ] && break; echo "waiting for metalsecrets share ..."; sleep 5; done
-[ -s "$key" ] || { echo "FATAL: metalsecrets share ($key) not mounted after 600s"; exit 1; }
+wait_file_nonempty "$key" 600 || exit 1
 
-# The Determinate Nix daemon also starts at boot — wait for its socket before invoking nix.
-for _ in $(seq 1 60); do [ -S /nix/var/nix/daemon-socket/socket ] && break; sleep 2; done
+# The Determinate Nix daemon also starts at boot — wait for its socket before invoking nix. This is
+# a plain poll, not a mount-event wait: [ -S ] just tests the socket's existence.
+wait_for "nix daemon socket" 60 2 test -S /nix/var/nix/daemon-socket/socket
 # LaunchDaemons run with a minimal env (no HOME/USER), and nix-daemon.sh references $HOME — which
 # `set -u` would abort on. Root's home is /var/root on macOS.
 export HOME="${HOME:-/var/root}" USER="${USER:-root}"
@@ -50,12 +55,12 @@ done
 [ -n "$activated" ] || echo "metal-activate: darwin-rebuild activate did not succeed after 5 attempts"
 
 # Success = metal actually joined the tailnet (the real criterion, not the activate exit code).
-joined=""
-for _ in $(seq 1 60); do
-  if /opt/homebrew/bin/tailscale status --json 2>/dev/null | grep -q '"BackendState":[[:space:]]*"Running"'; then joined=1; break; fi
-  sleep 5
-done
-if [ -n "$joined" ]; then
+# wait_for runs a simple command, so wrap the status|grep pipeline in a helper it can poll.
+# shellcheck disable=SC2329  # invoked indirectly, as wait_for's polled command
+_metal_tailnet_running() {
+  /opt/homebrew/bin/tailscale status --json 2>/dev/null | grep -q '"BackendState":[[:space:]]*"Running"'
+}
+if wait_for "tailnet join (BackendState=Running)" 60 5 _metal_tailnet_running; then
   mkdir -p /var/lib && touch /var/lib/metal-activated
   echo "metal-activate: activated and joined the tailnet"
   exit 0
