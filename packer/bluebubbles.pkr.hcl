@@ -48,9 +48,11 @@ build {
   sources = ["source.tart-cli.bluebubbles"]
 
   # Reset the install-default admin password to the per-VM password (shared with metal).
+  # VM_AUTOLOGIN=fresh: BlueBubbles.app/Messages.app need a logged-in GUI session every boot,
+  # so auto-login is re-established with the rotated password (vs metal's drop).
   provisioner "shell" {
     script           = "${path.root}/reset-admin-password.sh"
-    environment_vars = ["VM_ADMIN_USER=${var.vm_admin_user}", "VM_ADMIN_OLD_PASS=${var.install_default_admin_password}", "VM_ADMIN_PASS=${var.vm_admin_pass}"]
+    environment_vars = ["VM_ADMIN_USER=${var.vm_admin_user}", "VM_ADMIN_OLD_PASS=${var.install_default_admin_password}", "VM_ADMIN_PASS=${var.vm_admin_pass}", "VM_AUTOLOGIN=fresh"]
   }
 
   # Install Homebrew, then the OSS Tailscale build (the App Store build does NOT

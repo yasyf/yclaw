@@ -59,8 +59,9 @@ cmd_harden() {
 }
 
 # --- debloat: disable non-essential macOS services (SAFE subset — never the iMessage stack) ----
-# Run from BOTH setup and reconfigure (not harden alone, which redeploy skips), and standalone via
-# the `debloat` subcommand (needs no secrets). SIP is off here, so `bootout` (stop the running job
+# Run from BOTH setup and reconfigure (not harden alone, which redeploy skips), and via the
+# `debloat` subcommand — always piped through guest_pipe, whose prelude provides the label lists
+# (a bare on-guest run aborts loud on the unset vars). SIP is off here, so `bootout` (stop the running job
 # now) then `disable` (persist the override across reboot) both work. SYSTEM jobs (LaunchDaemons)
 # need sudo and the `system/` domain; the signed-in user's LaunchAgents live in `gui/<uid>/`. Every
 # call is best-effort (`|| true`): a label absent on this build is a harmless no-op. The label lists
@@ -172,12 +173,17 @@ grant_tcc() {
 }
 
 # --- BlueBubbles REST health ------------------------------------------------------------------
-# Poll the local REST API (30 attempts, 2s apart) until BlueBubbles answers 2xx on ping, via the
-# piped-in wait.sh wait_http_ok. Conservative: a never-2xx run returns wait_http_ok's non-zero (a
-# non-fatal failure to the caller) so setup falls back rather than disabling VNC prematurely.
+# Poll the local REST API (30 attempts, 2s apart) until BlueBubbles answers 2xx on ping AND
+# server/info reports the Private-API helper connected. Auto-harden (disabling Screen Sharing —
+# the human recovery channel) must gate on helper injection actually working, not just the server
+# being up: hardening a helper-less install locks the human out in exactly the state the VNC
+# channel exists to fix. Conservative: a never-healthy run returns non-zero (non-fatal to the
+# caller) so setup falls back rather than disabling VNC prematurely.
 bb_healthy() {
   local pw="$1"
-  wait_http_ok "http://localhost:${BB_PORT}/api/v1/ping?password=${pw}" 30 2
+  wait_http_ok "http://localhost:${BB_PORT}/api/v1/ping?password=${pw}" 30 2 || return 1
+  wait_for "BlueBubbles Private-API helper connected" 30 2 /bin/sh -c \
+    "curl -fsS --max-time 10 'http://localhost:${BB_PORT}/api/v1/server/info?password=${pw}' 2>/dev/null | grep -qiE '\"helper_connected\"[[:space:]]*:[[:space:]]*true'"
 }
 
 # --- shared idempotent config steps (re-applied by both `setup` and `reconfigure`) ------------

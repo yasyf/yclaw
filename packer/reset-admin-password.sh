@@ -11,8 +11,23 @@
 set -euo pipefail
 sudo dscl . -passwd "/Users/${VM_ADMIN_USER}" "${VM_ADMIN_OLD_PASS}" "${VM_ADMIN_PASS}"
 
-# Disable auto-login on these headless (every-service-is-a-daemon) guests: its stale /etc/kcpassword
-# still holds the pre-rotation password, so each boot fires a FAILED login that accrues an account
-# lockout ("account locked, try again in N minutes"). Drop the password blob and the auto-login key.
-sudo rm -f /etc/kcpassword
-sudo defaults delete /Library/Preferences/com.apple.loginwindow autoLoginUser || true
+# The base image's /etc/kcpassword still encodes the PRE-rotation password after the dscl reset,
+# so every boot fires a FAILED auto-login that accrues an account lockout ("account locked, try
+# again in N minutes"). What replaces it is per-node (VM_AUTOLOGIN, required):
+#   drop  — metal: headless, every service is a system daemon; no GUI session needed. Remove the
+#           blob and the auto-login key entirely.
+#   fresh — bluebubbles: BlueBubbles.app + Messages.app need a logged-in GUI session at every
+#           boot; re-establish auto-login with the NEW password via sysadminctl.
+case "${VM_AUTOLOGIN:?set VM_AUTOLOGIN=drop|fresh}" in
+  drop)
+    sudo rm -f /etc/kcpassword
+    sudo defaults delete /Library/Preferences/com.apple.loginwindow autoLoginUser || true
+    ;;
+  fresh)
+    sudo sysadminctl -autologin set -userName "${VM_ADMIN_USER}" -password "${VM_ADMIN_PASS}"
+    ;;
+  *)
+    echo "reset-admin-password: unknown VM_AUTOLOGIN='${VM_AUTOLOGIN}' (expected drop|fresh)" >&2
+    exit 1
+    ;;
+esac
