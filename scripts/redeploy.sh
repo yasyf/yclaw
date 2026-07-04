@@ -41,7 +41,9 @@ redeploy_host() {
 
 redeploy_metal() {
   log "Redeploying metal (darwin-rebuild switch via metal-redeploy) ..."
-  ts_run root@metal metal-redeploy
+  # Absolute store path: root's tailscale-ssh PATH has no nix dirs (same rule as the
+  # metal-mint-hermes-token call in bootstrap.sh).
+  ts_run root@metal /run/current-system/sw/bin/metal-redeploy
 }
 
 redeploy_hermes() {
