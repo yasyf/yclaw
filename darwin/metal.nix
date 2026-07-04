@@ -844,7 +844,15 @@ TRAMPOLINE
       # `tailscale status` answering is deliberately weaker than wait_tailscale_running (which
       # requires BackendState=Running) — a fresh logged-out node must proceed to `tailscale up`.
       ${waitLib}
-      /opt/homebrew/bin/tailscaled install-system-daemon >/dev/null 2>&1 || true
+      # FIRST-INSTALL ONLY. `install-system-daemon` TERMINATES a running tailscaled and its
+      # re-load silently fails on this base (observed live 2026-07-03: log ends at "got signal
+      # terminated", node offline until the next boot's RunAtLoad) — so running it on every
+      # activation cut the tailnet, and with it the only admin path, on every `metal-redeploy`.
+      if [ ! -f /Library/LaunchDaemons/com.tailscale.tailscaled.plist ]; then
+        /opt/homebrew/bin/tailscaled install-system-daemon \
+          || echo "metal: ERROR tailscaled install-system-daemon failed" >&2
+        /bin/launchctl bootstrap system /Library/LaunchDaemons/com.tailscale.tailscaled.plist 2>/dev/null || true
+      fi
       wait_for "tailscaled answering" 30 2 /bin/sh -c '/opt/homebrew/bin/tailscale status >/dev/null 2>&1' || true
       # Ensure BOTH the tailnet join and the SSH server, idempotently. Gate on the backend actually
       # being Running (joined) — NOT on `tailscale status` succeeding, which returns 0 even when the
