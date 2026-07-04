@@ -218,6 +218,33 @@ restic restore latest --target ~/.yclaw/state
 just setup
 ```
 
+## Script library and manifest
+
+Every `just` recipe stays thin; the logic lives in `scripts/`, built on the
+shared library in `scripts/lib/`:
+
+- `common.sh` — logging (`log`/`warn`/`die`), the `need` tool preflight, the
+  build-mirror rsync.
+- `manifest.sh` — `manifest_get` / `manifest_list` / `manifest_has` over
+  `machines.json`, the canonical fleet manifest (machines, services, ports, log
+  paths, shares, keychain names, debloat lists). Change a fleet fact there, not
+  in a script.
+- `wait.sh` — the one blessed set of bounded, fail-loud polling helpers. It is
+  self-contained on purpose: host scripts source it, `darwin/metal.nix` embeds
+  it into the launchd wrappers, packer ships it into the image, and `guest_pipe`
+  pipes it into guests.
+- `ssh.sh` — `ts_run` (exactly one command string per `tailscale ssh`) and
+  `guest_pipe` (ships `wait.sh` + `pf.sh` + a manifest prelude + secret env to a
+  guest over stdin, so secrets never hit argv).
+- `launchd.sh` — `bootout_drain` and the runner reload helpers.
+- `pf.sh` — `install_pf_anchor`, targeted `pfctl -a <name> -f` loads only
+  (a full `/etc/pf.conf` reload flushes the vmnet NAT anchors the VMs need).
+- `secrets.sh` — the keychain and per-host sops-bundle module.
+
+For day-to-day poking, the `yclaw` CLI wraps the same manifest:
+`uv run yclaw status` is the quick fleet check, and `uv run yclaw doctor`
+adds the hardening probes.
+
 ## Redeploy
 
 `just redeploy [node]` (`scripts/redeploy.sh <host|metal|hermes|bluebubbles|all>`,
@@ -247,6 +274,28 @@ human input. One path per node:
 > SEP-wrapped keychain. The workable backup — identity-pin the guest (`machineIdentifier`
 > + NVRAM/`auxiliaryStorage` + `hardwareModel`) and snapshot the whole disk on the same
 > host — is a deferred follow-up.
+
+### Verifying a metal change (reboot gate)
+
+metal's daemons only prove themselves across a cold boot — the /nix mount race,
+the virtiofs automount, and the sops decrypt all happen at boot, not at
+`darwin-rebuild switch`. Gate any change to metal's boot path on this battery:
+
+1. `just redeploy metal`, then confirm the node stays online:
+   `uv run yclaw status metal`.
+2. Reboot the guest: `tailscale ssh root@metal -- reboot`. Expect it back on
+   the tailnet in ~25 s (`uv run yclaw wait ssh metal`).
+3. Run the daemon battery on the rebooted guest:
+   - every `org.nixos.*` daemon is running: `launchctl print system/org.nixos.omlx`
+     (and the rest of the labels in `machines.json`);
+   - the provision oneshot's last exit was 0;
+   - agent-vault answers: `curl -fs http://127.0.0.1:14321/health` (from the
+     guest) — or `uv run yclaw status metal` from the host, which probes every
+     service's manifest health check;
+   - the mint helper works: `tailscale ssh root@metal --
+     /run/current-system/sw/bin/metal-mint-hermes-token` returns a token.
+4. Repeat steps 2–3 for a **second** reboot before deleting any boot-path
+   mechanism (a wait, a guard, a KeepAlive) — one clean boot can be luck.
 
 ## Operator actions not automated
 

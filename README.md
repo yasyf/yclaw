@@ -15,7 +15,7 @@ just onboard     # TUI for the one-time human gates, then validate + smoke
 
 <img src="docs/assets/demo.png" alt="Terminal running 'just --list' — yclaw's bootstrap, onboard, validate, and teardown recipes" width="700">
 
-`just bootstrap` preflights the host tools, mints per-host age keys, encrypts each guest's secrets, builds the macOS and Linux images, boots the four nodes, and stops at the handful of gates it can't script — the iMessage 2FA, the Codex/Gemini logins, and the `agent-vault` Google OAuth. First boot is long: it pulls the base images and the model weights. Set up an Apple Silicon Mac and a Tailscale OAuth client first — [docs/DEPLOY.md](docs/DEPLOY.md) has the prerequisites and the full walkthrough.
+`just bootstrap` preflights the host tools, mints per-host age keys, encrypts each guest's secrets, builds the macOS and Linux images, boots the three guests, and stops at the handful of gates it can't script — the iMessage 2FA, the Codex/Gemini logins, and the `agent-vault` Google OAuth. First boot is long: it pulls the base images and the model weights. Set up an Apple Silicon Mac and a Tailscale OAuth client first — [docs/DEPLOY.md](docs/DEPLOY.md) has the prerequisites and the full walkthrough.
 
 Driving with an agent? Paste this:
 
@@ -68,7 +68,26 @@ Three nodes on your tailnet, reached by Tailscale MagicDNS names:
 - **bluebubbles** — a separate macOS guest that bridges iMessage. Holds no credentials.
 - **hermes** — the Linux gateway that runs `hermes-agent` in a Docker sandbox. Holds no API credentials and reaches the internet only through `agent-vault` on `metal`; its agent state is backed up off-VM.
 
-Real secrets never reach the agent — `agent-vault` injects the API keys and OAuth bearers on the wire. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the model plane and the credential-custody model in full.
+Real secrets never reach the agent — `agent-vault` injects the API keys and OAuth bearers on the wire. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the model plane and the credential-custody model in full. `machines.json` at the repo root is the single manifest of nodes, services, ports, and log paths, read by the bash scripts, by Nix, and by the debug CLI below.
+
+## Poke at the fleet
+
+`yclaw` is the repo's debug CLI (Python, run with `uv run yclaw ...` from the repo root):
+
+```bash
+uv run yclaw status                    # tailnet + service + health for every node
+uv run yclaw logs metal cliproxy -f    # follow a service's logs
+uv run yclaw ssh hermes systemctl status hermes-agent
+```
+
+| Command | Does |
+|---------|------|
+| `status` / `doctor` | Fleet health; `doctor` adds the hardening checks (`--live` probes the credential plane) |
+| `ssh` / `logs` / `wait` | Run a command, tail logs, block until an endpoint is up |
+| `restart` / `bounce` | Kick a service in place, or fully unload/reload its launchd plist |
+| `vm` / `secret` | Manage the Tart guests pre-tailnet; read keychain secrets and sops bundles |
+
+Exit codes are scriptable: 0 clean, 1 FAIL, 2 usage, 4 Tailscale check-wall, 5 timeout. `uv run yclaw --help` has the rest.
 
 ## Hardware
 

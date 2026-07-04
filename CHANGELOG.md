@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `machines.json` — the canonical fleet manifest at the repo root: machines, services,
+  launchd labels, ports, health endpoints, log paths, virtiofs shares, keychain service
+  names, host state paths, and the per-node debloat lists. Three readers consume it so a
+  fleet fact is stated once: bash (`scripts/lib/manifest.sh`, jq with a fail-loud
+  missing-key error), Nix (`darwin/metal.nix` via `builtins.fromJSON` — the pf anchor's
+  port set and the debloat disable loops derive from it), and the `yclaw` Python CLI
+  (`yclaw/manifest.py`). The ports mirror `tailnet/policy.hujson` by hand.
+- `scripts/lib/` — the shared bash library (bash 3.2, functions-only):
+  `common.sh` (logging, `need` preflight, build-mirror rsync), `manifest.sh`,
+  `wait.sh` (the ONE blessed bounded-wait helper set — self-contained by design, so it is
+  sourced on the host, embedded verbatim into the nix launchd wrappers, shipped into the
+  metal image at `/usr/local/lib/yclaw/wait.sh`, and piped into guests), `launchd.sh`
+  (`bootout_drain`), `pf.sh` (`install_pf_anchor`, targeted `pfctl -a <name> -f` loads
+  only), `ssh.sh` (`ts_run` — exactly one command string per `tailscale ssh` — and
+  `guest_pipe`, which ships wait.sh + pf.sh + a manifest prelude + secret env to a guest
+  over stdin so secrets never hit argv), and `secrets.sh`. Every consumer script is
+  refactored onto it.
+- The `yclaw` debug CLI — a Python package (uv, click, anyio; flat at the repo root;
+  139 tests) run as `uv run yclaw ...`: `ssh`, `wait` (http/port/service/share/ssh),
+  `logs`, `status`, `doctor` (`--live` adds the credential-plane checks), `restart`,
+  `bounce`, `vm` (list/ip/ssh/console), and `secret` (list/read/sops), all driven by
+  `machines.json`. `yclaw/remote.py` is the sole tailscale-ssh chokepoint: one command
+  string per call, Tailscale check-wall detection (exit 4 with the approval URL),
+  anyio-bounded timeouts, and a per-host ssh concurrency limit. Exit codes: 0 clean,
+  1 FAIL, 2 usage, 4 check-wall, 5 timeout.
+- Packer first-boot hardening: `com.yclaw.metal-activate` self-retries until success
+  (`KeepAlive.SuccessfulExit = false`), and the activator sources the shared wait lib
+  instead of hand-rolled loops.
 - Guest macOS slimming, encoded in provisioning so it survives image rebuilds. `metal`
   (aggressive) disables ~55 non-essential launchd jobs in its `postActivation` — the Spotlight
   `mds` daemon, Time Machine, photo/media analysis, Apple Intelligence, iCloud, Continuity,
@@ -69,6 +97,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the tailnet over the Tailscale API. The next `just bootstrap` regenerates the rest.
 
 ### Changed
+- metal's launchd daemons are converted to `/bin/wait4path` + the shared wait lib.
+  wait4path (the primitive nix-darwin's own `nix-daemon` plist uses) guards the late
+  `/nix` APFS mount so no daemon fast-fails into launchd's penalty box at cold boot; the
+  hand-rolled waitNix trampoline is deleted after three clean cold-boot gates (~25 s from
+  power-on to the node answering on the tailnet). virtiofs sub-paths, secrets, and sockets
+  keep the bounded `wait.sh` waits (wait4path wakes only on mount events). The oneshots
+  (provision, boot-setup, pf-refresh) use `KeepAlive.SuccessfulExit = false` so they
+  relaunch until they exit 0; `ThrottleInterval` stays at the 10 s default.
+- `HOME` is always the real user home; no daemon overrides it to a share anymore.
+  agent-vault takes its state root from `AGENT_VAULT_HOME` (a state-dir override added by
+  `pkgs/agent-vault-state-dir.patch` — same on-disk layout, zero data migration), so the
+  `agentvault` virtiofs share is a state directory, not an identity.
+- `tailnet/policy.hujson`'s SSH rule is `action: accept` (applied live): check-mode
+  (`action: check`) walls silently hang every scripted `tailscale ssh`, which is the
+  fleet's only management path.
+- The justfile is thinned to orchestration entrypoints: `destroy`, `nuke`, and `smoke`
+  moved to `scripts/{destroy,nuke,smoke}.sh` on the shared lib.
+- `bluebubbles-setup.sh` loads its pf anchors through the shared `install_pf_anchor` —
+  targeted `pfctl -a <name> -f` only, never a full `/etc/pf.conf` reload (which flushes
+  the vmnet NAT anchors the VMs need).
+- Guest auto-login is per-node in the packer builds (`VM_AUTOLOGIN`, required): `metal`
+  drops the kcpassword blob and the auto-login key entirely (headless — every service is
+  a system daemon), while `bluebubbles` re-establishes auto-login fresh via `sysadminctl`
+  (BlueBubbles.app and Messages.app need a logged-in GUI session). The base image's stale
+  kcpassword encoded the pre-rotation password, so every boot fired a failed auto-login
+  that accrued account lockouts.
 - Tailnet nodes are now **persistent** (non-ephemeral), so the always-on stack survives a
   host sleep, reboot, or network blip instead of being stranded off the tailnet. Previously
   `_ts_mint_key` (`scripts/lib/secrets.sh`) minted `ephemeral` auth keys; Tailscale reaps an
@@ -85,7 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Lower iMessage reply latency. hermes now calls metal's model upstreams directly
   (cliproxy `:8317`, omlx `:8000`) instead of routing through the hosted Aperture
   node, removing a ~0.5 s WAN round-trip per call; cliproxy's `:8317` is `pf`-gated to
-  hermes + the host, so hermes reaches it with no bearer of its own.
+  hermes + the host, and hermes presents cliproxy's own static bearer (see Fixed).
   Reasoning effort drops from `medium` to `low` (replies are sent only after the full
   completion, so reasoning time dominates perceived latency). The hermes-agent
   systemd unit gains `TimeoutStopSec=210s` so a graceful drain is not SIGKILLed
@@ -127,6 +181,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The end-of-bootstrap gate instructions pass `--no-browser` to the `cli-proxy-api`
   Codex/Gemini logins, so the OAuth consent can be approved in any browser and the code
   pasted back — no SSH tunnel to `metal` required.
+
+### Fixed
+- hermes model-plane 401s. cliproxy **enforces** its inbound API-key allowlist on `:8317`
+  (verified: a bearerless call 401s even on metal's loopback), but hermes's model plane
+  was configured with no bearer per "the tailnet is the auth". The gpt-5.5 primary and
+  the gemini fallback now carry `key_env = "APERTURE_STATIC_KEY"` (the sops name is
+  historical: it is cliproxy's own allowlist entry, not an Aperture credential), so
+  hermes presents the bearer itself.
+- `tailscaled install-system-daemon` now runs only on the FIRST install.
+  `install-system-daemon` terminates a running tailscaled and its reload silently fails,
+  so metal's boot-setup oneshot was cutting the node off the tailnet on every redeploy.
+- agent-vault no longer crash-loops on a stale pidfile. The pidfile lives on the
+  persistent `agentvault` share, so it survives reboots; a PID-reuse match made the
+  broker refuse to start ("already running") forever. The wrapper clears it before exec —
+  launchd is the single-instance supervisor.
+- `metal-redeploy` is invoked by its absolute store path over `tailscale ssh` — root's
+  remote login shell has no nix directories on `PATH`, so the bare name was "command not
+  found".
+- `deploy-vm.sh` drains the launchd bootout before re-bootstrapping the runner.
+  `bootout` is async; bootstrapping the same label while it is still stopping races
+  launchd into "5: Input/output error" (`bootout_drain` in `scripts/lib/launchd.sh`).
+- `manifest.sh` fails loud with an explicit error when `jq` is missing or a queried key
+  is absent, instead of emitting an empty string a consumer would happily interpolate.
 
 ### Removed
 - The Aperture/`ai` model-routing deploy path. `nixos/ai.nix`, the `just deploy-ai`
@@ -193,9 +270,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agent-vault proxy token (minted from `metal` at bootstrap) so brokered upstream
   calls are actually injected instead of returning 407; the token only authorizes
   injection and cannot read raw keys. Instance-wide agent-vault proxy
-  rate/concurrency limits are set and locked. The model plane carries no per-caller
-  bearer at all: `metal`'s cliproxy `:8317` is reachable only by `hermes` + the host
-  (the `pf` gate below), so "the tailnet is the auth" and `HERMES_CLIPROXY_KEY` is gone.
+  rate/concurrency limits are set and locked. On the model plane, `metal`'s cliproxy
+  `:8317` is both `pf`-gated to `hermes` + the host (the gate below) and enforces its
+  own inbound static bearer, which `hermes` presents via `key_env` (see Fixed);
+  the retired per-caller `HERMES_CLIPROXY_KEY` is gone.
 - **Defense-in-depth hardening.** `metal`'s boot-time `pf` gate fails loud (and
   non-zero) instead of silently leaving the credential services exposed if `pf` can't
   enable; the `hermes` code-exec containers run under the gVisor (`runsc`) runtime;

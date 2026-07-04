@@ -8,7 +8,19 @@ never holds a credential.
 ```
 yclaw/
 ├── .claude/          # Claude Code settings and guard hooks
-├── docs/             # Project assets (logo, banner, social card) and any docs
+├── darwin/           # nix-darwin config for the metal guest (launchd daemons, pf anchor)
+├── docs/             # DEPLOY.md, ARCHITECTURE.md, project assets
+├── nixos/            # NixOS config for the hermes guest + models/secrets manifests
+├── packer/           # macOS guest image builds (metal, bluebubbles) + first-boot activator
+├── pkgs/             # Nix packages and patches (agent-vault, cli-proxy-api)
+├── scripts/          # Host-side orchestration (bootstrap, deploy, destroy, smoke, ...)
+│   └── lib/          # Shared bash library: common, manifest, wait, launchd, pf, ssh, secrets
+├── tailnet/          # Tailnet ACL reference (policy.hujson)
+├── tests/            # pytest suite for the yclaw CLI
+├── yclaw/            # The yclaw debug CLI (Python, flat package)
+├── machines.json     # Canonical fleet manifest: machines, services, ports, logs, debloat
+├── justfile          # Thin recipes; non-trivial logic lives in scripts/
+├── pyproject.toml    # The yclaw Python package (uv)
 ├── AGENTS.md         # This file — shared conventions
 ├── CLAUDE.md         # Claude-only rules; embeds AGENTS.md
 ├── STYLEGUIDE.md     # Concrete style rules
@@ -84,6 +96,24 @@ Reach for your **LSP** when the answer must be *exhaustive* or *structural*:
 
 Reach for **`Grep`** only for material neither tool indexes: literal *content* of strings/comments/docstrings (error messages, hard-coded URLs, env-var names, TODOs) and non-source files (logs, JSON, YAML, fixtures). File-pattern questions ("all `*.json` under `src/`") go through `Glob`.
 
+## Debug CLI
+
+`yclaw` is the fleet debug CLI, invoked as `uv run yclaw ...` from the repo root. `machines.json` is its source of truth for machines, services, ports, and log paths — never hardcode a node fact the manifest already carries. All remote execution funnels through `yclaw/remote.py` (one command string per `tailscale ssh`, check-wall detection, bounded timeouts).
+
+| Command | Does |
+|---------|------|
+| `yclaw status [machine]` | Tailnet, service, health, and share state for the fleet |
+| `yclaw doctor [machine] [--live]` | Status plus host-vantage hardening checks |
+| `yclaw ssh <machine> [cmd...]` | Shell or one-shot command over `tailscale ssh` |
+| `yclaw logs <machine> [service] [-f]` | Tail a service's logs; no service lists what's available |
+| `yclaw wait <http\|port\|service\|share\|ssh> ...` | Block until an endpoint or service is up |
+| `yclaw restart <machine> <service>` | Kick a service in place, then wait for its health check |
+| `yclaw bounce <machine> <service>` | Full launchd unload/reload (darwin only) |
+| `yclaw vm <list\|ip\|ssh\|console> ...` | Manage the Tart guests pre-tailnet |
+| `yclaw secret <list\|read\|sops> ...` | Read keychain secrets, decrypt per-host sops bundles |
+
+Exit codes: 0 clean, 1 FAIL, 2 usage, 4 Tailscale check-wall (the approval URL is printed), 5 timeout.
+
 ## Style
 
 @STYLEGUIDE.md
@@ -116,7 +146,16 @@ Reach for **`Grep`** only for material neither tool indexes: literal *content* o
 
 **Mechanical linting.** CI and hooks handle formatting and import order; fix only what needs human judgment. When reviewing code, don't flag mechanical lint violations (line length, whitespace, import order, trailing commas).
 
-**Testing.** No test suite exists yet. When the first code and stack land, add the suite under `tests/` and record the exact command that runs it here.
+**Testing.** The Python suite lives in `tests/` and covers the `yclaw` CLI. The exact commands:
+
+```sh
+uv sync --extra dev    # once, to install pytest + ruff
+uv run pytest          # the test suite
+uv run ruff check .    # lint
+uvx ty check yclaw     # typecheck (diagnostics are warnings, not gates)
+```
+
+Tests mock the boundaries (the `tailscale ssh` subprocess seam, keychain calls, HTTP probes, the clock) and leave the function under test real — see STYLEGUIDE.md `## Testing` for the full convention.
 
 **Writing docs.** When writing or revising docs, a README, a tutorial, a how-to, or reference, use the `writing-docs` skill (Diataxis modes, voice rules, and runnable code-sample rules) and run `slop-cop check <file> --lang=markdown` before you finish.
 

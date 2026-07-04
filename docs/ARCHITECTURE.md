@@ -31,8 +31,9 @@ of host-specific identity and lets the same artifact serve any tailnet.
 
   Lockdown is enforced by a pf tailnet-only anchor plus the macOS app firewall,
   with every sharing surface off and Remote Login disabled — the only admin path
-  is `tailscale ssh`. metal reads its secrets and state from `~/.yclaw/state` over
-  a virtiofs share.
+  is `tailscale ssh`. metal reads its secrets and runtime state over narrow
+  per-need virtiofs shares (its own age key and bundle, the agent-vault state
+  dir, the shared HF hub cache), never the whole `~/.yclaw/state` tree.
 - **bluebubbles** — a separate macOS guest on its own tailnet node, SIP **off**
   because BlueBubbles' Private API requires it. It is the iMessage channel: it
   runs only the BlueBubbles server and holds **no** credentials. Keeping iMessage
@@ -43,8 +44,9 @@ of host-specific identity and lets the same artifact serve any tailnet.
   agent-vault's MITM proxy on metal (`HTTPS_PROXY=http://metal:14322`), trusting
   its CA. It carries two tailnet-internal credentials by design —
   `BLUEBUBBLES_PASSWORD` (BlueBubbles sits in `NO_PROXY` and cannot be
-  wire-injected) and `APERTURE_STATIC_KEY` (hermes calls metal's cliproxy directly,
-  so it presents the bearer itself rather than having Aperture inject it). Agent state
+  wire-injected) and `APERTURE_STATIC_KEY` (cliproxy's own inbound API key — the
+  secret name is historical; hermes calls cliproxy directly and presents the
+  bearer itself). Agent state
   in `/var/lib/hermes` (honcho memory, sessions) is externalized to the host's
   `~/.yclaw/state/hermes` over virtiofs, so it survives a VM rebuild and is backed
   up.
@@ -67,14 +69,77 @@ rotate, so a second holder would mutually revoke them.
 
 Model traffic is a deliberate `NO_PROXY` exclusion and goes direct: hermes calls
 metal's cliproxy (`http://metal:8317`) and omlx (`http://metal:8000`) without the
-agent-vault hop, presenting cliproxy's `APERTURE_STATIC_KEY` bearer itself. That
-key and `BLUEBUBBLES_PASSWORD` (BlueBubbles is the other `NO_PROXY` case) are the
-two tailnet-internal credentials hermes holds — neither is an upstream API key.
+agent-vault hop. cliproxy **enforces** its inbound static bearer — a call without
+it is a 401 — so hermes presents it on every model call via
+`key_env = "APERTURE_STATIC_KEY"` (the sops secret name is historical; the key is
+cliproxy's own API-key allowlist entry, not an Aperture credential). That key and
+`BLUEBUBBLES_PASSWORD` (BlueBubbles is the other `NO_PROXY` case) are the two
+tailnet-internal credentials hermes holds — neither is an upstream API key. omlx
+(`:8000`) needs no key; the pf gate scoping `:8317` to hermes + the host is a
+second, independent layer.
 
 Enforcement is cooperative, not a hard firewall: hermes respects `HTTPS_PROXY`,
 and a secret-needing request that bypasses the proxy has no credential, so the
 task fails. The boundary is the credential custody (only metal holds real
 secrets), not the routing.
+
+## The manifest
+
+`machines.json` at the repo root is the single source of truth for the fleet:
+machines, services, launchd labels, ports, health endpoints, log paths, virtiofs
+shares, keychain service names, host state paths, and the per-node debloat
+lists. Three readers consume it, so a fleet fact is stated once and can never
+drift between them:
+
+1. **bash** — `scripts/lib/manifest.sh` (`manifest_get` / `manifest_list` /
+   `manifest_has`, jq underneath, fail-loud on a missing key).
+2. **Nix** — `darwin/metal.nix` via `builtins.fromJSON`; the pf anchor's port
+   set and the debloat disable loops derive from the manifest.
+3. **Python** — `yclaw/manifest.py`, backing every CLI command.
+
+The ports in the manifest mirror `tailnet/policy.hujson`; those two are kept in
+sync by hand and the manifest comment says so.
+
+## launchd on metal
+
+Every metal service is a system LaunchDaemon (`darwin/metal.nix`); the guest is
+headless, so nothing depends on a GUI session — MLX GPU inference works from a
+daemon context. The reboot-hardening design has four rules:
+
+- **`/bin/wait4path` guards the /nix race.** `/nix` is a separate APFS volume
+  mounted late at boot; a `RunAtLoad` daemon that loses the race exec-fails into
+  launchd's "respawning too quickly" penalty box and stays down until a human
+  kicks it. Each daemon's `ProgramArguments` is wrapped in
+  `/bin/wait4path <prog> && exec <prog>` — the same shape nix-darwin uses for
+  `nix-daemon` — which blocks on a kernel mount event with no timeout. It
+  replaced a hand-rolled trampoline after surviving repeated cold-boot gates
+  (~25 s from power-on to the node answering on the tailnet).
+- **One wait library.** wait4path wakes only on mount events, so it guards
+  only /nix store paths. Everything else that can be not-yet-ready at boot —
+  virtiofs share sub-paths (they materialize on `stat` under one AppleVirtIOFS
+  automount, no FS event), sops-decrypted secrets, sockets — uses the bounded,
+  fail-loud helpers from `scripts/lib/wait.sh`, embedded verbatim into each
+  wrapper. The same file is sourced by host scripts and piped into guests;
+  there is exactly one blessed way to poll.
+- **Oneshots self-heal via `KeepAlive.SuccessfulExit = false`.** The provision,
+  boot-setup, and pf-refresh jobs relaunch until they exit 0, so a transient
+  failure retries instead of stranding the boot; `ThrottleInterval` stays at
+  the 10 s launchd default (lowering it plus a fast-exiting job is the
+  penalty-box trap).
+- **`tailscaled install-system-daemon` runs on first install only.**
+  `install-system-daemon` terminates a running tailscaled and its relaunch
+  silently fails, which used to cut the node off the tailnet on every redeploy;
+  the boot-setup script now guards it behind a plist-absence check.
+
+launchd hands daemons an unset `HOME` and an unreadable CWD, so each wrapper
+pins `HOME` to the real user home and `cd`s there. Nothing overrides `HOME` to
+point elsewhere anymore: agent-vault takes its state root from
+`AGENT_VAULT_HOME` (a state-dir override added by
+`pkgs/agent-vault-state-dir.patch`), so the `agentvault` virtiofs share is a
+state directory, not an identity. The agent-vault wrapper also clears the stale
+pidfile the persistent share carries across reboots — a PID-reuse match would
+otherwise crash-loop the broker ("already running") with launchd as the actual
+single-instance supervisor.
 
 ## State
 
