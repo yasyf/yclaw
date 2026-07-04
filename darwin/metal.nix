@@ -229,6 +229,11 @@ let
       secrets = [ masterPasswordFile ];
     }}
     export AGENT_VAULT_HOME=${lib.escapeShellArg vaultStateDir}
+    # The pidfile lives on the PERSISTENT share, so it survives reboots; agent-vault's liveness
+    # check is PID-existence only, and post-reboot PID reuse makes it refuse to start ("server is
+    # already running") forever. launchd is the single-instance supervisor here — the pidfile is
+    # only for manual CLI use — so a pidfile at wrapper-exec time is stale by definition.
+    rm -f "$AGENT_VAULT_HOME/.agent-vault/agent-vault.pid"
     set -a; . ${lib.escapeShellArg masterPasswordFile}; set +a
     # Proxy rate limits (instance-wide — agent-vault has no per-vault knob). hermes is the SOLE
     # proxy consumer, so instance-wide == per-vault here. Tune these to taste; LOCK pins them so a
