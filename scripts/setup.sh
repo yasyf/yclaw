@@ -165,8 +165,9 @@ chmod 700 "$NODE_CONFIG_DIR"
 # metal.nix's preActivation + sops.defaultSopsFile point under /Volumes/My Shared Files/metalsecrets.
 #
 # metal runs HEADLESS (--no-graphics): it holds ONLY the credential + AI services and NO
-# iMessage, so it needs no host-side GUI window. omlx's Metal GPU works headless because
-# in-guest auto-login creates the aqua session GPU access requires (verified). The repo is shared
+# iMessage, so it needs no host-side GUI window. omlx's Metal GPU works headless from the
+# UserName=admin system daemons — no auto-login or aqua session required (verified; packer passes
+# VM_AUTOLOGIN=drop for metal). The repo is shared
 # read-only at /Volumes/My Shared Files/repo so the in-guest nix-darwin can rebuild itself
 # (`darwin-rebuild switch --flake "/Volumes/My Shared Files/repo#metal"`, see darwin/metal.nix).
 write_agent metal \

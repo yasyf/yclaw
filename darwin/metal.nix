@@ -21,9 +21,9 @@
 #
 # Lockdown posture: SIP on, Gatekeeper on, app firewall + a pf tailnet-only anchor, every
 # sharing/remote-access surface off, and OpenSSH Remote Login off — the ONLY admin path is
-# `tailscale ssh root@metal`. In-guest auto-login is set by packer (cirruslabs base default); it is
-# NOT required for the GPU — the services run as UserName=admin daemons and MLX/Metal works headless
-# (verified) — but FileVault is NOT used regardless (auto-login would negate it). Sensitive state
+# `tailscale ssh root@metal`. In-guest auto-login is DROPPED by packer (VM_AUTOLOGIN=drop, the
+# account-lockout fix) — it is NOT required for the GPU, since the services run as UserName=admin
+# daemons and MLX/Metal works headless (verified). FileVault is NOT used regardless. Sensitive state
 # lives on the host's ~/.yclaw/state, backed up encrypted off-box; the vault is also encrypted
 # at rest, and every service is bound tailnet-only by the pf anchor + app-firewall allowlist.
 #
@@ -482,9 +482,9 @@ in
   # The hardening nix-darwin exposes as typed system.defaults; everything without a typed option
   # (Remote Login, sharing services, Gatekeeper, Spotlight, Siri, telemetry) is applied
   # imperatively in postActivation below. Guest login is killed and the `>console` login-window
-  # escape is disabled. Auto-login stays ON (set by packer, cirruslabs base default); it is NOT
-  # required for the GPU (services are UserName=admin daemons, MLX works headless), and FileVault is
-  # deliberately NOT used regardless (it would negate auto-login); sensitive state lives on the
+  # escape is disabled. Auto-login is DROPPED by packer (VM_AUTOLOGIN=drop, the account-lockout fix);
+  # it is NOT required for the GPU (services are UserName=admin daemons, MLX works headless), and
+  # FileVault is deliberately NOT used regardless; sensitive state lives on the
   # host's ~/.yclaw/state and is backed up encrypted off-box.
   system.defaults.loginwindow = {
     GuestEnabled = false;
