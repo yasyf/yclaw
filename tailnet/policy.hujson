@@ -46,10 +46,12 @@
 
   // Admin SSH to every tagged node. REQUIRED: tagged nodes have no user owner, so without an
   // explicit `ssh` rule admins lose `tailscale ssh` to them — and OpenSSH is disabled on these
-  // hosts (tailscale ssh is the ONLY admin path). `check` re-verifies admin identity periodically.
+  // hosts (tailscale ssh is the ONLY admin path). `accept`, not `check`: the periodic check-wall
+  // silently hangs every scripted `tailscale ssh` (only interactive runs surface the re-auth URL),
+  // which broke bootstrap/redeploy/debug automation. Applied to the live tailnet 2026-07-03.
   "ssh": [
     {
-      "action": "check",
+      "action": "accept",
       "src":    ["autogroup:admin"],
       "dst":    ["tag:hermes", "tag:metal", "tag:bluebubbles"],
       "users":  ["autogroup:nonroot", "root"],

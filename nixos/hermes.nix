@@ -48,9 +48,10 @@ let
     # Authorization header with the real, custody-held key on the wire — even if the
     # client sends Authorization: Bearer dummy, the broker replaces it.
     # api.openai.com / api.exa.ai / api.honcho.dev are NOT in NO_PROXY, so they route
-    # through the vault proxy and get injected. The model (custom provider) call rides no
-    # dummy and no bearer: it reaches metal's cliproxy directly on :8317, which is pf-gated to
-    # hermes + the host ("the tailnet is the auth"), so the model plane needs no key_env.
+    # through the vault proxy and get injected. The model (custom provider) call reaches
+    # metal's cliproxy directly on :8317 (pf-gated to hermes + the host) and MUST present
+    # cliproxy's static bearer — the allowlist 401s bearerless requests (verified live) —
+    # so the model settings below carry key_env=APERTURE_STATIC_KEY (sops hermes/env).
     # TODO(human): confirm each SDK honors HTTPS_PROXY (so vault can intercept) — Exa/Honcho/OpenAI.
     OPENAI_API_KEY=__openai__
     EXA_API_KEY=__exa__
@@ -323,18 +324,21 @@ in
       # ── Model plane (direct to metal) ──
       # gpt-5.5 + gemini → cliproxy :8317,
       # Qwen → omlx :8000. Bare `metal` resolves via MagicDNS and is in NO_PROXY, so these
-      # stay DIRECT (no agent-vault MITM hop). cliproxy's :8317 is pf-gated to hermes + the host,
-      # so hermes reaches it with no bearer ("the tailnet is the auth"); omlx :8000 needs no key either.
+      # stay DIRECT (no agent-vault MITM hop). cliproxy's :8317 is pf-gated AND enforces its
+      # api-keys allowlist (bearerless requests 401), so both cliproxy entries present the
+      # static bearer via key_env; omlx :8000 needs no key.
       model = {
         provider = "custom";
         default = "gpt-5.5";
         base_url = "http://metal:8317/v1";
+        key_env = "APERTURE_STATIC_KEY";
       };
       fallback_providers = [
         {
           provider = "custom";
           model = "gemini-3-pro-preview";
           base_url = "http://metal:8317/v1";
+          key_env = "APERTURE_STATIC_KEY";
         }
         {
           provider = "custom";
