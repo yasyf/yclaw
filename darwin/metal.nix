@@ -77,10 +77,6 @@ let
         ++ rest
     );
 
-  # UNUSED since the wait4path conversion — the preActivation writer below still writes it; delete
-  # both only after the orchestrator's live reboot gate passes (follow-up commit).
-  nixWaitTrampoline = "/usr/local/lib/yclaw/metal-wait-nix";
-
   # Shared bounded-wait helpers (scripts/lib/wait.sh — self-contained by design), embedded verbatim
   # into the wrappers below. TAILSCALE is wait.sh's binary seam: launchd hands wrappers no brew PATH.
   waitLib = builtins.readFile ../scripts/lib/wait.sh;
@@ -635,16 +631,9 @@ in
   # sops-nix's postActivation install, so the key is in place when sops decrypts. Fail loud if
   # the share key is absent — a node with no age key cannot decrypt any secret.
   system.activationScripts.preActivation.text = ''
-    # UNUSED since the wait4path conversion — kept until the orchestrator's live reboot gate passes;
-    # the follow-up commit deletes this writer together with nixWaitTrampoline.
-    install -d -m 0755 /usr/local/lib /usr/local/lib/yclaw
-    cat > ${nixWaitTrampoline} <<'TRAMPOLINE'
-#!/bin/sh
-i=0
-while [ ! -x "$1" ] && [ "$i" -lt 300 ]; do sleep 1; i=$((i+1)); done
-exec "$@"
-TRAMPOLINE
-    chmod 0755 ${nixWaitTrampoline}
+    # One-time cleanup of the retired /nix-race trampoline (replaced by wait4path in the daemon
+    # ProgramArguments; two clean reboot gates passed 2026-07-03).
+    rm -f /usr/local/lib/yclaw/metal-wait-nix
 
     if [ ! -s /var/lib/sops-nix/key.txt ]; then
       if [ -s ${lib.escapeShellArg "${metalSecrets}/key.txt"} ]; then
