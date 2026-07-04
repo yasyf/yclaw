@@ -719,6 +719,20 @@ in
       # and robust across brew/CLT upgrades. cli-proxy-api/agent-vault are the real nix-store
       # listeners; tailscaled is allowlisted so direct (non-DERP) inbound and tailscale-ssh survive.
       # pf above is the real tailnet-only gate; this allowlist is per-app defense-in-depth.
+      # Nix-store listeners get a NEW path on every rebuild, but their adhoc signature keeps the
+      # same Identifier — socketfilterfw then dedups `--add` against the STALE entry (rc=0, no new
+      # entry) while enforcement compares CDHashes and silently DROPS the new binary's inbound
+      # (observed live 2026-07-04: agent-vault unreachable after the state-dir patch rebuild).
+      # Remove any other /nix/store entry for the same binary basename before adding the current one.
+      for BIN in \
+        ${pkgs.cli-proxy-api}/bin/cli-proxy-api \
+        ${pkgs.agent-vault}/bin/agent-vault; do
+        NAME=$(/usr/bin/basename "$BIN")
+        "$FW" --listapps 2>/dev/null \
+          | /usr/bin/grep -oE "/nix/store/[^ ]*/bin/$NAME" \
+          | /usr/bin/grep -vxF "$BIN" \
+          | while IFS= read -r STALE; do "$FW" --remove "$STALE" >/dev/null 2>&1 || true; done
+      done
       for BIN in \
         /opt/homebrew/opt/python@*/Frameworks/Python.framework/Versions/*/Resources/Python.app/Contents/MacOS/Python \
         /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/*/Resources/Python.app/Contents/MacOS/Python \
