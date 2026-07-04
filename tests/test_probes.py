@@ -100,12 +100,12 @@ def test_find_node_online_offline_missing(fixtures_dir):
 @pytest.mark.parametrize(
     ("name", "ping_ok", "expected_status", "detail_needle"),
     [
-        ("metal", True, Status.PASS, "ping ok"),
-        ("metal", False, Status.FAIL, "ping failed"),
+        ("metal", True, Status.PASS, "online, ping ok"),
+        ("metal", False, Status.PASS, "online, ping failed (derp-only or stale disco)"),
         ("hermes", True, Status.FAIL, "offline"),
         ("not-a-node", True, Status.FAIL, "not in tailnet"),
     ],
-    ids=["online-ping-ok", "online-ping-fail", "registered-offline", "absent"],
+    ids=["online-ping-ok", "online-ping-fail-degraded", "registered-offline", "absent"],
 )
 async def test_tailnet_node(fixtures_dir, monkeypatch, name, ping_ok, expected_status, detail_needle):
     status = json.loads((fixtures_dir / "tailscale-status.json").read_text())

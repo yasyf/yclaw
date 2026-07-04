@@ -117,8 +117,8 @@ async def tailnet_node(name: str, *, timeout: float = 10) -> ProbeResult:
     if not node.get("Online"):
         return ProbeResult(name, Status.FAIL, "registered but offline")
     reachable = await _tailscale_ping(name, timeout)
-    detail = "online, ping ok" if reachable else "online, ping failed"
-    return ProbeResult(name, Status.PASS if reachable else Status.FAIL, detail)
+    detail = "online, ping ok" if reachable else "online, ping failed (derp-only or stale disco)"
+    return ProbeResult(name, Status.PASS, detail)
 
 
 async def launchd_state(machine: Machine, service: Service, *, timeout: float = 30) -> ProbeResult:

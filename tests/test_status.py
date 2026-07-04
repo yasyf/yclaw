@@ -64,6 +64,25 @@ def test_status_metal_renders_exact_table(monkeypatch):
     assert result.exit_code == 1  # cliproxy state + mlx-audio health both FAIL
 
 
+def test_status_node_online_ping_failed_still_probes_services(monkeypatch):
+    _install_metal_probes(monkeypatch)
+
+    async def degraded_tailnet(name, *, timeout=10):
+        if name == "metal":
+            return ProbeResult(name, Status.PASS, "online, ping failed (derp-only or stale disco)")
+        return ProbeResult(name, Status.FAIL, "registered but offline")
+
+    monkeypatch.setattr(probes, "tailnet_node", degraded_tailnet)
+    result = CliRunner().invoke(main, ["status", "metal"])
+    lines = result.output.splitlines()
+
+    node_row = next(line for line in lines if "(node)" in line)
+    assert "up" in node_row
+    assert "ping failed (derp-only or stale disco)" in node_row
+    assert any(line.startswith("metal") and "omlx" in line for line in lines)
+    assert any(line.startswith("metal") and "share:metalsecrets" in line for line in lines)
+
+
 def test_status_metal_all_healthy_exits_clean(monkeypatch):
     async def fake_tailnet(name, *, timeout=10):
         return ProbeResult(name, Status.PASS, "online, ping ok")
