@@ -30,6 +30,14 @@ class LaunchdRef:
     domain: str
     label: str
 
+    @property
+    def target(self) -> str:
+        return f"{self.domain}/{self.label}"
+
+    @property
+    def plist_path(self) -> str:
+        return f"/Library/LaunchDaemons/{self.label}.plist"
+
 
 @dataclass(frozen=True, slots=True)
 class HttpHealth:

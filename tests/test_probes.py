@@ -198,3 +198,56 @@ async def test_tcp_open_reachable_then_closed():
 
     closed = await probes.tcp_open("127.0.0.1", port)
     assert closed.status is Status.FAIL
+
+
+@pytest.mark.parametrize(
+    ("last_exit", "expected_status"),
+    [("0", Status.PASS), ("1", Status.FAIL)],
+    ids=["oneshot-clean-exit", "oneshot-failed-exit"],
+)
+async def test_launchd_state_oneshot_uses_last_exit(manifest, monkeypatch, last_exit, expected_status):
+    async def fake_run(machine, command, *, timeout=30, capture=True):
+        assert command == "launchctl print system/org.nixos.metal-boot-setup"
+        return RemoteResult(0, f"\tstate = not running\n\tlast exit code = {last_exit}\n", "")
+
+    monkeypatch.setattr(probes.remote, "run", fake_run)
+    metal = manifest.machines["metal"]
+    result = await probes.launchd_state(metal, metal.services["metal-boot-setup"])
+    assert result.status is expected_status
+    assert f"last-exit={last_exit}" in result.detail
+
+
+async def test_service_health_http_dispatches(manifest):
+    def handler(request):
+        assert request.url.path == "/v1/models"
+        return httpx.Response(200)
+
+    metal = manifest.machines["metal"]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await probes.service_health(metal, metal.services["omlx"], client=client)
+    assert result == ProbeResult("http://metal:8000/v1/models", Status.PASS, "HTTP 200")
+
+
+async def test_service_health_tcp_dispatches(manifest, monkeypatch):
+    seen = {}
+
+    async def fake_tcp(host, port, *, timeout=5):
+        seen["host"] = host
+        seen["port"] = port
+        return ProbeResult(f"{host}:{port}", Status.PASS, "open")
+
+    monkeypatch.setattr(probes, "tcp_open", fake_tcp)
+    metal = manifest.machines["metal"]
+    result = await probes.service_health(metal, metal.services["mlx-audio"])
+    assert seen == {"host": "metal", "port": 8765}
+    assert result.status is Status.PASS
+
+
+async def test_service_health_bluebubbles_dispatches(manifest, monkeypatch):
+    async def fake_bb(machine, *, timeout=10, client=None):
+        return ProbeResult("bluebubbles", Status.PASS, "ping ok, helper_connected=True")
+
+    monkeypatch.setattr(probes, "bluebubbles_health", fake_bb)
+    bb = manifest.machines["bluebubbles"]
+    result = await probes.service_health(bb, bb.services["bluebubbles"])
+    assert result == ProbeResult("bluebubbles", Status.PASS, "ping ok, helper_connected=True")

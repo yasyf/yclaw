@@ -114,3 +114,55 @@ async def test_pre_tailnet_run_argv_and_redaction(manifest, monkeypatch):
     assert pre_tailnet_logs, "expected a redacted pre-tailnet argv debug log"
     assert all("s3cr3t-pw" not in m for m in pre_tailnet_logs)
     assert any("***" in m for m in pre_tailnet_logs)
+
+
+def test_stream_uses_execvp(manifest, monkeypatch):
+    recorded = {}
+
+    def fake_execvp(file, args):
+        recorded["file"] = file
+        recorded["args"] = args
+        raise SystemExit(0)
+
+    monkeypatch.setattr(remote.os, "execvp", fake_execvp)
+    with pytest.raises(SystemExit):
+        remote.stream(manifest.machines["metal"], "tail -F /var/log/x")
+    assert recorded["file"] == "tailscale"
+    assert recorded["args"] == ["tailscale", "ssh", "root@metal", "--", "tail -F /var/log/x"]
+
+
+def test_pre_tailnet_interactive_argv_and_redaction(manifest, monkeypatch):
+    monkeypatch.setattr(keychain, "read", lambda service: "s3cr3t-pw")
+
+    def fake_tart(argv, **kwargs):
+        assert argv == ["tart", "ip", "metal"]
+        return _completed(argv, 0, "192.168.64.9\n", "")
+
+    monkeypatch.setattr(remote.subprocess, "run", fake_tart)
+    recorded = {}
+
+    def fake_execvp(file, args):
+        recorded["file"] = file
+        recorded["args"] = args
+        raise SystemExit(0)
+
+    monkeypatch.setattr(remote.os, "execvp", fake_execvp)
+    logged = []
+    sink = logger.add(logged.append, level="DEBUG", format="{message}")
+    try:
+        with pytest.raises(SystemExit):
+            remote.pre_tailnet_interactive(manifest.machines["metal"])
+    finally:
+        logger.remove(sink)
+    assert recorded["file"] == "sshpass"
+    assert recorded["args"] == [
+        "sshpass",
+        "-p",
+        "s3cr3t-pw",
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "admin@192.168.64.9",
+    ]
+    assert all("s3cr3t-pw" not in m for m in logged)
+    assert any("***" in m for m in logged)

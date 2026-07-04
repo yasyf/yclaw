@@ -1,0 +1,113 @@
+from click.testing import CliRunner
+
+from yclaw import probes, remote
+from yclaw.cli import main
+from yclaw.probes import ProbeResult, Status
+from yclaw.remote import RemoteResult
+
+
+def _probe(status, detail="detail"):
+    async def fake(*args, **kwargs):
+        return ProbeResult("x", status, detail)
+
+    return fake
+
+
+def test_wait_http_success_exits_clean(monkeypatch):
+    monkeypatch.setattr(probes, "http_ok", _probe(Status.PASS, "HTTP 200"))
+    result = CliRunner().invoke(main, ["wait", "http", "http://metal:8000/v1/models"])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+    assert "HTTP 200" in result.output
+
+
+def test_wait_http_exhaustion_is_fatal_exit_1(monkeypatch):
+    monkeypatch.setattr(probes, "http_ok", _probe(Status.FAIL, "HTTP 503"))
+    result = CliRunner().invoke(
+        main, ["wait", "http", "http://metal:8000/v1/models", "--timeout", "0", "--interval", "0"]
+    )
+    assert result.exit_code == 1
+    assert "FATAL" in result.stderr
+    assert "HTTP 503" in result.stderr
+
+
+def test_wait_port_probes_machine_and_port(monkeypatch):
+    seen = {}
+
+    async def fake_tcp(host, port, *, timeout=5):
+        seen["host"] = host
+        seen["port"] = port
+        return ProbeResult(f"{host}:{port}", Status.PASS, "open")
+
+    monkeypatch.setattr(probes, "tcp_open", fake_tcp)
+    result = CliRunner().invoke(main, ["wait", "port", "metal", "8000"])
+    assert result.exit_code == 0
+    assert seen == {"host": "metal", "port": 8000}
+
+
+def test_wait_ssh_success(monkeypatch):
+    async def fake_run(machine, command, *, timeout=30, capture=True):
+        assert command == "true"
+        assert machine.name == "hermes"
+        return RemoteResult(0, "", "")
+
+    monkeypatch.setattr(remote, "run", fake_run)
+    result = CliRunner().invoke(main, ["wait", "ssh", "hermes"])
+    assert result.exit_code == 0
+
+
+def test_wait_share_success(monkeypatch):
+    seen = {}
+
+    async def fake_share(machine, share, *, timeout=30):
+        seen["share"] = share
+        return ProbeResult(share, Status.PASS, "/Volumes/My Shared Files/repo")
+
+    monkeypatch.setattr(probes, "share_mounted", fake_share)
+    result = CliRunner().invoke(main, ["wait", "share", "metal", "repo"])
+    assert result.exit_code == 0
+    assert seen == {"share": "repo"}
+
+
+def test_wait_service_polls_launchd_state(monkeypatch):
+    seen = {}
+
+    async def fake_launchd(machine, service, *, timeout=30):
+        seen["service"] = service.name
+        return ProbeResult(service.name, Status.PASS, "state=running")
+
+    monkeypatch.setattr(probes, "launchd_state", fake_launchd)
+    result = CliRunner().invoke(main, ["wait", "service", "metal", "omlx"])
+    assert result.exit_code == 0
+    assert seen == {"service": "omlx"}
+
+
+def test_wait_service_polls_systemd_state(monkeypatch):
+    seen = {}
+
+    async def fake_systemd(machine, service, *, timeout=30):
+        seen["service"] = service.name
+        return ProbeResult(service.name, Status.PASS, "active=active")
+
+    monkeypatch.setattr(probes, "systemd_state", fake_systemd)
+    result = CliRunner().invoke(main, ["wait", "service", "hermes", "hermes-agent"])
+    assert result.exit_code == 0
+    assert seen == {"service": "hermes-agent"}
+
+
+def test_wait_service_without_unit_is_usage_error():
+    result = CliRunner().invoke(main, ["wait", "service", "bluebubbles", "bluebubbles"])
+    assert result.exit_code == 2
+    assert "no launchd/systemd" in result.output
+
+
+def test_wait_unknown_service_is_usage_error():
+    result = CliRunner().invoke(main, ["wait", "service", "metal", "nope"])
+    assert result.exit_code == 2
+    assert "unknown service 'nope'" in result.output
+
+
+def test_wait_help():
+    result = CliRunner().invoke(main, ["wait", "--help"])
+    assert result.exit_code == 0
+    assert "Block until an endpoint or service is up" in result.output

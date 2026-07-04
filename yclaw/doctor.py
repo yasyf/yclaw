@@ -1,0 +1,155 @@
+"""``yclaw doctor`` — ``status`` plus host-vantage checks that a single node cannot self-report.
+
+The extra checks mirror ``scripts/validate-hardening.sh``: the pf gate (host → metal service ports),
+metal's share set against the manifest, hermes's own ``hermes doctor``, and a hermes → metal cross-VM
+reachability curl. ``--live`` adds the agent-vault credential-plane checks; the parts that need a human
+or a quota-consuming call from hermes are reported ``manual``. Exit is ``1`` if any hard check fails.
+"""
+
+import re
+
+import click
+
+from . import output, probes, remote, status
+from .dispatch import resolve_machine, run
+from .manifest import Machine, load_manifest
+from .output import status_label
+from .probes import ProbeResult, Status
+
+PROXY_RE = re.compile(r"^HTTPS_PROXY=http://av_agt_[^:]+:hermes@metal:14322")
+CHECK_HEADERS = ["CHECK", "STATE", "DETAIL"]
+
+
+def _metal_ports(metal: Machine) -> list[int]:
+    ports = {p for svc in metal.services.values() for p in (svc.port, svc.mitm_port) if p is not None}
+    return sorted(ports)
+
+
+async def _pf_gate(metal: Machine) -> list[ProbeResult]:
+    checks = []
+    for port in _metal_ports(metal):
+        result = await probes.tcp_open("metal", port, timeout=status.PROBE_TIMEOUT)
+        checks.append(ProbeResult(f"pf-gate host→metal:{port}", result.status, result.detail))
+    return checks
+
+
+async def _share_diff(metal: Machine) -> ProbeResult:
+    result = await remote.run(metal, "ls -1 '/Volumes/My Shared Files/'", timeout=status.PROBE_TIMEOUT)
+    if result.returncode != 0:
+        return ProbeResult("metal shares vs manifest", Status.FAIL, f"ls exited {result.returncode}")
+    present = set(result.stdout.split())
+    expected = set(metal.shares or ())
+    missing = sorted(expected - present)
+    extra = sorted(present - expected)
+    if missing or extra:
+        return ProbeResult("metal shares vs manifest", Status.FAIL, f"missing={missing} extra={extra}")
+    return ProbeResult("metal shares vs manifest", Status.PASS, f"{len(expected)} shares match the manifest")
+
+
+async def _hermes_doctor(hermes: Machine) -> ProbeResult:
+    result = await remote.run(hermes, "hermes doctor", timeout=60)
+    tail = next((line for line in reversed(result.stdout.splitlines()) if line.strip()), f"exit {result.returncode}")
+    passed = result.returncode == 0
+    return ProbeResult("hermes doctor", Status.PASS if passed else Status.FAIL, tail)
+
+
+async def _cross_vm_curl(hermes: Machine) -> ProbeResult:
+    result = await remote.run(hermes, "curl -sf --max-time 8 http://metal:8000/v1/models", timeout=15)
+    passed = result.returncode == 0
+    return ProbeResult(
+        "hermes→metal:8000 (omlx)", Status.PASS if passed else Status.FAIL, f"curl exit {result.returncode}"
+    )
+
+
+async def _proxy_config(hermes: Machine) -> ProbeResult:
+    cmd = 'sudo -u hermes -H sh -c \'grep "^HTTPS_PROXY=" "$HOME/.hermes/.env"\''
+    result = await remote.run(hermes, cmd, timeout=15)
+    if PROXY_RE.match(result.stdout.strip()):
+        return ProbeResult("agent-vault HTTPS_PROXY", Status.PASS, "routes through av_agt_…@metal:14322")
+    return ProbeResult("agent-vault HTTPS_PROXY", Status.FAIL, "not the agent-vault proxy (av_agt_…@metal:14322)")
+
+
+async def _checks(machines: list[Machine], tailnet: dict[str, ProbeResult], live: bool) -> list[ProbeResult]:
+    by_name = {m.name: m for m in machines}
+    up = {name for name, node in tailnet.items() if node.status is Status.PASS}
+    checks: list[ProbeResult] = []
+
+    if "metal" in by_name:
+        checks.extend(await _pf_gate(by_name["metal"]))
+        if "metal" in up:
+            checks.append(await _share_diff(by_name["metal"]))
+    if "hermes" in by_name and "hermes" in up:
+        checks.append(await _hermes_doctor(by_name["hermes"]))
+        checks.append(await _cross_vm_curl(by_name["hermes"]))
+
+    if not live:
+        return checks
+
+    if "hermes" in by_name:
+        if "hermes" in up:
+            checks.append(await _proxy_config(by_name["hermes"]))
+        else:
+            checks.append(
+                ProbeResult(
+                    "agent-vault HTTPS_PROXY",
+                    Status.MANUAL,
+                    "hermes down; verify it routes through av_agt_…@metal:14322",
+                )
+            )
+        checks.append(
+            ProbeResult(
+                "agent-vault injection round-trip",
+                Status.MANUAL,
+                "run an Exa/OpenAI call from hermes; expect 200 (bearer injected via metal:14322), not 407",
+            )
+        )
+        checks.append(
+            ProbeResult(
+                "gmail proxy round-trip",
+                Status.MANUAL,
+                "`gws` with a dummy token round-trips through agent-vault; the real token never enters hermes",
+            )
+        )
+    if "bluebubbles" in by_name:
+        checks.append(
+            ProbeResult(
+                "bluebubbles send/receive",
+                Status.MANUAL,
+                "send AND receive an iMessage from an authorized handle (DM + group)",
+            )
+        )
+    return checks
+
+
+def _fleet(machine: str | None) -> list[Machine]:
+    manifest = load_manifest()
+    if machine is not None:
+        return [resolve_machine(manifest, machine)]
+    return [m for m in manifest.machines.values() if m.ssh is not None]
+
+
+@click.command("doctor")
+@click.argument("machine", required=False)
+@click.option("--live", is_flag=True, help="Also run the agent-vault credential-plane checks.")
+def doctor(machine: str | None, live: bool) -> None:
+    """Run status plus host-vantage hardening checks for the fleet (or one MACHINE)."""
+    machines = _fleet(machine)
+
+    async def diagnose() -> tuple[list[list[str]], list[ProbeResult], list[ProbeResult]]:
+        rows, results, tailnet = await status.collect(machines)
+        checks = await _checks(machines, tailnet, live)
+        return rows, results, checks
+
+    rows, results, checks = run(diagnose)
+    click.echo(output.render_table(status.HEADERS, rows))
+    click.echo()
+    check_rows = [[c.name, status_label(c.status), c.detail] for c in checks]
+    click.echo(output.render_table(CHECK_HEADERS, check_rows))
+
+    every = [*results, *checks]
+    passes = sum(c.status is Status.PASS for c in every)
+    fails = sum(c.status is Status.FAIL for c in every)
+    manuals = sum(c.status is Status.MANUAL for c in every)
+    click.echo()
+    click.echo(f"{output.ok(f'PASS={passes}')}  {output.fail(f'FAIL={fails}')}  {output.manual(f'MANUAL={manuals}')}")
+    raise SystemExit(output.exit_code_for(every))

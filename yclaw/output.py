@@ -44,6 +44,10 @@ def exit_code_for(results: Iterable[ProbeResult]) -> int:
     return EXIT_FAIL if any(r.status is Status.FAIL for r in results) else EXIT_CLEAN
 
 
+def status_label(status: Status) -> str:
+    return _STATUS_LABEL[status][0]
+
+
 def style_status(status: Status) -> str:
     label, styler = _STATUS_LABEL[status]
     return styler(label)

@@ -99,3 +99,9 @@ def test_service_is_frozen(manifest):
     assert isinstance(svc, Service)
     with pytest.raises((AttributeError, TypeError)):
         svc.port = 1  # type: ignore[misc]
+
+
+def test_launchd_ref_target_and_plist_path(manifest):
+    omlx = manifest.machines["metal"].services["omlx"]
+    assert omlx.launchd.target == "system/org.nixos.omlx"
+    assert omlx.launchd.plist_path == "/Library/LaunchDaemons/org.nixos.omlx.plist"

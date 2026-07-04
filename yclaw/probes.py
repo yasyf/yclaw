@@ -20,7 +20,7 @@ import anyio
 import httpx
 
 from . import keychain, remote
-from .manifest import Machine, Service
+from .manifest import HttpHealth, Machine, Service
 
 
 class Status(Enum):
@@ -122,15 +122,16 @@ async def tailnet_node(name: str, *, timeout: float = 10) -> ProbeResult:
 
 
 async def launchd_state(machine: Machine, service: Service, *, timeout: float = 30) -> ProbeResult:
-    ref = service.launchd
-    target = f"{ref.domain}/{ref.label}"
+    target = service.launchd.target
     result = await remote.run(machine, f"launchctl print {target}", timeout=timeout)
     if result.returncode != 0:
         return ProbeResult(service.name, Status.FAIL, f"launchctl print {target} exited {result.returncode}")
     fields = _parse_launchctl(result.stdout)
     state = fields.get("state")
-    detail = f"state={state} pid={fields.get('pid')} last-exit={fields.get('last exit code')}"
-    return ProbeResult(service.name, Status.PASS if state == "running" else Status.FAIL, detail)
+    last_exit = fields.get("last exit code")
+    detail = f"state={state} pid={fields.get('pid')} last-exit={last_exit}"
+    healthy = last_exit == "0" if service.oneshot else state == "running"
+    return ProbeResult(service.name, Status.PASS if healthy else Status.FAIL, detail)
 
 
 async def systemd_state(machine: Machine, service: Service, *, timeout: float = 30) -> ProbeResult:
@@ -176,3 +177,14 @@ async def bluebubbles_health(
         return ProbeResult("bluebubbles", Status.MANUAL, "helper_connected absent from server/info")
     status = Status.PASS if connected else Status.FAIL
     return ProbeResult("bluebubbles", status, f"ping ok, helper_connected={connected}")
+
+
+async def service_health(
+    machine: Machine, service: Service, *, timeout: float = 10, client: httpx.AsyncClient | None = None
+) -> ProbeResult:
+    health = service.health
+    if machine.name == "bluebubbles":
+        return await bluebubbles_health(machine, timeout=timeout, client=client)
+    if isinstance(health, HttpHealth):
+        return await http_ok(health.url, timeout=timeout, client=client)
+    return await tcp_open(health.host, health.port, timeout=timeout)

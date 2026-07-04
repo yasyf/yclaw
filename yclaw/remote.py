@@ -9,6 +9,7 @@ DEBUG, but ``pre_tailnet_run`` redacts the sshpass password before logging.
 
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from typing import NoReturn
 
@@ -49,7 +50,7 @@ class RemoteResult:
     stderr: str
 
 
-async def run(machine: Machine, command: str, *, timeout: float = 30, capture: bool = True) -> RemoteResult:
+async def run(machine: Machine, command: str, *, timeout: float | None = 30, capture: bool = True) -> RemoteResult:
     argv = ["tailscale", "ssh", f"{machine.ssh.user}@{machine.name}", "--", command]
     logger.debug("remote argv: {}", argv)
     try:
@@ -75,7 +76,23 @@ def interactive(machine: Machine) -> NoReturn:
     os.execvp("tailscale", argv)
 
 
-async def pre_tailnet_run(machine: Machine, command: str, *, timeout: float = 30, capture: bool = True) -> RemoteResult:
+def stream(machine: Machine, command: str) -> NoReturn:
+    argv = ["tailscale", "ssh", f"{machine.ssh.user}@{machine.name}", "--", command]
+    logger.debug("stream argv: {}", argv)
+    os.execvp("tailscale", argv)
+
+
+def pre_tailnet_interactive(machine: Machine) -> NoReturn:
+    ip = subprocess.run(["tart", "ip", machine.tart_vm], capture_output=True, text=True, check=True).stdout.strip()
+    password = keychain.read(machine.admin_pass_keychain)
+    argv = ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=accept-new", f"admin@{ip}"]
+    logger.debug("pre-tailnet interactive argv: {}", [*argv[:2], "***", *argv[3:]])
+    os.execvp("sshpass", argv)
+
+
+async def pre_tailnet_run(
+    machine: Machine, command: str, *, timeout: float | None = 30, capture: bool = True
+) -> RemoteResult:
     ip = (await anyio.run_process(["tart", "ip", machine.tart_vm], check=True)).stdout.decode().strip()
     password = keychain.read(machine.admin_pass_keychain)
     argv = ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=accept-new", f"admin@{ip}", command]
