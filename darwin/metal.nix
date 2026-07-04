@@ -38,6 +38,7 @@
 }:
 let
   manifest = builtins.fromJSON (builtins.readFile ../nixos/secrets-manifest.json);
+  machinesManifest = builtins.fromJSON (builtins.readFile ../machines.json);
 
   adminUser = "admin";
   home = "/Users/${adminUser}";
@@ -46,13 +47,43 @@ let
   # /nix is a SEPARATE Determinate-Nix APFS volume, mounted late at boot. A RunAtLoad LaunchDaemon can
   # win the race and try to exec its /nix-store program before /nix is mounted; launchd reports "could
   # not execute program" and exits the service 78 (via xpcproxy) → "respawning too quickly" penalty box
-  # → the service stays DOWN across a reboot until a human kicks it. waitNix prefixes a daemon's
-  # ProgramArguments with a trampoline on the LOCAL root volume (always present at boot; written by the
-  # preActivation script below) that blocks until the real /nix program is executable, then execs it —
-  # so no daemon fast-fails on the /nix race and a reboot (incl. the auto-security-update reboots and
-  # `just redeploy`) self-heals. The preamble inside each wrapper handles the LATER share/secret races.
+  # → the service stays DOWN across a reboot until a human kicks it. wait4path prefixes each daemon's
+  # ProgramArguments with /bin/wait4path — the sanctioned primitive for exactly this race (it lives on
+  # the sealed system volume, always present at boot, and blocks on a kqueue EVFILT_FS watch until the
+  # path materializes; nix-darwin's own org.nixos.nix-daemon plist uses the same
+  # `sh -c "/bin/wait4path /nix/store && exec …"` shape) — so no daemon fast-fails on the /nix race
+  # and a reboot (incl. the auto-security-update reboots and `just redeploy`) self-heals. wait4path
+  # has NO timeout and wakes only on mount events, so it guards ONLY /nix store paths — NEVER virtiofs
+  # sub-paths (tart's per-share paths materialize on stat under one AppleVirtIOFS automount, no FS
+  # event) or sockets; those keep the bounded waits in mkDaemonPreamble below.
+  wait4path =
+    args:
+    let
+      prog = lib.escapeShellArg (builtins.head args);
+      rest = builtins.tail args;
+    in
+    [
+      "/bin/sh"
+      "-c"
+    ]
+    ++ (
+      if rest == [ ] then
+        [ "/bin/wait4path ${prog} && exec ${prog}" ]
+      else
+        [
+          ''/bin/wait4path ${prog} && exec ${prog} "$@"''
+          "_"
+        ]
+        ++ rest
+    );
+
+  # UNUSED since the wait4path conversion — the preActivation writer below still writes it; delete
+  # both only after the orchestrator's live reboot gate passes (follow-up commit).
   nixWaitTrampoline = "/usr/local/lib/yclaw/metal-wait-nix";
-  waitNix = args: [ nixWaitTrampoline ] ++ args;
+
+  # Shared bounded-wait helpers (scripts/lib/wait.sh — self-contained by design), embedded verbatim
+  # into the wrappers below. TAILSCALE is wait.sh's binary seam: launchd hands wrappers no brew PATH.
+  waitLib = builtins.readFile ../scripts/lib/wait.sh;
 
   # Narrow per-need virtiofs shares (scripts/setup.sh mounts each at /Volumes/My Shared Files/<name>):
   # metalsecrets holds ONLY metal's age key + its own secrets bundle, so metal never sees
@@ -61,7 +92,10 @@ let
 
   # The broker's logical vault NAME (vault.nix: the `vault:` key is "hermes").
   vaultName = "hermes";
-  vaultHome = "/Volumes/My Shared Files/agentvault";
+  # agent-vault's state root: it keeps everything under $AGENT_VAULT_HOME/.agent-vault (the
+  # state-dir override added by pkgs/agent-vault-state-dir.patch) — the same on-disk layout it
+  # wrote when HOME pointed at the share, so zero data migration.
+  vaultStateDir = "/Volumes/My Shared Files/agentvault";
   servicesYaml = ../nixos/vault-services.yaml;
 
   # The shared HF hub cache: metal mounts the host's regular ~/.cache/huggingface/hub here (the
@@ -84,23 +118,6 @@ let
   apertureKeyFile = config.sops.secrets."aperture/static-key".path;
   tailscaleAuthkeyFile = config.sops.secrets."tailscale/authkey".path;
 
-  # Resolve this node's tailnet (CGNAT 100.64.0.0/10) IPv4 into $TSIP, waiting for tailscaled to
-  # assign one. omlx (:8000) and STT (:8765) bind to THIS address instead of 0.0.0.0, so they are
-  # never exposed on the vmnet LAN bridge even if the pf anchor is down — the pf anchor (scoped to
-  # hermes's resolved tailnet IP) stays the PRIMARY gate; this is the bind-layer backstop (M2). A
-  # RunAtLoad agent can win the race against tailscaled coming up, so poll like the cliproxy/agent-
-  # vault sops-waits above; the `|| true` keeps a failed `tailscale ip` from tripping `set -e`
-  # mid-loop. Fail LOUD after the timeout (a service bound to nothing is useless); KeepAlive then
-  # restarts the wrapper to retry once tailscaled is up.
-  resolveTailscaleIp = ''
-    for _ in $(seq 1 120); do
-      TSIP=$(/opt/homebrew/bin/tailscale ip -4 2>/dev/null | head -1) || true
-      [ -n "$TSIP" ] && break
-      sleep 1
-    done
-    [ -n "$TSIP" ] || { echo "metal: FATAL no tailnet IPv4 from 'tailscale ip -4' after 120s — cannot bind tailnet-only" >&2; exit 1; }
-  '';
-
   # Shared daemon-boot preamble (reboot hardening). Each wrapper below is a launchd RunAtLoad daemon
   # that, on a cold boot, races three not-yet-ready things: tart's ASYNC virtiofs share auto-mount,
   # sops-nix's /run/secrets decrypt (tmpfs, empty until then), and a sane process env — launchd hands
@@ -108,21 +125,25 @@ let
   # resolving `~` and on `rich`'s import-time os.getcwd(). A wrapper that FAILS FAST on any of these is
   # penalty-boxed by launchd ("respawning too quickly") and stays DOWN until a human kicks it. So BLOCK
   # until every precondition holds — then the daemon starts cleanly on the first attempt and a reboot
-  # self-heals — and pin HOME + a readable CWD. Fail LOUD past 180s (KeepAlive re-waits) rather than
-  # exec'ing against a missing share/secret. `shares` are paths under tart's single AppleVirtIOFS
-  # automount (an `[ -e ]` access triggers + verifies the on-demand mount, since the per-share paths
-  # never appear in `mount`); `secrets` are /run/secrets files the wrapper still sources/cats itself.
+  # self-heals — and pin HOME + a readable CWD. The waits fail LOUD on exhaustion (the helper's non-zero
+  # return trips the wrapper's `set -e`; KeepAlive re-waits) rather than exec'ing against a missing
+  # share/secret. `shares` are paths under tart's single AppleVirtIOFS automount (wait_path_exists's
+  # `test -e` access triggers + verifies the on-demand mount, since the per-share paths never appear
+  # in `mount`); `secrets` are /run/secrets files the wrapper still sources/cats itself.
   mkDaemonPreamble =
-    { home, shares ? [ ], secrets ? [ ] }:
+    {
+      shares ? [ ],
+      secrets ? [ ],
+    }:
     ''
+      ${waitLib}
+      TAILSCALE=/opt/homebrew/bin/tailscale
       export HOME=${lib.escapeShellArg home}
       ${lib.concatMapStrings (m: ''
-        for _ in $(seq 1 180); do [ -e ${lib.escapeShellArg m} ] && break; sleep 1; done
-        [ -e ${lib.escapeShellArg m} ] || { echo "metal: FATAL virtiofs share not present after 180s: ${m}" >&2; exit 1; }
+        wait_path_exists ${lib.escapeShellArg m}
       '') shares}
       ${lib.concatMapStrings (f: ''
-        for _ in $(seq 1 180); do [ -s ${lib.escapeShellArg f} ] && break; sleep 1; done
-        [ -s ${lib.escapeShellArg f} ] || { echo "metal: FATAL sops secret not decrypted after 180s: ${f}" >&2; exit 1; }
+        wait_file_nonempty ${lib.escapeShellArg f}
       '') secrets}
       cd "$HOME"
     '';
@@ -136,12 +157,16 @@ let
   omlxWrapper = pkgs.writeShellScript "metal-omlx" ''
     set -euo pipefail
     ${mkDaemonPreamble {
-      inherit home;
       shares = [ hfHubCache ];
     }}
     export HF_HUB_CACHE=${lib.escapeShellArg hfHubCache}
     mkdir -p ${lib.escapeShellArg "${home}/Library/Caches/omlx-kv"}
-    ${resolveTailscaleIp}
+    # Bind to THIS node's tailnet (CGNAT 100.64.0.0/10) IPv4 instead of 0.0.0.0, so the port is never
+    # exposed on the vmnet LAN bridge even if the pf anchor is down — the pf anchor (scoped to
+    # hermes's resolved tailnet IP) stays the PRIMARY gate; this is the bind-layer backstop (M2).
+    # wait_tailscale_ip fails LOUD on exhaustion (a service bound to nothing is useless); set -e
+    # aborts and KeepAlive restarts the wrapper to retry once tailscaled is up.
+    TSIP="$(wait_tailscale_ip)"
     exec /opt/homebrew/bin/omlx serve \
       --host "$TSIP" --port 8000 \
       --memory-guard balanced \
@@ -158,12 +183,15 @@ let
   sttWrapper = pkgs.writeShellScript "metal-mlx-audio" ''
     set -euo pipefail
     ${mkDaemonPreamble {
-      inherit home;
-      shares = [ hfHubCache mlxaudioShare ];
+      shares = [
+        hfHubCache
+        mlxaudioShare
+      ];
     }}
     export HF_HUB_CACHE=${lib.escapeShellArg hfHubCache}
     export STT_MODEL=${(import ../nixos/models.nix).stt} STT_PORT=8765
-    ${resolveTailscaleIp}
+    # Tailnet-only bind (M2) — see the omlx wrapper.
+    TSIP="$(wait_tailscale_ip)"
     export STT_HOST="$TSIP"
     VENV=${lib.escapeShellArg sttVenv}
     if [ ! -x "$VENV/bin/python" ]; then
@@ -182,7 +210,6 @@ let
   cliproxyWrapper = pkgs.writeShellScript "metal-cliproxy" ''
     set -euo pipefail
     ${mkDaemonPreamble {
-      inherit home;
       shares = [ cliproxyShare ];
       secrets = [ apertureKeyFile ];
     }}
@@ -198,10 +225,10 @@ let
   agentVaultWrapper = pkgs.writeShellScript "metal-agent-vault" ''
     set -euo pipefail
     ${mkDaemonPreamble {
-      home = vaultHome;
-      shares = [ vaultHome ];
+      shares = [ vaultStateDir ];
       secrets = [ masterPasswordFile ];
     }}
+    export AGENT_VAULT_HOME=${lib.escapeShellArg vaultStateDir}
     set -a; . ${lib.escapeShellArg masterPasswordFile}; set +a
     # Proxy rate limits (instance-wide — agent-vault has no per-vault knob). hermes is the SOLE
     # proxy consumer, so instance-wide == per-vault here. Tune these to taste; LOCK pins them so a
@@ -218,21 +245,21 @@ let
   agentVaultProvision = pkgs.writeShellScript "metal-agent-vault-provision" ''
     set -euo pipefail
     ${mkDaemonPreamble {
-      home = vaultHome;
-      shares = [ vaultHome ];
+      shares = [ vaultStateDir ];
       secrets = [ masterPasswordFile ];
     }}
+    export AGENT_VAULT_HOME=${lib.escapeShellArg vaultStateDir}
     set -a; . ${lib.escapeShellArg masterPasswordFile}; set +a
     ADDR=http://127.0.0.1:14321
     owner=${adminUser}@metal.local
     AV=${pkgs.agent-vault}/bin/agent-vault
 
-    for _ in $(seq 1 120); do ${pkgs.curl}/bin/curl -fsS "$ADDR/health" >/dev/null 2>&1 && break; sleep 1; done
+    wait_for "agent-vault /health" 120 1 ${pkgs.curl}/bin/curl -fs -o /dev/null "$ADDR/health"
 
     if ${pkgs.curl}/bin/curl -fsS "$ADDR/v1/status" | ${pkgs.gnugrep}/bin/grep -q '"needs_first_user":true'; then
       printf '%s' "$AGENT_VAULT_MASTER_PASSWORD" \
         | "$AV" auth register --address "$ADDR" --email "$owner" --password-stdin
-    elif [ ! -s "$HOME/.agent-vault/session.json" ]; then
+    elif [ ! -s "$AGENT_VAULT_HOME/.agent-vault/session.json" ]; then
       printf '%s' "$AGENT_VAULT_MASTER_PASSWORD" \
         | "$AV" auth login --address "$ADDR" --email "$owner" --password-stdin
     fi
@@ -266,13 +293,32 @@ let
   # widens. The anchor is written atomically (temp + rename) and loaded into the kernel BEFORE the
   # file is persisted, with the load failure surfaced — so the on-disk file (the boot-time `load
   # anchor` source) can never claim a ruleset the kernel does not actually hold.
+  # The five service ports, derived from the canonical machines manifest (machines.json) so the pf
+  # anchor can never drift from it. builtins.fromJSON sorts attrsets, so the manifest's service
+  # order is pinned here by name to keep the historical port order.
+  pfPortServices = [
+    "omlx"
+    "mlx-audio"
+    "cliproxy"
+    "agent-vault"
+  ];
+  pfPorts = lib.concatMap (
+    name:
+    let
+      svc = machinesManifest.machines.metal.services.${name};
+    in
+    [ svc.port ] ++ lib.optional (svc ? mitm_port) svc.mitm_port
+  ) pfPortServices;
+
   pfAnchorScript = pkgs.writeShellScript "metal-pf-anchor" ''
     set -u
+    ${waitLib}
+    TAILSCALE=/opt/homebrew/bin/tailscale
     ANCHOR_DIR="/etc/pf.anchors"
     ANCHOR_FILE="$ANCHOR_DIR/metal"
     HOSTS_FILE="$ANCHOR_DIR/metal-allowed-hosts"
     HERMES_STATE="$ANCHOR_DIR/.metal-hermes-ip"
-    PORTS="{ 8000, 8765, 8317, 14321, 14322 }"
+    PORTS="{ ${lib.concatMapStringsSep ", " toString pfPorts} }"
     # A single bare IPv4 host — NO CIDR. Both writers (tailscale ip -4; bootstrap.sh) emit a bare /32,
     # so refusing a mask stops a fat-fingered/hostile `0.0.0.0/0` line in metal-allowed-hosts from
     # widening the gate to the whole tailnet. A malformed octet still gets rejected by pfctl at load,
@@ -280,12 +326,7 @@ let
     IPV4='^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
     mkdir -p "$ANCHOR_DIR"
 
-    HERMES_IP=""
-    for _ in $(seq 1 "''${1:-10}"); do
-      HERMES_IP=$(/opt/homebrew/bin/tailscale ip -4 hermes 2>/dev/null | head -1) || true
-      [ -n "$HERMES_IP" ] && break
-      sleep 1
-    done
+    HERMES_IP="$(wait_tailscale_ip hermes "''${1:-10}")" || HERMES_IP=""
     # Remember a good resolve; reuse the last-known IP on a transient unresolve so a blip never DROPS
     # hermes. Never resolved + no prior state => hermes simply absent (fail-closed, NOT the CGNAT).
     if printf '%s' "$HERMES_IP" | grep -Eq "$IPV4"; then
@@ -391,13 +432,13 @@ in
 
   # CLI helper on the system PATH (/run/current-system/sw/bin) so bootstrap can mint hermes's
   # agent-vault proxy token over `tailscale ssh root@metal`. `agent rotate` needs the provisioned
-  # master session, which lives in the admin user's HOME=vaultHome (where the provision daemon
-  # registered it) — so run it as admin with that HOME. `--token-only` is idempotent and prints
+  # master session, which lives under AGENT_VAULT_HOME=vaultStateDir (where the provision daemon
+  # registered it) — so run it as admin with that override. `--token-only` is idempotent and prints
   # ONLY the raw proxy token. A bare `agent-vault` is NOT on root's SSH PATH (nix-store binary), and
   # root has no session, which is why bootstrap must go through this helper.
   environment.systemPackages = [
     (pkgs.writeShellScriptBin "metal-mint-hermes-token"
-      "exec /usr/bin/sudo -u ${adminUser} /usr/bin/env HOME=${lib.escapeShellArg vaultHome} ${pkgs.agent-vault}/bin/agent-vault agent rotate ${vaultName} --token-only")
+      "exec /usr/bin/sudo -u ${adminUser} /usr/bin/env HOME=${lib.escapeShellArg home} AGENT_VAULT_HOME=${lib.escapeShellArg vaultStateDir} ${pkgs.agent-vault}/bin/agent-vault agent rotate ${vaultName} --token-only")
 
     # In-guest redeploy over `tailscale ssh root@metal -- metal-redeploy`: rebuild metal from the
     # read-only repo virtiofs share. Runs as root (the only admin path), so no sudo. The GitHub token
@@ -490,12 +531,12 @@ in
   # (tart --no-graphics), so no such session exists and the asuser load aborts activation
   # (RC=134) before the Homebrew bundle + tailnet join even run. Running these as UserName=admin
   # system daemons loads them in the global context (no GUI session) while still running as the
-  # admin uid, so they read the admin-owned sops secrets and keep their HOME=share overrides.
+  # admin uid, so they read the admin-owned sops secrets.
   # MLX/Metal GPU compute is verified to work headless from a daemon context (no login session),
   # so omlx/mlx-audio do NOT need a GUI session. All ProgramArguments are absolute (launchd does
   # not use PATH or expand ~). RunAtLoad + KeepAlive = restart-always, except the provision oneshot.
   launchd.daemons.omlx.serviceConfig = {
-    ProgramArguments = waitNix [ "${omlxWrapper}" ];
+    ProgramArguments = wait4path [ "${omlxWrapper}" ];
     UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = true;
@@ -504,7 +545,7 @@ in
   };
 
   launchd.daemons.mlx-audio.serviceConfig = {
-    ProgramArguments = waitNix [ "${sttWrapper}" ];
+    ProgramArguments = wait4path [ "${sttWrapper}" ];
     UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = true;
@@ -513,7 +554,7 @@ in
   };
 
   launchd.daemons.cliproxy.serviceConfig = {
-    ProgramArguments = waitNix [ "${cliproxyWrapper}" ];
+    ProgramArguments = wait4path [ "${cliproxyWrapper}" ];
     UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = true;
@@ -522,7 +563,7 @@ in
   };
 
   launchd.daemons.agent-vault.serviceConfig = {
-    ProgramArguments = waitNix [ "${agentVaultWrapper}" ];
+    ProgramArguments = wait4path [ "${agentVaultWrapper}" ];
     UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = true;
@@ -530,13 +571,18 @@ in
     StandardErrorPath = "${logs}/agent-vault/server.error.log";
   };
 
-  # Provision runs once at load and exits (KeepAlive=false). It waits for the server's /health
-  # before registering, so no explicit ordering against agent-vault is needed.
+  # Provision oneshot: SuccessfulExit=false relaunches it until it exits 0 (the script is
+  # idempotent), then leaves it alone — a boot-race failure self-heals instead of staying down.
+  # ThrottleInterval stays at the 10s launchd default: lowering it + a fast-exiting job is the
+  # "respawning too quickly" penalty box. It waits for the server's /health before registering,
+  # so no explicit ordering against agent-vault is needed.
   launchd.daemons.agent-vault-provision.serviceConfig = {
-    ProgramArguments = waitNix [ "${agentVaultProvision}" ];
+    ProgramArguments = wait4path [ "${agentVaultProvision}" ];
     UserName = adminUser;
     RunAtLoad = true;
-    KeepAlive = false;
+    KeepAlive = {
+      SuccessfulExit = false;
+    };
     StandardOutPath = "${logs}/agent-vault/provision.log";
     StandardErrorPath = "${logs}/agent-vault/provision.error.log";
   };
@@ -551,10 +597,14 @@ in
   #     auto-security-update reboots this module keeps on), exposing the credential services.
   # bootSetupScript (defined above) re-applies all of it at every boot: raise the cap, reload + enable
   # pf and fail LOUD if it does not come up, then re-resolve the allowed sources and re-scope the anchor.
+  # SuccessfulExit=false relaunches the (idempotent) oneshot until it exits 0, so a transient pf/
+  # tailscaled failure self-heals; ThrottleInterval stays at the 10s default (penalty-box trap).
   launchd.daemons.metal-boot-setup.serviceConfig = {
-    ProgramArguments = waitNix [ "${bootSetupScript}" ];
+    ProgramArguments = wait4path [ "${bootSetupScript}" ];
     RunAtLoad = true;
-    KeepAlive = false;
+    KeepAlive = {
+      SuccessfulExit = false;
+    };
     StandardOutPath = "/var/log/metal-boot-setup.log";
     StandardErrorPath = "/var/log/metal-boot-setup.error.log";
   };
@@ -565,7 +615,7 @@ in
   # the sticky last-known IP, and an unchanged source set skips the reload, so established pf state is
   # left intact.
   launchd.daemons.metal-pf-refresh.serviceConfig = {
-    ProgramArguments = waitNix [ "${pfAnchorScript}" "3" ];
+    ProgramArguments = wait4path [ "${pfAnchorScript}" "3" ];
     StartInterval = 300;
     RunAtLoad = false;
     StandardOutPath = "/var/log/metal-pf-refresh.log";
@@ -580,8 +630,8 @@ in
   # sops-nix's postActivation install, so the key is in place when sops decrypts. Fail loud if
   # the share key is absent — a node with no age key cannot decrypt any secret.
   system.activationScripts.preActivation.text = ''
-    # Trampoline on the LOCAL root volume (NOT /nix) so launchd can always exec it at boot; it blocks
-    # until the real /nix program ($1) is executable, surviving the /nix-volume mount race. See waitNix.
+    # UNUSED since the wait4path conversion — kept until the orchestrator's live reboot gate passes;
+    # the follow-up commit deletes this writer together with nixWaitTrampoline.
     install -d -m 0755 /usr/local/lib /usr/local/lib/yclaw
     cat > ${nixWaitTrampoline} <<'TRAMPOLINE'
 #!/bin/sh
@@ -727,41 +777,21 @@ TRAMPOLINE
       # override db (survives reboot), so no bootSetupScript duplication is needed. System jobs
       # (/System/Library/LaunchDaemons) are addressed in the `system/` domain; the auto-login admin
       # session's per-user agents (/System/Library/LaunchAgents) in `gui/<uid>/`, mirroring the
-      # `for BIN in …` allowlist loop above. Domains were read off this build's own
-      # /System/Library/Launch{Daemons,Agents} (the guests share the cirruslabs macos-tahoe base),
-      # not guessed. All `|| true`: SIP is ON (a protected label is refused silently), the GUI
-      # session may be down on the very first activation, and a label absent on this build no-ops.
+      # `for BIN in …` allowlist loop above. The label lists live in machines.json (debloat.metal —
+      # the canonical manifest; bluebubbles consumes its own deliberate subset). Domains were read
+      # off this build's own /System/Library/Launch{Daemons,Agents} (the guests share the cirruslabs
+      # macos-tahoe base), not guessed. All `|| true`: SIP is ON (a protected label is refused
+      # silently), the GUI session may be down on the very first activation, and a label absent on
+      # this build no-ops.
       # KEPT ENABLED deliberately: ReportCrash + spindump (LOCAL crash diagnostics — only the Apple
       # telemetry SUBMISSION is cut, via SubmitDiagInfo) and softwareupdated (security updates, set
       # further down). tmutil kills Time Machine's auto-schedule; the backupd daemons are belt-and-braces.
       ADMIN_UID=$(/usr/bin/id -u ${adminUser})
       /usr/bin/tmutil disable >/dev/null 2>&1 || true
-      for L in \
-        com.apple.metadata.mds \
-        com.apple.backupd com.apple.backupd-helper \
-        com.apple.modelmanagerd \
-        com.apple.cloudd com.apple.contextstored \
-        com.apple.coreduetd com.apple.ospredictiond \
-        com.apple.locationd com.apple.mediaremoted com.apple.nfcd \
-        com.apple.analyticsd com.apple.audioanalyticsd com.apple.wifianalyticsd \
-        com.apple.ecosystemanalyticsd com.apple.osanalytics.osanalyticshelper \
-        com.apple.rtcreportingd com.apple.dprivacyd com.apple.triald.system com.apple.SubmitDiagInfo \
-        com.apple.rapportd com.apple.icloud.searchpartyd com.apple.icloud.findmydeviced; do
+      for L in ${toString machinesManifest.debloat.metal.system}; do
         /bin/launchctl disable "system/$L" >/dev/null 2>&1 || true
       done
-      for L in \
-        com.apple.photoanalysisd com.apple.mediaanalysisd \
-        com.apple.generativeexperiencesd com.apple.intelligenceplatformd com.apple.knowledgeconstructiond \
-        com.apple.cloudd com.apple.bird com.apple.commerce \
-        com.apple.protectedcloudstorage.protectedcloudkeysyncing com.apple.ContextStoreAgent \
-        com.apple.assistantd com.apple.Siri.agent com.apple.siriactionsd com.apple.siriinferenced \
-        com.apple.siriknowledged com.apple.sirittsd com.apple.SiriTTSTrainingAgent \
-        com.apple.parsecd com.apple.suggestd \
-        com.apple.proactived com.apple.proactiveeventtrackerd \
-        com.apple.geoanalyticsd com.apple.inputanalyticsd com.apple.gamed \
-        com.apple.ScreenTimeAgent com.apple.ScreenTimeSettingsAgent com.apple.familycircled \
-        com.apple.dprivacyd com.apple.triald com.apple.BiomeAgent com.apple.biomesyncd \
-        com.apple.AMPLibraryAgent; do
+      for L in ${toString machinesManifest.debloat.metal.gui}; do
         /bin/launchctl disable "gui/$ADMIN_UID/$L" >/dev/null 2>&1 || true
       done
       # Power: a headless always-on server must never nap or sleep (a sleeping VM drops the services).
@@ -804,9 +834,13 @@ TRAMPOLINE
     (lib.mkAfter ''
       # tailscaled is brew-installed (homebrew module above) but is NOT registered as a system
       # daemon on a fresh node, and `tailscale up` needs it running — register + start it
-      # (idempotent), then wait for the daemon to answer before joining.
+      # (idempotent), then wait for the daemon to answer before joining. Best-effort (`|| true`):
+      # a daemon that never answers falls through to the same guarded branches as before. NOTE:
+      # `tailscale status` answering is deliberately weaker than wait_tailscale_running (which
+      # requires BackendState=Running) — a fresh logged-out node must proceed to `tailscale up`.
+      ${waitLib}
       /opt/homebrew/bin/tailscaled install-system-daemon >/dev/null 2>&1 || true
-      for _ in $(seq 1 30); do /opt/homebrew/bin/tailscale status >/dev/null 2>&1 && break; sleep 2; done
+      wait_for "tailscaled answering" 30 2 /bin/sh -c '/opt/homebrew/bin/tailscale status >/dev/null 2>&1' || true
       # Ensure BOTH the tailnet join and the SSH server, idempotently. Gate on the backend actually
       # being Running (joined) — NOT on `tailscale status` succeeding, which returns 0 even when the
       # daemon is up but LOGGED OUT (so the old guard skipped the cold-join `up` forever). The SSH

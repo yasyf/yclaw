@@ -19,6 +19,12 @@ buildGoModule {
 
   env.CGO_ENABLED = "0";
 
+  # AGENT_VAULT_HOME state-dir override (upstream resolves every state path via
+  # os.UserHomeDir). Pure Go, no new deps, so vendorHash is unchanged. Written
+  # against the pinned rev above — rebase it on any agent-vault-src bump
+  # (consider upstreaming).
+  patches = [ ./agent-vault-state-dir.patch ];
+
   # main package is the module root (Dockerfile: `go build -o /agent-vault` with no path).
   subPackages = [ "." ];
 

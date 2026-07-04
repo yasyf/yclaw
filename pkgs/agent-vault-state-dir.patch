@@ -1,0 +1,185 @@
+diff -ruN --exclude=.claude a/cmd/run.go b/cmd/run.go
+--- a/cmd/run.go	2026-06-14 16:04:15
++++ b/cmd/run.go	2026-07-03 20:02:59
+@@ -549,7 +549,7 @@
+ 	}
+ 
+ 	if caPath == "" {
+-		home, err := os.UserHomeDir()
++		home, err := stateHomeDir()
+ 		if err != nil {
+ 			return env, 0, false, fmt.Errorf("resolve home dir: %w", err)
+ 		}
+diff -ruN --exclude=.claude a/cmd/server.go b/cmd/server.go
+--- a/cmd/server.go	2026-06-14 16:04:15
++++ b/cmd/server.go	2026-07-03 20:02:59
+@@ -624,7 +624,7 @@
+ }
+ 
+ func serverLogPath() (string, error) {
+-	home, err := os.UserHomeDir()
++	home, err := stateHomeDir()
+ 	if err != nil {
+ 		return "", err
+ 	}
+@@ -673,4 +673,13 @@
+ 	serverCmd.Flags().Int64("max-request-bytes", defaultMaxRequestBytes(), "max request body bytes forwarded to upstreams (default: 1 GiB; also respects AGENT_VAULT_MAX_REQUEST_BYTES)")
+ 	serverCmd.AddCommand(stopCmd)
+ 	rootCmd.AddCommand(serverCmd)
++}
++
++// stateHomeDir returns AGENT_VAULT_HOME when set and non-empty, else the user
++// home dir — the base under which the .agent-vault state layout lives.
++func stateHomeDir() (string, error) {
++	if h := os.Getenv("AGENT_VAULT_HOME"); h != "" {
++		return h, nil
++	}
++	return os.UserHomeDir()
+ }
+diff -ruN --exclude=.claude a/internal/ca/soft.go b/internal/ca/soft.go
+--- a/internal/ca/soft.go	2026-06-14 16:04:15
++++ b/internal/ca/soft.go	2026-07-03 20:02:59
+@@ -83,7 +83,7 @@
+ 
+ 	dir := opts.Dir
+ 	if dir == "" {
+-		home, err := os.UserHomeDir()
++		home, err := stateHomeDir()
+ 		if err != nil {
+ 			return nil, fmt.Errorf("resolving home dir: %w", err)
+ 		}
+@@ -390,3 +390,12 @@
+ }
+ 
+ var _ Provider = (*SoftCA)(nil)
++
++// stateHomeDir returns AGENT_VAULT_HOME when set and non-empty, else the user
++// home dir — the base under which the .agent-vault state layout lives.
++func stateHomeDir() (string, error) {
++	if h := os.Getenv("AGENT_VAULT_HOME"); h != "" {
++		return h, nil
++	}
++	return os.UserHomeDir()
++}
+diff -ruN --exclude=.claude a/internal/isolation/cacopy.go b/internal/isolation/cacopy.go
+--- a/internal/isolation/cacopy.go	2026-06-14 16:04:15
++++ b/internal/isolation/cacopy.go	2026-07-03 20:02:59
+@@ -87,9 +87,18 @@
+ }
+ 
+ func hostIsolationDir() (string, error) {
+-	home, err := os.UserHomeDir()
++	home, err := stateHomeDir()
+ 	if err != nil {
+ 		return "", fmt.Errorf("resolve home dir: %w", err)
+ 	}
+ 	return filepath.Join(home, ".agent-vault", isolationDirName), nil
++}
++
++// stateHomeDir returns AGENT_VAULT_HOME when set and non-empty, else the user
++// home dir — the base under which the .agent-vault state layout lives.
++func stateHomeDir() (string, error) {
++	if h := os.Getenv("AGENT_VAULT_HOME"); h != "" {
++		return h, nil
++	}
++	return os.UserHomeDir()
+ }
+diff -ruN --exclude=.claude a/internal/isolation/docker.go b/internal/isolation/docker.go
+--- a/internal/isolation/docker.go	2026-06-14 16:04:15
++++ b/internal/isolation/docker.go	2026-07-03 20:02:59
+@@ -72,7 +72,7 @@
+ 		return nil, errors.New("BuildRunArgs: CommandArgs required")
+ 	}
+ 
+-	home, _ := os.UserHomeDir()
++	home, _ := stateHomeDir()
+ 
+ 	// The CWD is bind-mounted read-write at /workspace. Subject it to
+ 	// the same host-src validation as user --mount flags so running
+diff -ruN --exclude=.claude a/internal/pidfile/pidfile.go b/internal/pidfile/pidfile.go
+--- a/internal/pidfile/pidfile.go	2026-06-14 16:04:15
++++ b/internal/pidfile/pidfile.go	2026-07-03 20:02:59
+@@ -14,7 +14,7 @@
+ 
+ // Path returns the path to the PID file (~/.agent-vault/agent-vault.pid).
+ func Path() (string, error) {
+-	home, err := os.UserHomeDir()
++	home, err := stateHomeDir()
+ 	if err != nil {
+ 		return "", err
+ 	}
+@@ -91,4 +91,13 @@
+ func IsRunning(pid int) bool {
+ 	err := syscall.Kill(pid, 0)
+ 	return err == nil || errors.Is(err, syscall.EPERM)
++}
++
++// stateHomeDir returns AGENT_VAULT_HOME when set and non-empty, else the user
++// home dir — the base under which the .agent-vault state layout lives.
++func stateHomeDir() (string, error) {
++	if h := os.Getenv("AGENT_VAULT_HOME"); h != "" {
++		return h, nil
++	}
++	return os.UserHomeDir()
+ }
+diff -ruN --exclude=.claude a/internal/session/session.go b/internal/session/session.go
+--- a/internal/session/session.go	2026-06-14 16:04:15
++++ b/internal/session/session.go	2026-07-03 20:02:59
+@@ -23,7 +23,7 @@
+ }
+ 
+ func sessionPath() (string, error) {
+-	home, err := os.UserHomeDir()
++	home, err := stateHomeDir()
+ 	if err != nil {
+ 		return "", err
+ 	}
+@@ -82,7 +82,7 @@
+ }
+ 
+ func contextPath() (string, error) {
+-	home, err := os.UserHomeDir()
++	home, err := stateHomeDir()
+ 	if err != nil {
+ 		return "", err
+ 	}
+@@ -114,4 +114,13 @@
+ 		return ""
+ 	}
+ 	return strings.TrimSpace(string(data))
++}
++
++// stateHomeDir returns AGENT_VAULT_HOME when set and non-empty, else the user
++// home dir — the base under which the .agent-vault state layout lives.
++func stateHomeDir() (string, error) {
++	if h := os.Getenv("AGENT_VAULT_HOME"); h != "" {
++		return h, nil
++	}
++	return os.UserHomeDir()
+ }
+diff -ruN --exclude=.claude a/internal/store/store.go b/internal/store/store.go
+--- a/internal/store/store.go	2026-06-14 16:04:15
++++ b/internal/store/store.go	2026-07-03 20:02:59
+@@ -608,7 +608,7 @@
+ // DefaultDBPath returns the default path for the SQLite database file (~/.agent-vault/agent-vault.db).
+ // It creates the ~/.agent-vault/ directory with 0700 permissions if it does not exist.
+ func DefaultDBPath() (string, error) {
+-	home, err := os.UserHomeDir()
++	home, err := stateHomeDir()
+ 	if err != nil {
+ 		return "", err
+ 	}
+@@ -617,4 +617,13 @@
+ 		return "", err
+ 	}
+ 	return filepath.Join(dir, "agent-vault.db"), nil
++}
++
++// stateHomeDir returns AGENT_VAULT_HOME when set and non-empty, else the user
++// home dir — the base under which the .agent-vault state layout lives.
++func stateHomeDir() (string, error) {
++	if h := os.Getenv("AGENT_VAULT_HOME"); h != "" {
++		return h, nil
++	}
++	return os.UserHomeDir()
+ }
