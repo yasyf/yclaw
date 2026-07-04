@@ -82,9 +82,10 @@ async def collect(machines: list[Machine]) -> tuple[list[list[str]], list[ProbeR
                         partial(probes.service_health, machine, service, timeout=PROBE_TIMEOUT),
                     )
                 )
-        for share in machine.shares or ():
-            probe = partial(probes.share_mounted, machine, share, timeout=PROBE_TIMEOUT)
-            tasks.append((("share", machine.name, share), _limited(limiter, probe)))
+        if machine.os == "macos":
+            for share in machine.shares or ():
+                probe = partial(probes.share_mounted, machine, share, timeout=PROBE_TIMEOUT)
+                tasks.append((("share", machine.name, share), _limited(limiter, probe)))
     probed = await _gather(tasks)
 
     rows: list[list[str]] = []
@@ -114,10 +115,11 @@ async def collect(machines: list[Machine]) -> tuple[list[list[str]], list[ProbeR
                 health_cell = status_label(result.status)
                 details.append(result.detail)
             rows.append([machine.name, service.name, state_cell, health_cell, "; ".join(details)])
-        for share in machine.shares or ():
-            result = probed[("share", machine.name, share)]
-            results.append(result)
-            rows.append([machine.name, f"share:{share}", status_label(result.status), "—", result.detail])
+        if machine.os == "macos":
+            for share in machine.shares or ():
+                result = probed[("share", machine.name, share)]
+                results.append(result)
+                rows.append([machine.name, f"share:{share}", status_label(result.status), "—", result.detail])
     return rows, results, tailnet
 
 

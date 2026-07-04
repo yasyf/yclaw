@@ -149,6 +149,7 @@ async def systemd_state(machine: Machine, service: Service, *, timeout: float = 
 
 
 async def share_mounted(machine: Machine, share: str, *, timeout: float = 30) -> ProbeResult:
+    """macOS-guest only: shares mount at /Volumes/My Shared Files/<name> (Linux guests use fstab virtiofs paths)."""
     path = f"/Volumes/My Shared Files/{share}"
     result = await remote.run(machine, f"ls -d {shlex.quote(path)}", timeout=timeout)
     mounted = result.returncode == 0

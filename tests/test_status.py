@@ -99,6 +99,25 @@ def test_status_all_machines_down_nodes_render_as_down(monkeypatch):
     assert result.exit_code == 1  # hermes + bluebubbles down
 
 
+def test_status_share_probes_skip_non_macos_machines(monkeypatch):
+    probed_machines: list[str] = []
+
+    async def recording_share(machine, share, *, timeout=30):
+        probed_machines.append(machine.name)
+        return ProbeResult(share, Status.PASS, f"sh-{share}")
+
+    _install_metal_probes(monkeypatch, hermes_up=True)
+    monkeypatch.setattr(probes, "share_mounted", recording_share)
+
+    result = CliRunner().invoke(main, ["status"])
+    lines = result.output.splitlines()
+
+    assert "hermes" not in probed_machines  # NixOS shares are virtiofs tags, not /Volumes/My Shared Files
+    assert "metal" in probed_machines  # macOS guest still probed
+    assert not any(line.startswith("hermes") and "share:" in line for line in lines)
+    assert any(line.startswith("metal") and "share:metalsecrets" in line for line in lines)
+
+
 def test_status_unknown_machine_is_usage_error():
     result = CliRunner().invoke(main, ["status", "nope"])
     assert result.exit_code == 2
