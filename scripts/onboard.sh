@@ -332,11 +332,13 @@ gate_e_bluebubbles() {
   allowlist="${BLUEBUBBLES_ALLOWED_USERS:?node.env has no BLUEBUBBLES_ALLOWED_USERS}"
 
   note "Running bluebubbles-setup.sh on the guest (config, TCC grants, tailnet serve, health gate) …"
-  # bb_pw is [A-Za-z0-9]{32} and allowlist is space-free iMessage handles, so this single command
-  # string re-parses losslessly in the remote login shell (same reasoning as redeploy.sh).
-  ts_run root@bluebubbles \
-    "env BLUEBUBBLES_PASSWORD=$bb_pw BLUEBUBBLES_ALLOWED_USERS=$allowlist bash -s setup" \
-    < "$REPO_ROOT/scripts/bluebubbles-setup.sh" || true
+  # Feed `setup` over guest_pipe (wait.sh/pf.sh + the debloat prelude piped ahead of the script). The
+  # two config inputs ride the stdin stream as `export` lines (GUEST_PIPE_ENV), NOT argv — bb_pw and
+  # the allowlist stay out of `ps` on host and guest. setup reads both from its environment. The
+  # names are `local` here so dynamic scope hands them to guest_pipe without leaking to onboard.
+  local BLUEBUBBLES_PASSWORD="$bb_pw" BLUEBUBBLES_ALLOWED_USERS="$allowlist"
+  local GUEST_PIPE_ENV="BLUEBUBBLES_PASSWORD BLUEBUBBLES_ALLOWED_USERS"
+  guest_pipe root@bluebubbles "$REPO_ROOT/scripts/bluebubbles-setup.sh" setup || true
 
   if [ "$(bluebubbles_health "$bb_pw")" = HEALTHY ]; then
     ok "BlueBubbles healthy — setup auto-hardened (Screen Sharing disabled)."

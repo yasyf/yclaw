@@ -25,12 +25,22 @@ guest_prelude() {
 # guest_pipe <target> <script-path> [args...] — pipe wait.sh + pf.sh + the per-node prelude + the
 # script to `/bin/bash -s -- args...` on <target> over tailscale ssh. Generalizes the
 # `tailscale ssh root@bluebubbles -- bash -s harden < bluebubbles-setup.sh` idiom.
+#
+# Secret env: each name in GUEST_PIPE_ENV (space-separated) is read from THIS shell and emitted as an
+# `export NAME='value'` line INTO the piped stream — carried over stdin, so the values never land in
+# argv/`ps` on the host tailscale process OR the guest bash (unlike an `env NAME=value` prefix, which
+# does). Values must be single-quote-safe; callers pass a [A-Za-z0-9] password + space-free handles.
 guest_pipe() {
   local target="$1" script="$2"
   shift 2
-  local node="${target##*@}" libdir
+  local node="${target##*@}" libdir v
   libdir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   [ -f "$script" ] || die "guest_pipe: script not found: $script"
-  { cat "$libdir/wait.sh" "$libdir/pf.sh"; guest_prelude "$node"; cat "$script"; } \
-    | tailscale ssh "$target" -- /bin/bash -s -- "$@"
+  {
+    cat "$libdir/wait.sh" "$libdir/pf.sh"
+    guest_prelude "$node"
+    # shellcheck disable=SC2086  # deliberate word-split of the space-joined name list
+    for v in ${GUEST_PIPE_ENV:-}; do printf "export %s='%s'\n" "$v" "${!v}"; done
+    cat "$script"
+  } | tailscale ssh "$target" -- /bin/bash -s -- "$@"
 }

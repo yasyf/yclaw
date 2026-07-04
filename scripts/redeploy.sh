@@ -96,13 +96,14 @@ redeploy_bluebubbles() {
   # BLUEBUBBLES_ALLOWED_USERS verbatim (the documented `source a node.env` path in bluebubbles-setup.sh's
   # header). set -u makes a missing value fail loud; a missing file makes `.` fail loud.
   . "$NODE_CONFIG_DIR/node.env"
-  # Mirror bb-harden's piping (justfile): feed bluebubbles-setup.sh over ssh, here its `reconfigure`
-  # subcommand, with the two config inputs in the REMOTE env (the guest holds no keychain / state share).
-  # The password is [A-Za-z0-9]{32} and the allowlist is space-free iMessage handles, so the remote
-  # shell's word-split over the joined args is lossless (no quoting dance needed, unlike the hermes #).
-  tailscale ssh root@bluebubbles -- \
-    env BLUEBUBBLES_PASSWORD="$bb_password" BLUEBUBBLES_ALLOWED_USERS="$BLUEBUBBLES_ALLOWED_USERS" \
-    bash -s reconfigure < scripts/bluebubbles-setup.sh
+  # Mirror bb-harden's piping (justfile): feed bluebubbles-setup.sh's `reconfigure` over guest_pipe —
+  # wait.sh/pf.sh + the debloat prelude are piped ahead of the script, and the two config inputs ride
+  # the stdin stream as `export` lines (GUEST_PIPE_ENV), NOT argv — so the server password + allowlist
+  # stay out of `ps` on host and guest (the guest holds no keychain / state share). reconfigure reads
+  # both from its environment. The names are `local` so dynamic scope reaches guest_pipe without leaking.
+  local BLUEBUBBLES_PASSWORD="$bb_password"
+  local GUEST_PIPE_ENV="BLUEBUBBLES_PASSWORD BLUEBUBBLES_ALLOWED_USERS"
+  guest_pipe root@bluebubbles scripts/bluebubbles-setup.sh reconfigure
 }
 
 case "${1:-}" in

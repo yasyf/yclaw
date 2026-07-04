@@ -63,8 +63,10 @@ cmd_harden() {
 # the `debloat` subcommand (needs no secrets). SIP is off here, so `bootout` (stop the running job
 # now) then `disable` (persist the override across reboot) both work. SYSTEM jobs (LaunchDaemons)
 # need sudo and the `system/` domain; the signed-in user's LaunchAgents live in `gui/<uid>/`. Every
-# call is best-effort (`|| true`): a label absent on this build is a harmless no-op. Domains match
-# darwin/metal.nix (same cirruslabs macos-tahoe base). This list is deliberately NARROW: it touches
+# call is best-effort (`|| true`): a label absent on this build is a harmless no-op. The label lists
+# arrive from the guest_pipe prelude (YCLAW_DEBLOAT_SYSTEM / YCLAW_DEBLOAT_GUI), rendered from
+# machines.json .debloat.bluebubbles — a deliberate SUBSET of metal's (same cirruslabs macos-tahoe
+# base), never merged with it. That subset is deliberately NARROW: it touches
 # NOTHING in the Apple-ID / push / iMessage / iCloud / Private-API path — apsd, imagent,
 # identityservicesd, akd, AppleAccountd, cloudd, bird, contextstored, IMDPersistenceAgent, soagent,
 # Messages, BlueBubbles all stay up. KEPT too: ReportCrash + spindump (local crash diagnostics) —
@@ -75,20 +77,13 @@ cmd_debloat() {
   tmutil disable >/dev/null 2>&1 || true
   local uid L
   uid="$(id -u)"
-  for L in \
-    com.apple.metadata.mds \
-    com.apple.backupd com.apple.backupd-helper \
-    com.apple.modelmanagerd \
-    com.apple.analyticsd com.apple.osanalytics.osanalyticshelper \
-    com.apple.ecosystemanalyticsd com.apple.rtcreportingd com.apple.SubmitDiagInfo; do
+  # shellcheck disable=SC2086  # deliberate word-split of the space-joined prelude list
+  for L in $YCLAW_DEBLOAT_SYSTEM; do
     sudo launchctl bootout "system/$L" >/dev/null 2>&1 || true
     sudo launchctl disable "system/$L" >/dev/null 2>&1 || true
   done
-  for L in \
-    com.apple.generativeexperiencesd com.apple.intelligenceplatformd \
-    com.apple.assistantd com.apple.Siri.agent \
-    com.apple.photoanalysisd com.apple.mediaanalysisd \
-    com.apple.gamed com.apple.ScreenTimeAgent com.apple.familycircled; do
+  # shellcheck disable=SC2086  # deliberate word-split of the space-joined prelude list
+  for L in $YCLAW_DEBLOAT_GUI; do
     launchctl bootout "gui/$uid/$L" >/dev/null 2>&1 || true
     launchctl disable "gui/$uid/$L" >/dev/null 2>&1 || true
   done
@@ -177,21 +172,12 @@ grant_tcc() {
 }
 
 # --- BlueBubbles REST health ------------------------------------------------------------------
-# Poll the local REST API until BlueBubbles answers AND the Private API HELPER has injected into
-# Messages.app, or the timeout. server/info returns two distinct fields: `private_api` is just the
-# config toggle (always true here — we set enable_private_api), while `helper_connected` is the real
-# runtime status the TCC grant exists to achieve — so gate on that. Conservative: if it can't be
-# confirmed, return non-fatal failure so the caller falls back rather than disabling VNC prematurely.
+# Poll the local REST API (30 attempts, 2s apart) until BlueBubbles answers 2xx on ping, via the
+# piped-in wait.sh wait_http_ok. Conservative: a never-2xx run returns wait_http_ok's non-zero (a
+# non-fatal failure to the caller) so setup falls back rather than disabling VNC prematurely.
 bb_healthy() {
-  local pw="$1" i info
-  for i in $(seq 1 30); do
-    if curl -sf --max-time 5 "http://localhost:${BB_PORT}/api/v1/ping?password=${pw}" >/dev/null 2>&1; then
-      info="$(curl -sf --max-time 5 "http://localhost:${BB_PORT}/api/v1/server/info?password=${pw}" 2>/dev/null || true)"
-      printf '%s' "$info" | grep -qiE '"helper_connected"[[:space:]]*:[[:space:]]*true' && return 0
-    fi
-    sleep 2
-  done
-  return 1
+  local pw="$1"
+  wait_http_ok "http://localhost:${BB_PORT}/api/v1/ping?password=${pw}" 30 2
 }
 
 # --- shared idempotent config steps (re-applied by both `setup` and `reconfigure`) ------------
@@ -239,34 +225,26 @@ serve_tailnet() {
 # app password. Lock it down with a pf anchor (same idempotent install convention as the
 # VNC anchor below): inbound :1234 only from the tailnet CGNAT + loopback, blocked elsewhere.
 install_rest_anchor() {
-  local BB_PF_ANCHOR_FILE="/etc/pf.anchors/bluebubbles-rest"
-  sudo mkdir -p /etc/pf.anchors
-
-  sudo tee "$BB_PF_ANCHOR_FILE" > /dev/null <<EOF
+  local rules
+  rules="$(mktemp)"
+  cat > "$rules" <<EOF
 pass in quick proto tcp from 100.64.0.0/10 to any port ${BB_PORT}
 pass in quick on lo0 proto tcp to any port ${BB_PORT}
 block in quick proto tcp from any to any port ${BB_PORT}
 EOF
-
-  # Wire the anchor into pf.conf if not already present
-  if ! grep -q 'anchor "bluebubbles-rest"' /etc/pf.conf; then
-    sudo bash -c 'cat >> /etc/pf.conf <<CONF
-
-anchor "bluebubbles-rest"
-load anchor "bluebubbles-rest" from "/etc/pf.anchors/bluebubbles-rest"
-CONF'
-  fi
-
-  sudo pfctl -f /etc/pf.conf
+  # install_pf_anchor (piped-in pf.sh) does a targeted `pfctl -a bluebubbles-rest -f` load, NEVER a
+  # full-ruleset reload (which would flush the vmnet/NAT anchors), and --wire-pfconf appends the
+  # boot-time anchor/load lines idempotently. Runs as root (the guest is entered as root).
+  install_pf_anchor bluebubbles-rest "$rules" --wire-pfconf
+  rm -f "$rules"
 }
 
 # pf anchor: allow VNC only from Tailscale + private networks. Re-applied on `reconfigure` to keep
 # the firewall rules current; the Screen-Sharing SERVICE state itself is left untouched there.
 install_vnc_anchor() {
-  local PF_ANCHOR_FILE="/etc/pf.anchors/vnc"
-  sudo mkdir -p /etc/pf.anchors
-
-  sudo tee "$PF_ANCHOR_FILE" > /dev/null <<'EOF'
+  local rules
+  rules="$(mktemp)"
+  cat > "$rules" <<'EOF'
 table <vnc_allowed> { \
   100.64.0.0/10, \
   192.168.0.0/16, \
@@ -276,17 +254,10 @@ table <vnc_allowed> { \
 pass in quick proto { tcp udp } from <vnc_allowed> to any port 5900:5902
 block in quick proto { tcp udp } from any to any port 5900:5902
 EOF
-
-  # Wire the anchor into pf.conf if not already present
-  if ! grep -q 'anchor "vnc"' /etc/pf.conf; then
-    sudo bash -c 'cat >> /etc/pf.conf <<CONF
-
-anchor "vnc"
-load anchor "vnc" from "/etc/pf.anchors/vnc"
-CONF'
-  fi
-
-  sudo pfctl -f /etc/pf.conf
+  # Targeted `pfctl -a vnc -f` load via install_pf_anchor (never the vmnet-flushing full reload);
+  # --wire-pfconf appends the boot-time anchor/load lines idempotently. Runs as root on the guest.
+  install_pf_anchor vnc "$rules" --wire-pfconf
+  rm -f "$rules"
 }
 
 # --- setup (default) --------------------------------------------------------------------------
