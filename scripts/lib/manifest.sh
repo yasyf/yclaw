@@ -11,12 +11,14 @@ _manifest_die() { printf 'FATAL: %s\n' "$*" >&2; return 1; }
 # nothing on stdout in that case.
 manifest_get() {
   local v
+  command -v jq >/dev/null || { _manifest_die "jq required to read machines.json"; return 1; }
   v="$(jq -er "$1" "$YCLAW_MACHINES_JSON")" || { _manifest_die "machines.json: no value at '$1'"; return 1; }
   printf '%s\n' "$v"
 }
 
 # Print each element of the array at <jq-expr>, one per line.
 manifest_list() {
+  command -v jq >/dev/null || { _manifest_die "jq required to read machines.json"; return 1; }
   jq -er "($1)[]" "$YCLAW_MACHINES_JSON" \
     || _manifest_die "machines.json: no array at '$1'"
 }
