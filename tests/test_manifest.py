@@ -1,0 +1,101 @@
+import pytest
+
+from yclaw.manifest import (
+    HttpHealth,
+    LaunchdRef,
+    ManifestError,
+    Service,
+    TcpHealth,
+    _parse_health,
+    _parse_service,
+)
+
+
+def test_hermes_ssh_user_is_root(manifest):
+    assert manifest.machines["hermes"].ssh.user == "root"
+    assert manifest.machines["hermes"].ssh.transport == "tailscale"
+
+
+def test_omlx_launchd_label(manifest):
+    omlx = manifest.machines["metal"].services["omlx"]
+    assert omlx.launchd == LaunchdRef(domain="system", label="org.nixos.omlx")
+
+
+def test_metal_share_list(manifest):
+    assert manifest.machines["metal"].shares == (
+        "metalsecrets",
+        "agentvault",
+        "hfhub",
+        "mlxaudio",
+        "cliproxy",
+        "repo",
+    )
+
+
+def test_omlx_log_paths(manifest):
+    assert manifest.machines["metal"].services["omlx"].logs == (
+        "/Users/admin/Library/Logs/omlx/omlx.log",
+        "/Users/admin/Library/Logs/omlx/omlx.error.log",
+    )
+
+
+def test_omlx_http_health(manifest):
+    assert manifest.machines["metal"].services["omlx"].health == HttpHealth(url="http://metal:8000/v1/models")
+
+
+def test_mlx_audio_tcp_health(manifest):
+    assert manifest.machines["metal"].services["mlx-audio"].health == TcpHealth(host="metal", port=8765)
+
+
+def test_hermes_systemd_service_has_no_launchd(manifest):
+    svc = manifest.machines["hermes"].services["hermes-agent"]
+    assert svc.systemd == "hermes-agent.service"
+    assert svc.launchd is None
+    assert svc.health is None
+
+
+def test_host_has_null_ssh_and_shares(manifest):
+    host = manifest.machines["host"]
+    assert host.ssh is None
+    assert host.tart_vm is None
+    assert host.shares is None
+    assert host.admin_pass_keychain is None
+
+
+def test_bluebubbles_password_fields(manifest):
+    svc = manifest.machines["bluebubbles"].services["bluebubbles"]
+    assert svc.password_keychain == "yclaw-bluebubbles-server-pass"
+    assert svc.password_query_param == "password"
+    assert svc.health == HttpHealth(url="https://bluebubbles/api/v1/ping")
+
+
+def test_oneshot_flag(manifest):
+    assert manifest.machines["metal"].services["agent-vault-provision"].oneshot is True
+    assert manifest.machines["metal"].services["omlx"].oneshot is False
+
+
+def test_keychain_login_unlock(manifest):
+    assert manifest.host_paths.keychain.login_unlock == "yclaw-keychain-password"
+    assert manifest.host_paths.keychain.agent_vault_master == "yclaw-agent-vault-master"
+
+
+def test_debloat_lists(manifest):
+    assert manifest.debloat["metal"].system[0] == "com.apple.metadata.mds"
+    assert "com.apple.assistantd" in manifest.debloat["metal"].gui
+
+
+def test_missing_key_raises_keyerror():
+    with pytest.raises(KeyError):
+        _parse_service("broken", {"launchd": {"domain": "system"}})
+
+
+def test_unknown_health_kind_raises_manifest_error():
+    with pytest.raises(ManifestError, match="unknown health kind"):
+        _parse_health({"kind": "grpc", "url": "x"})
+
+
+def test_service_is_frozen(manifest):
+    svc = manifest.machines["metal"].services["omlx"]
+    assert isinstance(svc, Service)
+    with pytest.raises((AttributeError, TypeError)):
+        svc.port = 1  # type: ignore[misc]

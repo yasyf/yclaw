@@ -16,6 +16,11 @@
 __pycache__/
 *.py[cod]
 
+# Python package (yclaw CLI)
+.venv/
+.pytest_cache/
+dist/
+
 # Nix
 result
 result-*

@@ -1,0 +1,200 @@
+import json
+import socket
+
+import httpx
+import pytest
+
+from yclaw import keychain, probes
+from yclaw.probes import ProbeResult, Status
+from yclaw.remote import RemoteResult
+
+pytestmark = pytest.mark.anyio
+
+
+def test_parse_launchctl_top_level_only(fixtures_dir):
+    text = (fixtures_dir / "launchctl-print-omlx.txt").read_text()
+    fields = probes._parse_launchctl(text)
+    assert fields["state"] == "running"
+    assert fields["pid"] == "12056"
+    assert fields["last exit code"] == "1"
+    assert fields["job state"] == "running"
+    assert fields["runs"] == "2"
+
+
+async def test_launchd_state_running_passes(manifest, fixtures_dir, monkeypatch):
+    text = (fixtures_dir / "launchctl-print-omlx.txt").read_text()
+
+    async def fake_run(machine, command, *, timeout=30, capture=True):
+        assert command == "launchctl print system/org.nixos.omlx"
+        return RemoteResult(0, text, "")
+
+    monkeypatch.setattr(probes.remote, "run", fake_run)
+    metal = manifest.machines["metal"]
+    result = await probes.launchd_state(metal, metal.services["omlx"])
+    assert result == ProbeResult("omlx", Status.PASS, "state=running pid=12056 last-exit=1")
+
+
+async def test_launchd_state_missing_service_fails(manifest, monkeypatch):
+    async def fake_run(machine, command, *, timeout=30, capture=True):
+        return RemoteResult(113, "", "Could not find service\n")
+
+    monkeypatch.setattr(probes.remote, "run", fake_run)
+    metal = manifest.machines["metal"]
+    result = await probes.launchd_state(metal, metal.services["omlx"])
+    assert result.status is Status.FAIL
+    assert "exited 113" in result.detail
+
+
+@pytest.mark.parametrize(
+    ("show_output", "expected_status", "expected_detail"),
+    [
+        (
+            "ActiveState=active\nSubState=running\nMainPID=4210\nExecMainStatus=0\n",
+            Status.PASS,
+            "active=active sub=running pid=4210 exit=0",
+        ),
+        (
+            "ActiveState=failed\nSubState=failed\nMainPID=0\nExecMainStatus=1\n",
+            Status.FAIL,
+            "active=failed sub=failed pid=0 exit=1",
+        ),
+    ],
+    ids=["active", "failed"],
+)
+async def test_systemd_state(manifest, monkeypatch, show_output, expected_status, expected_detail):
+    async def fake_run(machine, command, *, timeout=30, capture=True):
+        assert command == "systemctl show hermes-agent.service --property=ActiveState,SubState,MainPID,ExecMainStatus"
+        return RemoteResult(0, show_output, "")
+
+    monkeypatch.setattr(probes.remote, "run", fake_run)
+    hermes = manifest.machines["hermes"]
+    result = await probes.systemd_state(hermes, hermes.services["hermes-agent"])
+    assert result == ProbeResult("hermes-agent", expected_status, expected_detail)
+
+
+@pytest.mark.parametrize(
+    ("share", "returncode", "expected_status"),
+    [("repo", 0, Status.PASS), ("agentvault", 1, Status.FAIL)],
+    ids=["mounted", "absent"],
+)
+async def test_share_mounted(manifest, monkeypatch, share, returncode, expected_status):
+    captured = {}
+
+    async def fake_run(machine, command, *, timeout=30, capture=True):
+        captured["command"] = command
+        return RemoteResult(returncode, "", "")
+
+    monkeypatch.setattr(probes.remote, "run", fake_run)
+    result = await probes.share_mounted(manifest.machines["metal"], share)
+    assert captured["command"] == f"ls -d '/Volumes/My Shared Files/{share}'"
+    assert result.status is expected_status
+
+
+def test_find_node_online_offline_missing(fixtures_dir):
+    status = json.loads((fixtures_dir / "tailscale-status.json").read_text())
+    assert probes._find_node(status, "metal")["Online"] is True
+    assert probes._find_node(status, "hermes")["Online"] is False
+    assert probes._find_node(status, "not-a-node") is None
+
+
+@pytest.mark.parametrize(
+    ("name", "ping_ok", "expected_status", "detail_needle"),
+    [
+        ("metal", True, Status.PASS, "ping ok"),
+        ("metal", False, Status.FAIL, "ping failed"),
+        ("hermes", True, Status.FAIL, "offline"),
+        ("not-a-node", True, Status.FAIL, "not in tailnet"),
+    ],
+    ids=["online-ping-ok", "online-ping-fail", "registered-offline", "absent"],
+)
+async def test_tailnet_node(fixtures_dir, monkeypatch, name, ping_ok, expected_status, detail_needle):
+    status = json.loads((fixtures_dir / "tailscale-status.json").read_text())
+
+    async def fake_status(timeout):
+        return status
+
+    async def fake_ping(node, timeout):
+        return ping_ok
+
+    monkeypatch.setattr(probes, "_tailscale_status", fake_status)
+    monkeypatch.setattr(probes, "_tailscale_ping", fake_ping)
+    result = await probes.tailnet_node(name)
+    assert result.status is expected_status
+    assert detail_needle in result.detail
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_status"),
+    [(200, Status.PASS), (204, Status.PASS), (503, Status.FAIL), (404, Status.FAIL)],
+    ids=["200", "204", "503", "404"],
+)
+async def test_http_ok(code, expected_status):
+    def handler(request):
+        return httpx.Response(code)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await probes.http_ok("http://metal:8000/v1/models", client=client)
+    assert result == ProbeResult("http://metal:8000/v1/models", expected_status, f"HTTP {code}")
+
+
+async def test_http_ok_connection_error_is_fail():
+    def handler(request):
+        raise httpx.ConnectError("refused")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await probes.http_ok("http://down:1/x", client=client)
+    assert result.status is Status.FAIL
+    assert "ConnectError" in result.detail
+
+
+@pytest.mark.parametrize(
+    ("helper_connected", "expected_status"),
+    [(True, Status.PASS), (False, Status.FAIL)],
+    ids=["connected", "disconnected"],
+)
+async def test_bluebubbles_health(manifest, monkeypatch, helper_connected, expected_status):
+    monkeypatch.setattr(keychain, "read", lambda service: "bb-pw")
+    seen_paths = []
+
+    def handler(request):
+        seen_paths.append(request.url.path)
+        assert request.url.params["password"] == "bb-pw"
+        if request.url.path.endswith("/ping"):
+            return httpx.Response(200, json={"status": 200})
+        if request.url.path.endswith("/server/info"):
+            return httpx.Response(200, json={"data": {"helper_connected": helper_connected}})
+        raise AssertionError(request.url)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await probes.bluebubbles_health(manifest.machines["bluebubbles"], client=client)
+    assert result.status is expected_status
+    assert seen_paths == ["/api/v1/ping", "/api/v1/server/info"]
+
+
+async def test_bluebubbles_health_ping_failure_short_circuits(manifest, monkeypatch):
+    monkeypatch.setattr(keychain, "read", lambda service: "bb-pw")
+    seen_paths = []
+
+    def handler(request):
+        seen_paths.append(request.url.path)
+        return httpx.Response(500)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await probes.bluebubbles_health(manifest.machines["bluebubbles"], client=client)
+    assert result.status is Status.FAIL
+    assert seen_paths == ["/api/v1/ping"]
+
+
+async def test_tcp_open_reachable_then_closed():
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        opened = await probes.tcp_open("127.0.0.1", port)
+        assert opened == ProbeResult(f"127.0.0.1:{port}", Status.PASS, "open")
+    finally:
+        listener.close()
+
+    closed = await probes.tcp_open("127.0.0.1", port)
+    assert closed.status is Status.FAIL

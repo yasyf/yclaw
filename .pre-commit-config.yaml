@@ -15,3 +15,13 @@ repos:
         # guard) and the example secrets template (EXAMPLE placeholders, never real values).
         exclude: '^(\.pre-commit-config\.yaml|\.github/workflows/build-images\.yml|secrets/secrets\.sops\.yaml\.example)$'
         entry: '(tskey-(auth|api)-[A-Za-z0-9]|sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9]{20}|AKIA[0-9A-Z]{16}|AGE-SECRET-KEY-1|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
+
+  # Python lint + format for the yclaw CLI package. ty (the type checker) has no official
+  # pre-commit hook repo that resolves offline, so type checking stays a manual `uvx ty check
+  # yclaw` step (also run in CI) rather than a pre-commit hook.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
