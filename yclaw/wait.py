@@ -16,6 +16,12 @@ from .manifest import Machine, Service, load_manifest
 from .probes import ProbeResult, Status
 from .remote import RemoteTimeout
 
+SSH_PROBE_TIMEOUT_FLOOR = 10.0
+
+
+def _ssh_probe_timeout(interval: float) -> float:
+    return max(SSH_PROBE_TIMEOUT_FLOOR, interval)
+
 
 def _wait_options(command: Callable[..., Any]) -> Callable[..., Any]:
     command = click.option("--interval", type=float, default=2.0, show_default=True, help="Seconds between probes.")(
@@ -50,9 +56,9 @@ def _finish(name: str, result: ProbeResult) -> None:
 
 def _service_probe(machine: Machine, service: Service, interval: float) -> Callable[[], Awaitable[ProbeResult]]:
     if service.launchd is not None:
-        return lambda: probes.launchd_state(machine, service, timeout=interval)
+        return lambda: probes.launchd_state(machine, service, timeout=_ssh_probe_timeout(interval))
     if service.systemd is not None:
-        return lambda: probes.systemd_state(machine, service, timeout=interval)
+        return lambda: probes.systemd_state(machine, service, timeout=_ssh_probe_timeout(interval))
     raise click.UsageError(f"service {service.name!r} on {machine.name} has no launchd/systemd unit to wait on")
 
 
@@ -66,7 +72,7 @@ def wait() -> None:
 @_wait_options
 def http(url: str, timeout: float, interval: float) -> None:
     """Wait for URL to answer a successful GET."""
-    result = run(lambda: _poll(url, lambda: probes.http_ok(url, timeout=interval), timeout=timeout, interval=interval))
+    result = run(lambda: _poll(url, lambda: probes.http_ok(url), timeout=timeout, interval=interval))
     _finish(url, result)
 
 
@@ -78,11 +84,7 @@ def port(machine: str, port: int, timeout: float, interval: float) -> None:
     """Wait for MACHINE:PORT to accept a TCP connection."""
     target = resolve_machine(load_manifest(), machine)
     name = f"{target.name}:{port}"
-    result = run(
-        lambda: _poll(
-            name, lambda: probes.tcp_open(target.name, port, timeout=interval), timeout=timeout, interval=interval
-        )
-    )
+    result = run(lambda: _poll(name, lambda: probes.tcp_open(target.name, port), timeout=timeout, interval=interval))
     _finish(name, result)
 
 
@@ -94,7 +96,7 @@ def ssh(machine: str, timeout: float, interval: float) -> None:
     target = resolve_machine(load_manifest(), machine)
 
     async def probe() -> ProbeResult:
-        result = await remote.run(target, "true", timeout=interval)
+        result = await remote.run(target, "true", timeout=_ssh_probe_timeout(interval))
         status = Status.PASS if result.returncode == 0 else Status.FAIL
         return ProbeResult(target.name, status, f"ssh exit {result.returncode}")
 
@@ -111,7 +113,10 @@ def share(machine: str, share: str, timeout: float, interval: float) -> None:
     target = resolve_machine(load_manifest(), machine)
     result = run(
         lambda: _poll(
-            share, lambda: probes.share_mounted(target, share, timeout=interval), timeout=timeout, interval=interval
+            share,
+            lambda: probes.share_mounted(target, share, timeout=_ssh_probe_timeout(interval)),
+            timeout=timeout,
+            interval=interval,
         )
     )
     _finish(share, result)

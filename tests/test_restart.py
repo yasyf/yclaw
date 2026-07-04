@@ -1,6 +1,6 @@
 from click.testing import CliRunner
 
-from yclaw import probes, remote
+from yclaw import probes, remote, restart
 from yclaw.cli import main
 from yclaw.probes import ProbeResult, Status
 from yclaw.remote import RemoteResult
@@ -69,6 +69,61 @@ def test_bounce_order_bootout_poll_bootstrap(monkeypatch):
         "launchctl bootstrap system /Library/LaunchDaemons/org.nixos.omlx.plist",
     ]
     assert "bounced omlx on metal" in result.output
+
+
+def test_bounce_retries_while_loaded_then_bootstraps_once_drained(monkeypatch):
+    monkeypatch.setattr(restart, "HEALTH_INTERVAL", 0.001)
+    seen = []
+    prints = 0
+
+    async def fake_run(machine, command, *, timeout=30, capture=True):
+        nonlocal prints
+        seen.append(command)
+        if command.startswith("launchctl print"):
+            prints += 1
+            if prints == 1:
+                assert not any(c.startswith("launchctl bootstrap") for c in seen)
+                return RemoteResult(0, "", "")  # still loaded on the first poll
+            return RemoteResult(1, "", "")  # drained by the second poll
+        return RemoteResult(0, "", "")
+
+    monkeypatch.setattr(remote, "run", fake_run)
+    monkeypatch.setattr(probes, "service_health", _health_pass)
+    result = CliRunner().invoke(main, ["bounce", "metal", "omlx"])
+    assert result.exit_code == 0
+    assert seen == [
+        "launchctl bootout system/org.nixos.omlx",
+        "launchctl print system/org.nixos.omlx",
+        "launchctl print system/org.nixos.omlx",
+        "launchctl bootstrap system /Library/LaunchDaemons/org.nixos.omlx.plist",
+    ]
+    assert "bounced omlx on metal" in result.output
+
+
+def test_bounce_fails_loudly_when_label_never_drains(monkeypatch):
+    monkeypatch.setattr(restart, "HEALTH_INTERVAL", 0.0)
+    monkeypatch.setattr(restart, "HEALTH_TIMEOUT", 3.0)
+    clock = iter([0.0, 1.0, 2.0, 3.0])
+    monkeypatch.setattr(restart.anyio, "current_time", lambda: next(clock))
+    seen = []
+
+    async def fake_run(machine, command, *, timeout=30, capture=True):
+        seen.append(command)
+        return RemoteResult(0, "", "")  # label stays loaded on every poll
+
+    monkeypatch.setattr(remote, "run", fake_run)
+    monkeypatch.setattr(probes, "service_health", _health_pass)
+    result = CliRunner().invoke(main, ["bounce", "metal", "omlx"])
+    assert result.exit_code == 1
+    assert seen == [
+        "launchctl bootout system/org.nixos.omlx",
+        "launchctl print system/org.nixos.omlx",
+        "launchctl print system/org.nixos.omlx",
+        "launchctl print system/org.nixos.omlx",
+    ]
+    assert not any(c.startswith("launchctl bootstrap") for c in seen)
+    assert "still loaded" in result.stderr
+    assert "cannot bootstrap over a live label" in result.stderr
 
 
 def test_bounce_rejects_non_launchd_service():

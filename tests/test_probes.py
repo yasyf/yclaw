@@ -185,6 +185,17 @@ async def test_bluebubbles_health_ping_failure_short_circuits(manifest, monkeypa
     assert seen_paths == ["/api/v1/ping"]
 
 
+async def test_bluebubbles_health_keychain_error_is_fail(manifest, monkeypatch):
+    def boom(service):
+        raise keychain.KeychainError(f"keychain item {service!r} not found — run 'just bootstrap' first")
+
+    monkeypatch.setattr(keychain, "read", boom)
+    result = await probes.bluebubbles_health(manifest.machines["bluebubbles"])
+    assert result.name == "bluebubbles"
+    assert result.status is Status.FAIL
+    assert "keychain" in result.detail
+
+
 async def test_tcp_open_reachable_then_closed():
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))

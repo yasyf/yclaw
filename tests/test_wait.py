@@ -1,3 +1,4 @@
+import pytest
 from click.testing import CliRunner
 
 from yclaw import probes, remote
@@ -37,12 +38,32 @@ def test_wait_port_probes_machine_and_port(monkeypatch):
     async def fake_tcp(host, port, *, timeout=5):
         seen["host"] = host
         seen["port"] = port
+        seen["timeout"] = timeout
         return ProbeResult(f"{host}:{port}", Status.PASS, "open")
 
     monkeypatch.setattr(probes, "tcp_open", fake_tcp)
-    result = CliRunner().invoke(main, ["wait", "port", "metal", "8000"])
+    result = CliRunner().invoke(main, ["wait", "port", "metal", "8000", "--interval", "1"])
     assert result.exit_code == 0
-    assert seen == {"host": "metal", "port": 8000}
+    assert seen == {"host": "metal", "port": 8000, "timeout": 5}
+
+
+@pytest.mark.parametrize(
+    ("interval", "expected_timeout"),
+    [("2", 10.0), ("20", 20.0)],
+    ids=["floor-applies", "interval-above-floor"],
+)
+def test_wait_ssh_probe_timeout_decoupled_from_interval(monkeypatch, interval, expected_timeout):
+    seen = {}
+
+    async def fake_run(machine, command, *, timeout=30, capture=True):
+        seen["command"] = command
+        seen["timeout"] = timeout
+        return RemoteResult(0, "", "")
+
+    monkeypatch.setattr(remote, "run", fake_run)
+    result = CliRunner().invoke(main, ["wait", "ssh", "hermes", "--interval", interval])
+    assert result.exit_code == 0
+    assert seen == {"command": "true", "timeout": expected_timeout}
 
 
 def test_wait_ssh_success(monkeypatch):

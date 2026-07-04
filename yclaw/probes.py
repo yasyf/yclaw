@@ -159,7 +159,11 @@ async def bluebubbles_health(
     machine: Machine, *, timeout: float = 10, client: httpx.AsyncClient | None = None
 ) -> ProbeResult:
     service = machine.services["bluebubbles"]
-    params = {service.password_query_param: keychain.read(service.password_keychain)}
+    try:
+        password = keychain.read(service.password_keychain)
+    except keychain.KeychainError as exc:
+        return ProbeResult("bluebubbles", Status.FAIL, f"keychain read failed: {exc}")
+    params = {service.password_query_param: password}
     ping_url = service.health.url
     info_url = f"{ping_url.rsplit('/', 1)[0]}/server/info"
     try:
