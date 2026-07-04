@@ -20,6 +20,7 @@ def _aliases(manifest: Manifest) -> dict[str, str]:
     aliases = {
         field.name.replace("_", "-"): getattr(manifest.host_paths.keychain, field.name)
         for field in dataclasses.fields(manifest.host_paths.keychain)
+        if field.name != "login_unlock"  # unlock key lives in the LOGIN keychain — not CLI-readable
     }
     for machine in manifest.machines.values():
         if machine.admin_pass_keychain is not None:

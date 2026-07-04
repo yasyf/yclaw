@@ -10,8 +10,10 @@ from yclaw.keychain import KeychainError
 def test_secret_list_maps_aliases_to_services():
     result = CliRunner().invoke(main, ["secret", "list"])
     assert result.exit_code == 0
-    assert "login-unlock" in result.output
-    assert "yclaw-keychain-password" in result.output
+    assert "login-unlock" not in result.output  # unlock key lives in the LOGIN keychain — not CLI-readable
+    assert "yclaw-keychain-password" not in result.output
+    assert "agent-vault-master" in result.output
+    assert "yclaw-agent-vault-master" in result.output
     assert "metal-admin-pass" in result.output
     assert "yclaw-metal-admin-pass" in result.output
     assert "bluebubbles-admin-pass" in result.output
