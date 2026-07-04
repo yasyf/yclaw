@@ -2,7 +2,9 @@
 
 ``run`` is the single place command bodies enter the event loop, so the two remote failures that
 carry an exit-code policy — a Tailscale check-mode login wall and a remote timeout — are mapped to
-their exit codes here instead of in every command.
+their exit codes here instead of in every command. A command whose body fans out under an ``anyio``
+task group (``status``/``doctor``) surfaces those failures wrapped in an ``ExceptionGroup``, so both
+the bare and the grouped forms are unwrapped here.
 """
 
 from collections.abc import Awaitable, Callable
@@ -36,12 +38,27 @@ def resolve_service(machine: Machine, name: str) -> Service:
         ) from None
 
 
+def _find_cause[E: BaseException](exc: BaseException, kind: type[E]) -> E | None:
+    if isinstance(exc, kind):
+        return exc
+    if isinstance(exc, BaseExceptionGroup):
+        for sub in exc.exceptions:
+            found = _find_cause(sub, kind)
+            if found is not None:
+                return found
+    return None
+
+
 def run[T](async_main: Callable[[], Awaitable[T]]) -> T:
     try:
         return anyio.run(async_main)
-    except CheckWallError as exc:
-        click.echo(fail(f"tailscale check-mode login required — approve at:\n  {exc.url}"), err=True)
-        raise SystemExit(EXIT_CHECK_WALL) from None
-    except RemoteTimeout as exc:
-        click.echo(fail(str(exc)), err=True)
-        raise SystemExit(EXIT_TIMEOUT) from None
+    except (CheckWallError, RemoteTimeout, BaseExceptionGroup) as exc:
+        wall = _find_cause(exc, CheckWallError)
+        if wall is not None:
+            click.echo(fail(f"tailscale check-mode login required — approve at:\n  {wall.url}"), err=True)
+            raise SystemExit(EXIT_CHECK_WALL) from None
+        timeout = _find_cause(exc, RemoteTimeout)
+        if timeout is not None:
+            click.echo(fail(str(timeout)), err=True)
+            raise SystemExit(EXIT_TIMEOUT) from None
+        raise

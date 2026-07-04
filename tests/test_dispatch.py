@@ -1,3 +1,4 @@
+import anyio
 import click
 import pytest
 
@@ -50,3 +51,46 @@ def test_run_maps_timeout_to_exit_5():
     with pytest.raises(SystemExit) as excinfo:
         run(boom)
     assert excinfo.value.code == EXIT_TIMEOUT
+
+
+def test_run_maps_grouped_check_wall_to_exit_4():
+    """A check-wall raised inside an anyio task group (status/doctor) is still exit 4, not a crash."""
+
+    async def boom():
+        async with anyio.create_task_group() as tg:
+
+            async def worker() -> None:
+                raise CheckWallError("https://login.tailscale.com/a/grouped1234")
+
+            tg.start_soon(worker)
+
+    with pytest.raises(SystemExit) as excinfo:
+        run(boom)
+    assert excinfo.value.code == EXIT_CHECK_WALL
+
+
+def test_run_maps_grouped_timeout_to_exit_5():
+    async def boom():
+        async with anyio.create_task_group() as tg:
+
+            async def worker() -> None:
+                raise RemoteTimeout("sleep 1", 0.5)
+
+            tg.start_soon(worker)
+
+    with pytest.raises(SystemExit) as excinfo:
+        run(boom)
+    assert excinfo.value.code == EXIT_TIMEOUT
+
+
+def test_run_reraises_unrelated_exception_group():
+    async def boom():
+        async with anyio.create_task_group() as tg:
+
+            async def worker() -> None:
+                raise ValueError("unexpected")
+
+            tg.start_soon(worker)
+
+    with pytest.raises(BaseExceptionGroup):
+        run(boom)
