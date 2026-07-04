@@ -22,18 +22,17 @@ node_config_dir="$HOME/.config/yclaw/vm-secrets"
 [ -f "$YCLAW_KEYCHAIN" ] || _secrets_fail "no yclaw keychain at $YCLAW_KEYCHAIN — run \`just bootstrap\` first."
 
 # --- mint a fresh authkey via the OAuth client (keychain) --------------------------------------------
-_yclaw_keychain_unlock
-TS_OAUTH_ID="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_TS_OAUTH_ID" -w "$YCLAW_KEYCHAIN")"
-TS_OAUTH_SECRET="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_TS_OAUTH_SECRET" -w "$YCLAW_KEYCHAIN")"
+# kc_read unlocks the yclaw keychain, reads the item, and re-locks — one self-contained read per call.
+TS_OAUTH_ID="$(kc_read "$KC_SERVICE_TS_OAUTH_ID")"
+TS_OAUTH_SECRET="$(kc_read "$KC_SERVICE_TS_OAUTH_SECRET")"
 TS_ACCESS_TOKEN="$(curl -fsS -d "client_id=$TS_OAUTH_ID" -d "client_secret=$TS_OAUTH_SECRET" \
   https://api.tailscale.com/api/v2/oauth/token \
   | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
 [ -n "$TS_ACCESS_TOKEN" ] || _secrets_fail "Tailscale OAuth token exchange returned no access_token."
 export TS_ACCESS_TOKEN
 TS_AUTHKEY_HERMES="$(_ts_mint_key hermes)"; export TS_AUTHKEY_HERMES
-BLUEBUBBLES_PASSWORD="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_BLUEBUBBLES_SERVER" -w "$YCLAW_KEYCHAIN")"
+BLUEBUBBLES_PASSWORD="$(kc_read "$KC_SERVICE_BLUEBUBBLES_SERVER")"
 export BLUEBUBBLES_PASSWORD
-_yclaw_keychain_lock
 
 # --- re-encrypt ONLY hermes's bundle (authkey + hermes/env) to hermes's age recipient -----------------
 # encrypt_host_bundle (scripts/lib/secrets.sh) builds + encrypts hermes's bundle; hermes's catalog

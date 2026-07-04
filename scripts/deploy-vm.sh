@@ -21,6 +21,12 @@ esac
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
+# shellcheck source=scripts/lib/common.sh
+source "$repo_root/scripts/lib/common.sh"
+# shellcheck source=scripts/lib/wait.sh
+source "$repo_root/scripts/lib/wait.sh"
+# shellcheck source=scripts/lib/launchd.sh
+source "$repo_root/scripts/lib/launchd.sh"
 disk_gb="${DISK_GB:-64}"
 # Gitignored build copy of the repo (mirrors bootstrap's BUILD_DIR). The hermes image bakes
 # nixos/agent-vault-ca.pem, whose REAL value is fetched from metal below — so the build runs from
@@ -31,20 +37,14 @@ build_dir="$repo_root/.build"
 # nixos/agent-vault-ca.pem). agent-vault generates it on metal, so it can only be fetched once metal
 # is up; same up-to-15-min wait (180 × 5s) bootstrap §7 uses, since metal may still be activating.
 echo "Fetching agent-vault MITM CA from metal (waiting for metal:14321, up to 15 min) ..."
-ca_pem=""
-for _ in $(seq 1 180); do
-  ca_pem="$(curl -fsS --max-time 10 http://metal:14321/v1/mitm/ca.pem 2>/dev/null || true)"
-  [[ "$ca_pem" == *"BEGIN CERTIFICATE"* ]] && break
-  sleep 5
-done
-[[ "$ca_pem" == *"BEGIN CERTIFICATE"* ]] \
+ca_pem="$(wait_http_body http://metal:14321/v1/mitm/ca.pem 'BEGIN CERTIFICATE')" \
   || { echo "could not fetch the agent-vault CA from http://metal:14321/v1/mitm/ca.pem — is metal up and agent-vault running?" >&2; exit 1; }
 
 # Stage the gitignored build copy with the REAL CA written in (exactly as bootstrap §7).
 echo "Staging gitignored build copy at $build_dir ..."
 rm -rf "$build_dir"
 mkdir -p "$build_dir"
-rsync -a --exclude '.git' --exclude '.build' --exclude 'result' --exclude 'result-*' "$repo_root/" "$build_dir/"
+sync_build_mirror "$build_dir"
 printf '%s' "$ca_pem" > "$build_dir/nixos/agent-vault-ca.pem"
 
 # Build the raw-efi image inside the nested Linux builder VM (scripts/build-hermes-image.sh).
@@ -82,7 +82,7 @@ echo "Deleting the old hermes tailnet device (persistent nodes don't auto-reap) 
 # boots every node out before replacing). It's re-loaded once the new disk is in place.
 label="com.yclaw.tart-${node}"
 echo "Booting out launchd agent $label before disk-replace ..."
-launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+bootout_drain "gui/$(id -u)" "$label"
 
 echo "Disk-replacing $node with the freshly built image (APFS clonefile) ..."
 cp -c "$img" "$HOME/.tart/vms/$node/disk.img"
@@ -94,8 +94,7 @@ tart set "$node" --disk-size "$disk_gb" # grow the record so NixOS autoResize ex
 # Re-load the runner now that the new disk is in place (RunAtLoad + KeepAlive starts it), then
 # kickstart so the new disk boots immediately.
 echo "Loading launchd agent $label ..."
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$label.plist" 2>/dev/null \
-  || echo "  (could not load $label — run \`just setup\` to rewrite the runner first)"
+reload_launch_agent "$label" "$HOME/Library/LaunchAgents/$label.plist"
 launchctl kickstart -k "gui/$(id -u)/$label" 2>/dev/null || true
 
 echo "Deployed $node."

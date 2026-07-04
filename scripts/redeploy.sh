@@ -20,16 +20,19 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# shellcheck source=scripts/lib/common.sh
+source "$REPO_ROOT/scripts/lib/common.sh"
+# shellcheck source=scripts/lib/manifest.sh
+source "$REPO_ROOT/scripts/lib/manifest.sh"
+# shellcheck source=scripts/lib/ssh.sh
+source "$REPO_ROOT/scripts/lib/ssh.sh"
 
 # bootstrap.sh's hermes node-config share source; node.env holds the non-secret BLUEBUBBLES_ALLOWED_USERS.
-NODE_CONFIG_DIR="$HOME/.config/yclaw/vm-secrets"
+NODE_CONFIG_DIR="$HOME/$(manifest_get '.host_paths.node_config_dir_rel')"
 # tailscale ssh joins remote args and re-parses them in the remote login shell, whose PATH is minimal —
 # so a custom NixOS command needs its absolute store path (mirrors bootstrap.sh's metal-mint-hermes-token).
 HERMES_FLAKE="/var/lib/yclaw-repo#hermes"
 HERMES_NIXOS_REBUILD="/run/current-system/sw/bin/nixos-rebuild"
-
-log() { printf '\033[1;34m[redeploy]\033[0m %s\n' "$*"; }
-die() { printf '\033[1;31m[redeploy] FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
 
 redeploy_host() {
   log "Redeploying host (./scripts/setup.sh) ..."
@@ -38,7 +41,7 @@ redeploy_host() {
 
 redeploy_metal() {
   log "Redeploying metal (darwin-rebuild switch via metal-redeploy) ..."
-  tailscale ssh root@metal -- metal-redeploy
+  ts_run root@metal metal-redeploy
 }
 
 redeploy_hermes() {
@@ -48,13 +51,13 @@ redeploy_hermes() {
   # marks /var/lib/yclaw-repo a git safe.directory — needed by BOTH dry-activate and switch below.
   # hermes's /root is ephemeral (wiped on a disk-replace fallback) and the guest has no git CLI, so
   # (re)assert it each run by writing root's global gitconfig directly, idempotently.
-  tailscale ssh root@hermes -- 'grep -qsF /var/lib/yclaw-repo /root/.gitconfig || printf "[safe]\n\tdirectory = /var/lib/yclaw-repo\n" >> /root/.gitconfig'
+  ts_run root@hermes 'grep -qsF /var/lib/yclaw-repo /root/.gitconfig || printf "[safe]\n\tdirectory = /var/lib/yclaw-repo\n" >> /root/.gitconfig'
   # The flake ref carries a `#` — single-quote it INSIDE the one remote-command string so the remote
   # login shell does not read `#hermes` as a comment (the tailscale ssh re-parse gotcha, bootstrap.sh).
   # dry-activate previews the unit actions without touching the system; capture stdout+stderr the same
   # set +e / rc / set -e way bootstrap.sh's genericity guard captures rg.
   set +e
-  dry="$(tailscale ssh root@hermes -- "$HERMES_NIXOS_REBUILD dry-activate --flake '$HERMES_FLAKE'" 2>&1)"
+  dry="$(ts_run root@hermes "$HERMES_NIXOS_REBUILD dry-activate --flake '$HERMES_FLAKE'" 2>&1)"
   rc=$?
   set -e
   if [ "$rc" -ne 0 ]; then
@@ -72,7 +75,7 @@ redeploy_hermes() {
     printf '%s\n' "$hits" >&2
     die "hermes switch would stop/restart a stateful virtiofs mount (above) — a reboot-class change. Use the disk-replace fallback: ./scripts/deploy-vm.sh hermes"
   fi
-  tailscale ssh root@hermes -- "$HERMES_NIXOS_REBUILD switch --flake '$HERMES_FLAKE'"
+  ts_run root@hermes "$HERMES_NIXOS_REBUILD switch --flake '$HERMES_FLAKE'"
 }
 
 redeploy_bluebubbles() {
@@ -82,12 +85,11 @@ redeploy_bluebubbles() {
   # path bootstrap.sh's build_macos_image uses. Sourcing secrets.sh only pulls in _yclaw_keychain_unlock
   # + the KC_SERVICE_* / YCLAW_KEYCHAIN names; collect_secrets is NEVER called, so nothing is minted.
   source "$REPO_ROOT/scripts/lib/secrets.sh"
-  # The keychain must already exist (bootstrap owns its creation) — fail loud before _yclaw_keychain_unlock,
-  # whose create branch would otherwise mint a fresh keychain + unlock password, which redeploy must not do.
+  # The keychain must already exist (bootstrap owns its creation) — fail loud BEFORE kc_read (whose
+  # _yclaw_keychain_unlock create branch would otherwise mint a fresh keychain + unlock password,
+  # which redeploy must not do). kc_read unlocks, reads, and re-locks the yclaw keychain itself.
   [ -f "$YCLAW_KEYCHAIN" ] || die "no yclaw keychain at $YCLAW_KEYCHAIN — run \`just bootstrap\` first (redeploy never mints secrets)."
-  _yclaw_keychain_unlock
-  bb_password="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_BLUEBUBBLES_SERVER" -w "$YCLAW_KEYCHAIN")"
-  _yclaw_keychain_lock
+  bb_password="$(kc_read "$KC_SERVICE_BLUEBUBBLES_SERVER")"
   # Allowlist (NON-secret): source the host node.env bootstrap.sh assembled — it defines
   # BLUEBUBBLES_ALLOWED_USERS verbatim (the documented `source a node.env` path in bluebubbles-setup.sh's
   # header). set -u makes a missing value fail loud; a missing file makes `.` fail loud.

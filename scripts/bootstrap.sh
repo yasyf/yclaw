@@ -19,13 +19,27 @@ cd "$REPO_ROOT"
 # shellcheck disable=SC1091
 if [ -f .env ]; then set -a; . ./.env; set +a; fi
 
+# Shared helpers: common.sh (log/die/need), manifest.sh (manifest_get over machines.json), wait.sh
+# (bounded polling), launchd.sh (bootout_drain), ssh.sh (ts_run). secrets.sh is sourced later, at
+# its proper place just before collect_secrets.
+# shellcheck source=scripts/lib/common.sh
+source "$REPO_ROOT/scripts/lib/common.sh"
+# shellcheck source=scripts/lib/manifest.sh
+source "$REPO_ROOT/scripts/lib/manifest.sh"
+# shellcheck source=scripts/lib/wait.sh
+source "$REPO_ROOT/scripts/lib/wait.sh"
+# shellcheck source=scripts/lib/launchd.sh
+source "$REPO_ROOT/scripts/lib/launchd.sh"
+# shellcheck source=scripts/lib/ssh.sh
+source "$REPO_ROOT/scripts/lib/ssh.sh"
+
 RUNTIME_DIR="$REPO_ROOT/secrets/runtime"
 VALUES_FILE="$RUNTIME_DIR/values.env"            # resolved non-secret values; gitignored
 
 # The hermes node-config share source: setup.sh mounts this dir into the hermes guest as the
 # virtiofs `sops` tag, and common.nix's seedNodeConfig installs key.txt → /var/lib/sops-nix,
 # secrets.sops.yaml + node.env (+ agent-vault-ca.pem) → /var/lib/node-config on first boot.
-NODE_CONFIG_DIR="$HOME/.config/yclaw/vm-secrets"
+NODE_CONFIG_DIR="$HOME/$(manifest_get '.host_paths.node_config_dir_rel')"
 
 # Gitignored build copy of the repo. The hermes image bakes nixos/agent-vault-ca.pem, whose
 # REAL value is fetched from metal at run time — so the hermes build runs from this copy with
@@ -37,13 +51,6 @@ BUILD_DIR="$REPO_ROOT/.build"
 GENERIC_TREE=(nixos darwin)
 
 # --- helpers -----------------------------------------------------------------
-
-log()  { printf '\033[1;34m[bootstrap]\033[0m %s\n' "$*"; }
-die()  { printf '\033[1;31m[bootstrap] FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
-
-need() {
-  command -v "$1" >/dev/null 2>&1 || die "required tool '$1' not on PATH (install it, then re-run)."
-}
 
 # Read a value into the named global. Skips the prompt if already set in the environment.
 prompt_var() {
@@ -59,20 +66,9 @@ prompt_var() {
 
 # --- 0. preflight ------------------------------------------------------------
 
-need age-keygen
-need sops
-need openssl
-need jq
-need gum
-need python3
-need tart
-need packer
-need security
-need rsync
-need curl
-need rg               # the genericity guard below scans the config tree with ripgrep
-need nix              # hermes image: build-hermes-image.sh drives nix inside a linux builder VM
-need hf               # auto-downloads the Qwen model into the host's shared HF hub cache
+# rg: the genericity guard below scans the config tree; nix: build-hermes-image.sh drives nix
+# inside a linux builder VM; hf: auto-downloads the Qwen model into the host's shared HF hub cache.
+need age-keygen sops openssl jq gum python3 tart packer security rsync curl rg nix hf
 mkdir -p "$RUNTIME_DIR"
 chmod 700 "$RUNTIME_DIR"
 
@@ -150,6 +146,10 @@ chmod 644 "$NODE_CONFIG_DIR/node.env"
 # Post-Stage-B every nixos/ + darwin/ config uses bare Tailscale MagicDNS names (metal,
 # bluebubbles, hermes). A surviving @@TAILNET_DOMAIN@@ would bake the literal placeholder into
 # the generic image — the exact defect this stage fixes. Fail loud if any remain.
+# NOTE: this guard targets ONLY @@TAILNET_DOMAIN@@. Other @@…@@ tokens live in the generic tree ON
+# PURPOSE — @@APERTURE_STATIC_KEY@@ / @@VM_ADMIN_PASS@@ (darwin/) and @@TS_AUTHKEY@@ /
+# @@AGENT_VAULT_CA_PEM@@ (nixos/) are rendered at build- or activation-time (packer PKR_VAR_*, sops,
+# the fetched CA), never at flake-eval, so they are exempt and must survive this scan.
 # rg exits 1 when nothing matches (the pass case) and >=2 on a real scan error — distinguish
 # them so a broken scan fails loud instead of silently "passing" (rg is preflighted above).
 set +e
@@ -173,7 +173,7 @@ log "Applying host config: ./scripts/setup.sh ..."
 # ("VM <node> is already running"), or it boots hermes mid-clonefile and corrupts the disk. Boot all
 # three out now; each is re-loaded at its proper boot point once its disk is in place.
 for node in metal bluebubbles hermes; do
-  launchctl bootout "gui/$(id -u)/com.yclaw.tart-$node" 2>/dev/null || true
+  bootout_drain "gui/$(id -u)" "com.yclaw.tart-$node"
 done
 
 # --- 6. build the macOS guest images (metal + bluebubbles) via packer --------
@@ -190,13 +190,11 @@ build_macos_image() {
     log "$node VM already exists — skipping build (run 'just destroy' to force a rebuild)."
     return 0
   fi
-  # Re-unlock the keychain right before each read: the keychain auto-locks after 300s, and a build
-  # ahead of this one (metal takes ~6 min) trips that, so a single up-front unlock would have
-  # re-locked by the second build — a locked read then pops a GUI prompt / fails (exit 152)
-  # non-interactively. _yclaw_keychain_unlock is programmatic (login-keychain password), no prompt.
-  _yclaw_keychain_unlock
-  admin_pass="$(security find-generic-password -a "$USER" -s "$admin_service" -w "$YCLAW_KEYCHAIN")"
-  [[ -n "$admin_pass" ]] || die "no $admin_service in $YCLAW_KEYCHAIN — collect_secrets should have generated it."
+  # kc_read unlocks the yclaw keychain, reads, and re-locks per call — exactly the per-read re-unlock
+  # this needs: the keychain auto-locks after 300s, and a build ahead of this one (metal takes ~6 min)
+  # trips that, so a single up-front unlock would have re-locked by the second build (a locked read
+  # then pops a GUI prompt / fails exit 152 non-interactively). kc_read dies loud if the item is absent.
+  admin_pass="$(kc_read "$admin_service")"
   log "Building $node image via packer (-only=tart-cli.$node) ..."
   # Packer loads every packer/*.pkr.hcl together (shared common.pkr.hcl); -only picks this node.
   # Both nodes clone a digest-pinned base in their .pkr.hcl, so no IPSW var is passed here.
@@ -240,19 +238,13 @@ HOST_TS_IP="$(tailscale ip -4 2>/dev/null | head -1)"
 # secret share is mounted), so it only joins the tailnet after that ~5-10 min activation — wait
 # generously (180 × 5s = 15 min) for it to become SSH-reachable.
 log "Authorizing this host ($HOST_TS_IP) on metal's pf gate (waiting for metal's first-boot activation + SSH, up to 15 min) ..."
-host_authorized=""
-# Pass the whole script as ONE argument: `tailscale ssh host -- sh -c "a && b"` is mangled because
-# tailscale ssh word-splits its remote args, so the remote runs `sh -c <first-word>` (e.g. `sh -c
-# mkdir`) and the rest is misparsed — it silently fails to write the file yet still exits 0. As a
-# single string the remote login shell runs the full `&&` chain and returns its real exit code.
+# Pass the whole script as ONE argument (ts_run enforces this): `tailscale ssh host -- sh -c "a && b"`
+# is mangled because tailscale ssh word-splits its remote args, so the remote runs `sh -c <first-word>`
+# (e.g. `sh -c mkdir`) and the rest is misparsed — it silently fails to write the file yet still exits 0.
+# As a single string the remote login shell runs the full `&&` chain and returns its real exit code.
 metal_authorize_cmd="mkdir -p /etc/pf.anchors && umask 077 && printf '%s\n' '$HOST_TS_IP' > /etc/pf.anchors/metal-allowed-hosts && launchctl kickstart -k system/org.nixos.metal-pf-refresh"
-for _ in $(seq 1 180); do
-  if tailscale ssh root@metal "$metal_authorize_cmd" 2>/dev/null; then
-    host_authorized=1; break
-  fi
-  sleep 5
-done
-[[ -n "$host_authorized" ]] || die "could not authorize this host on metal's pf gate over tailscale ssh — is metal up?"
+wait_for "authorize this host on metal's pf gate" 180 5 ts_run root@metal "$metal_authorize_cmd" \
+  || die "could not authorize this host on metal's pf gate over tailscale ssh — is metal up?"
 
 # --- 7. build the hermes image with the REAL agent-vault CA ------------------
 
@@ -260,13 +252,7 @@ done
 # The CA is generated by agent-vault on metal, so fetch it AFTER metal is up, write it into a
 # gitignored build copy of the repo, and build hermes from there — the tracked tree stays clean.
 log "Fetching agent-vault MITM CA from metal (waiting for metal:14321, up to 15 min) ..."
-CA_PEM=""
-for _ in $(seq 1 180); do
-  CA_PEM="$(curl -fsS --max-time 10 http://metal:14321/v1/mitm/ca.pem 2>/dev/null || true)"
-  [[ "$CA_PEM" == *"BEGIN CERTIFICATE"* ]] && break
-  sleep 5
-done
-[[ "$CA_PEM" == *"BEGIN CERTIFICATE"* ]] \
+CA_PEM="$(wait_http_body http://metal:14321/v1/mitm/ca.pem 'BEGIN CERTIFICATE')" \
   || die "could not fetch the agent-vault CA from http://metal:14321/v1/mitm/ca.pem — is metal up and agent-vault running?"
 
 # Mint hermes's agent-vault proxy token and stage it into the node-config share. The token is
@@ -279,7 +265,7 @@ done
 # renders the HTTPS_PROXY URL (http://<token>:hermes@metal:14322) — so it MUST be staged before
 # hermes boots. (L1.)
 log "Minting hermes agent-vault proxy token from metal (metal-mint-hermes-token) ..."
-HERMES_AV_TOKEN="$(tailscale ssh root@metal -- /run/current-system/sw/bin/metal-mint-hermes-token)"
+HERMES_AV_TOKEN="$(ts_run root@metal /run/current-system/sw/bin/metal-mint-hermes-token)"
 case "$HERMES_AV_TOKEN" in
   av_agt_*) ;;
   *) die "agent-vault did not return a proxy token (got: '${HERMES_AV_TOKEN:0:12}…') — is metal up and the hermes agent provisioned?" ;;
@@ -291,7 +277,7 @@ log "Staged agent-vault proxy token (mode 600) into $NODE_CONFIG_DIR."
 log "Staging gitignored build copy at $BUILD_DIR ..."
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
-rsync -a --exclude '.git' --exclude '.build' --exclude 'result' --exclude 'result-*' "$REPO_ROOT/" "$BUILD_DIR/"
+sync_build_mirror "$BUILD_DIR"
 printf '%s' "$CA_PEM" > "$BUILD_DIR/nixos/agent-vault-ca.pem"
 
 log "Building hermes image from the build copy ..."
@@ -329,11 +315,10 @@ launchctl kickstart -k "gui/$(id -u)/com.yclaw.tart-hermes" 2>/dev/null || true
 # wheel. Idempotent. If hermes isn't reachable yet, print the one-liner instead of blocking.
 ONBOARD_CMD="tailscale ssh admin@hermes -- sudo -u hermes -H hermes-onboard"
 log "Waiting for hermes to be reachable for onboarding (tailscale ssh admin@hermes) ..."
+# Best-effort: on exhaustion wait_for logs a FATAL line, but we deliberately do NOT die — fall
+# through to print the manual onboarding one-liner instead of blocking the bootstrap.
 hermes_up=0
-for _ in $(seq 1 60); do
-  if tailscale ssh admin@hermes -- true 2>/dev/null; then hermes_up=1; break; fi
-  sleep 5
-done
+if wait_for "hermes reachable over tailscale ssh" 60 5 tailscale ssh admin@hermes -- true; then hermes_up=1; fi
 if [[ "$hermes_up" == 1 ]]; then
   log "Launching hermes onboarding (interactive) ..."
   $ONBOARD_CMD || log "  (onboarding exited non-zero; re-run any time: $ONBOARD_CMD)"

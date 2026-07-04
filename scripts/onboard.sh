@@ -31,13 +31,19 @@ cd "$REPO_ROOT"
 # Sourced ONLY for _yclaw_keychain_unlock/_lock, the KC_SERVICE_* names, and $YCLAW_KEYCHAIN /
 # $YCLAW_STATE — collect_secrets is never called, so nothing is minted (mirrors redeploy.sh).
 # shellcheck source=scripts/lib/secrets.sh
-source "$REPO_ROOT/scripts/lib/secrets.sh"
+source "$REPO_ROOT/scripts/lib/secrets.sh"   # also transitively sources manifest.sh (manifest_get)
+# common.sh gives ts_run its `die`; sourced BEFORE onboard's own gum helpers below so their later
+# definitions (warn in particular) win. ssh.sh provides ts_run (requires common.sh + manifest.sh).
+# shellcheck source=scripts/lib/common.sh
+source "$REPO_ROOT/scripts/lib/common.sh"
+# shellcheck source=scripts/lib/ssh.sh
+source "$REPO_ROOT/scripts/lib/ssh.sh"
 
 SELF="$REPO_ROOT/scripts/onboard.sh"
 SESSION="yclaw-onboard"
 STATUS_DIR="$YCLAW_STATE/onboard"
 LAYOUT_FILE="$STATUS_DIR/layout.kdl"
-NODE_CONFIG_DIR="$HOME/.config/yclaw/vm-secrets"   # bootstrap.sh's hermes node-config share source
+NODE_CONFIG_DIR="$HOME/$(manifest_get '.host_paths.node_config_dir_rel')"   # bootstrap.sh's hermes node-config share source
 GOOGLE_OAUTH="$REPO_ROOT/scripts/connect-google-oauth.py"
 
 # CLIProxyAPI (metal): verified against router-for-me/CLIProxyAPI @ the commit pkgs/cli-proxy-api.nix pins.
@@ -62,9 +68,9 @@ confirm() { gum confirm "$1"; }   # 0 = yes, 1 = no
 
 # --- ssh helpers ------------------------------------------------------------------------------
 
-# Run a non-interactive remote command over the proven Tailscale SSH path. Stdin is forwarded
-# (so callers can pipe a heredoc / script), stderr passes through.
-tsh() { tailscale ssh "$@"; }
+# Non-interactive remote commands go over ts_run (scripts/lib/ssh.sh) — the proven Tailscale SSH
+# path (one command string; stdin forwarded so callers can pipe a heredoc / script). The plain
+# `ssh -t [-L …]` calls below are the deliberate exception for the interactive cli-proxy logins.
 
 # Probe + surface the `action: check` re-auth URL for one node, looping until the operator has
 # approved it (or gives up). $1 = user@host, $2 = human label. The bootstrap probes hide this URL
@@ -138,7 +144,7 @@ gemini_logged_in() {
 # never hardcode cfg.stateDir / cfg.workingDirectory. Piped over stdin (bash -s) to dodge the
 # tailscale-ssh remote-arg word-split.
 hermes_identity_state() {
-  tsh admin@hermes -- sudo -u hermes -H bash -s <<'PROBE' 2>/dev/null || true
+  ts_run admin@hermes 'sudo -u hermes -H bash -s' <<'PROBE' 2>/dev/null || true
 s="$(command -v hermes-onboard)" || exit 0
 eval "$(grep -E '^[[:space:]]*(export HOME=|export HERMES_HOME=|workspace=|memdir=|usermd=|soulmd=)' "$s")"
 [ -s "$usermd" ] && echo USER_OK
@@ -176,7 +182,7 @@ gate_a_hermes() {
   fi
 
   note "Running hermes-onboard on hermes (feeding your answers) …"
-  if printf '%s' "$feed" | tsh admin@hermes -- sudo -u hermes -H hermes-onboard; then
+  if printf '%s' "$feed" | ts_run admin@hermes 'sudo -u hermes -H hermes-onboard'; then
     state="$(hermes_identity_state)"
     if [[ "$state" == *USER_OK* && "$state" == *SOUL_OK* ]]; then
       ok "hermes identity written (USER.md + SOUL.md)."
@@ -301,12 +307,10 @@ bluebubbles_health() {
 
 gate_e_bluebubbles() {
   local bb_pw allowlist
-  # Guard BEFORE unlock (mirrors redeploy.sh): the create branch in _yclaw_keychain_unlock would mint a
-  # fresh keychain if absent, which onboard must never do.
+  # Guard BEFORE kc_read (mirrors redeploy.sh): kc_read's _yclaw_keychain_unlock create branch would
+  # mint a fresh keychain if absent, which onboard must never do. kc_read unlocks, reads, and re-locks.
   [ -f "$YCLAW_KEYCHAIN" ] || { err "no yclaw keychain — run \`just bootstrap\` first."; return 1; }
-  _yclaw_keychain_unlock
-  bb_pw="$(security find-generic-password -a "$USER" -s "$KC_SERVICE_BLUEBUBBLES_SERVER" -w "$YCLAW_KEYCHAIN")"
-  _yclaw_keychain_lock
+  bb_pw="$(kc_read "$KC_SERVICE_BLUEBUBBLES_SERVER")"
 
   if [ "$(bluebubbles_health "$bb_pw")" = HEALTHY ]; then
     ok "BlueBubbles already healthy (server + Private API helper connected)."
@@ -328,9 +332,11 @@ gate_e_bluebubbles() {
   allowlist="${BLUEBUBBLES_ALLOWED_USERS:?node.env has no BLUEBUBBLES_ALLOWED_USERS}"
 
   note "Running bluebubbles-setup.sh on the guest (config, TCC grants, tailnet serve, health gate) …"
-  tsh root@bluebubbles -- \
-    env BLUEBUBBLES_PASSWORD="$bb_pw" BLUEBUBBLES_ALLOWED_USERS="$allowlist" \
-    bash -s setup < "$REPO_ROOT/scripts/bluebubbles-setup.sh" || true
+  # bb_pw is [A-Za-z0-9]{32} and allowlist is space-free iMessage handles, so this single command
+  # string re-parses losslessly in the remote login shell (same reasoning as redeploy.sh).
+  ts_run root@bluebubbles \
+    "env BLUEBUBBLES_PASSWORD=$bb_pw BLUEBUBBLES_ALLOWED_USERS=$allowlist bash -s setup" \
+    < "$REPO_ROOT/scripts/bluebubbles-setup.sh" || true
 
   if [ "$(bluebubbles_health "$bb_pw")" = HEALTHY ]; then
     ok "BlueBubbles healthy — setup auto-hardened (Screen Sharing disabled)."
@@ -422,10 +428,8 @@ preflight() {
   for t in gum tailscale ssh curl python3 jq; do command -v "$t" >/dev/null || missing+=("$t"); done
   [ "${#missing[@]}" -eq 0 ] || { err "missing required tools: ${missing[*]}"; exit 1; }
   [ -f "$YCLAW_KEYCHAIN" ] || { err "no yclaw keychain at $YCLAW_KEYCHAIN — run \`just bootstrap\` first."; exit 1; }
-  _yclaw_keychain_unlock
-  security find-generic-password -a "$USER" -s "$KC_SERVICE_TS_OAUTH_ID" -w "$YCLAW_KEYCHAIN" >/dev/null 2>&1 \
+  kc_has "$KC_SERVICE_TS_OAUTH_ID" \
     || warn "Tailscale OAuth client not in the keychain — bootstrap may be incomplete."
-  _yclaw_keychain_lock
   local p
   for p in "$GOOGLE_OAUTH_PORT" "$GEMINI_CALLBACK_PORT"; do
     if lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then

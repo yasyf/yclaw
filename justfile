@@ -57,24 +57,10 @@ deploy node:
 redeploy node="all":
     ./scripts/redeploy.sh {{node}}
 
-# Smoke tests. Some checks need a live stack and stay commented scaffolding.
+# Smoke tests: nix flake check + hermes doctor + a model-plane curl (metal:8317/v1/models with the
+# Aperture static bearer). Deeper live-stack checks stay commented scaffolding in the script.
 smoke:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    # config integrity
-    nix flake check
-
-    # per-VM health via tailscale ssh
-    for vm in hermes; do
-      tailscale ssh "admin@${vm}" -- hermes doctor
-    done
-
-    # --- live-stack checks below need a running stack; run by hand once up. ---
-    # fallback: disable the gpt-5.5 upstream → confirm hermes hops gemini-3.5 → qwen-local
-    # agent-vault: a tool call needing Exa/OpenAI succeeds (bearer injected via http://metal.@@TAILNET_DOMAIN@@:14322) and fails cleanly if the broker is down
-    # gmail: `gws` with a dummy token round-trips through the agent-vault proxy (real token never in the hermes VM)
-    # bluebubbles: send/receive in a DM AND a group, from an authorized handle (allowlist enforced) via https://bluebubbles.@@TAILNET_DOMAIN@@
+    ./scripts/smoke.sh
 
 # Validate the deployed security hardening. Run ON THE HOST with the VMs up, after `just bootstrap`:
 # probes the per-VM isolation + audit controls over `tailscale ssh` and reports PASS/FAIL per check.
@@ -84,71 +70,27 @@ validate:
 # Disable Screen Sharing on the bluebubbles guest once iMessage bring-up is done (the post-bring-up
 # hardening step). Idempotent, needs no secrets — pipes the setup script's `harden` path over SSH.
 bb-harden:
-    tailscale ssh root@bluebubbles -- bash -s harden < scripts/bluebubbles-setup.sh
-
-# Tear down every yclaw tart VM (boot out launchd agents first so KeepAlive can't relaunch),
-# then remove the runner plists. Covers metal, hermes, bluebubbles, and the retired `vault`
-# VM whose disk lingers at ~/.tart/vms/vault. Also deletes the VMs' tailnet device registrations
-# (persistent nodes don't self-reap, so leaving them drifts MagicDNS to hermes-1/metal-1 on the
-# next deploy). Leaves host state/keychain alone — use `nuke`.
-destroy:
     #!/usr/bin/env bash
     set -euo pipefail
-    # scripts/setup.sh writes the runners as `com.yclaw.tart-<node>` (NOT the old nix-darwin
-    # `org.nixos.*` labels). Boot them out so KeepAlive can't relaunch the VM mid-teardown.
-    for node in metal hermes bluebubbles; do
-      launchctl bootout "gui/$(id -u)/com.yclaw.tart-${node}" 2>/dev/null || true
-      rm -f "$HOME/Library/LaunchAgents/com.yclaw.tart-${node}.plist"
-    done
-    # `vault` was retired into metal but its disk persists; delete it too.
-    for vm in metal hermes bluebubbles vault; do
-      tart stop "$vm" 2>/dev/null || true
-      tart delete "$vm" 2>/dev/null || true
-    done
-    # yclaw nodes are PERSISTENT tailnet nodes now (they don't self-reap), so delete their device
-    # registrations too — else a later redeploy drifts MagicDNS to hermes-1/metal-1. Best-effort:
-    # skips cleanly if TAILSCALE_API_KEY is unset (scripts/nuke-tailnet.sh).
-    ./scripts/nuke-tailnet.sh || true
+    source scripts/lib/common.sh
+    source scripts/lib/manifest.sh
+    source scripts/lib/ssh.sh
+    guest_pipe root@bluebubbles scripts/bluebubbles-setup.sh harden
+
+# Tear down every yclaw tart VM (boot out launchd agents first so KeepAlive can't relaunch),
+# then remove the runner plists and delete the VMs' tailnet device registrations. Covers metal,
+# hermes, bluebubbles, and the retired `vault` VM. Leaves host state/keychain alone — use `nuke`.
+destroy:
+    ./scripts/destroy.sh
 
 # From-zero acceptance test: destroy then bring the host back up.
 rebuild: destroy setup
 
-# Clean slate: destroy every VM, then wipe host secret/agent state + the generated keychain
-# items so the next `just bootstrap` regenerates everything fresh. PRESERVES the operator-supplied
-# Tailscale OAuth client (yclaw-ts-oauth-client-{id,secret}) and the large, content-addressed
-# model caches (set WIPE_MODELS=1 to drop those too). `destroy` already deletes the VMs' tailnet
-# device registrations (persistent nodes don't self-reap), so the next bootstrap re-mints cleanly.
+# Clean slate: destroy every VM (via the `destroy` dependency), then wipe host secret/agent state +
+# the generated keychain items so the next `just bootstrap` regenerates everything fresh. PRESERVES
+# the operator-supplied Tailscale OAuth client and the model caches (set WIPE_MODELS=1 to drop those).
 nuke: destroy
-    #!/usr/bin/env bash
-    set -euo pipefail
-    state="$HOME/.yclaw/state"
-    # Secret + agent state under ~/.yclaw/state (keep model weight caches by default). The hermes
-    # agent writes some skill files read-only (mode 444 inside 555 dirs), so make each tree
-    # writable before removing it — otherwise rm cannot unlink them and aborts under `set -e`.
-    for d in age vm-secrets hosts agent-vault cli-proxy-api hermes bluebubbles mlx-audio; do
-      [ -e "$state/$d" ] && chmod -R u+w "$state/$d" 2>/dev/null || true
-      rm -rf "$state/$d"
-    done
-    rm -f "$state"/secrets.sops.yaml* "$state/values.env"
-    if [ "${WIPE_MODELS:-0}" = "1" ]; then
-      rm -rf "$state/hf" "$state/omlx" "$HOME/.cache/huggingface/hub"
-      echo "nuke: dropped model caches (WIPE_MODELS=1) — redeploy will re-download ~20 GB"
-    else
-      echo "nuke: preserved model caches ($state/{hf,omlx}, ~/.cache/huggingface/hub); set WIPE_MODELS=1 to drop them"
-    fi
-    # The hermes node-config share source, so a fresh hermes can't re-seed stale secrets.
-    rm -rf "$HOME/.config/yclaw/vm-secrets"
-    # Gitignored repo build cruft.
-    rm -rf secrets/runtime .build
-    # Keychain: delete only the GENERATED items; keep the OAuth client + keychain unlock password.
-    kc="$HOME/Library/Keychains/yclaw.keychain-db"
-    if [ -f "$kc" ]; then
-      for svc in yclaw-agent-vault-master yclaw-metal-admin-pass yclaw-bluebubbles-admin-pass yclaw-bluebubbles-server-pass; do
-        security delete-generic-password -s "$svc" "$kc" >/dev/null 2>&1 || true
-      done
-      echo "nuke: cleared generated keychain passwords; preserved yclaw-ts-oauth-client-{id,secret}"
-    fi
-    echo "nuke: clean slate (tailnet devices deleted by destroy). Next: just bootstrap."
+    ./scripts/nuke.sh
 
 # Delete yclaw device registrations from the tailnet (scripts/nuke-tailnet.sh). yclaw nodes are
 # PERSISTENT now, so they no longer self-reap on disconnect — teardown/redeploy delete them

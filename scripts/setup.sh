@@ -28,6 +28,16 @@
 #     services to gate); see ENABLE_VNC_ANCHOR below
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "$REPO_ROOT/scripts/lib/common.sh"
+# shellcheck source=scripts/lib/manifest.sh
+source "$REPO_ROOT/scripts/lib/manifest.sh"
+# shellcheck source=scripts/lib/wait.sh
+source "$REPO_ROOT/scripts/lib/wait.sh"
+# shellcheck source=scripts/lib/launchd.sh
+source "$REPO_ROOT/scripts/lib/launchd.sh"
+
 HOME_DIR="$HOME"
 STATE_DIR="$HOME_DIR/.yclaw/state"
 LAUNCH_AGENTS_DIR="$HOME_DIR/Library/LaunchAgents"
@@ -40,18 +50,11 @@ LOGS_DIR="$HOME_DIR/Library/Logs/Tart"
 # sibling `token` file stays on the host and never enters the VM.
 HF_HUB_DIR="${HF_HOME:-$HOME_DIR/.cache/huggingface}/hub"
 
-# State subdirs the VMs read/write over the virtiofs shares (metal mounts narrow per-need shares,
-# hermes mounts its own hosts/hermes bundle + hermes/ runtime state).
-STATE_SUBDIRS=(hosts/hermes hosts/metal cli-proxy-api/auth agent-vault mlx-audio hermes)
-
 # pf VNC anchor: OFF by default. The host runs no VNC-exposed model services anymore, so there
 # is nothing to gate. Set ENABLE_VNC_ANCHOR=1 only if a VNC service is reintroduced on the host.
 ENABLE_VNC_ANCHOR="${ENABLE_VNC_ANCHOR:-0}"
 
 # --- helpers -----------------------------------------------------------------
-
-log() { printf '\033[1;34m[setup]\033[0m %s\n' "$*"; }
-die() { printf '\033[1;31m[setup] FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # Write one tart LaunchAgent plist and (re)load it. bootout-before-bootstrap so a changed plist
 # replaces the running agent instead of erroring on "service already loaded".
@@ -89,17 +92,7 @@ $program_args  </array>
 </plist>
 PLIST
 
-  local domain="gui/$(id -u)"
-  launchctl bootout "$domain/$label" 2>/dev/null || true
-  # bootout is async — it signals the tart VM and returns before the service fully leaves the
-  # domain. Bootstrapping the same label while it is still stopping races launchd and fails with
-  # "5: Input/output error". Wait for the label to drain out of the domain (bounded) first.
-  local _i
-  for _i in $(seq 1 30); do
-    launchctl print "$domain/$label" >/dev/null 2>&1 || break
-    sleep 1
-  done
-  launchctl bootstrap "$domain" "$plist"
+  reload_launch_agent "$label" "$plist"
   log "Loaded LaunchAgent $label."
 }
 
@@ -141,11 +134,14 @@ fi
 
 # --- 2. ~/.yclaw/state + per-VM subdirs --------------------------------------
 
+# State subdirs the VMs read/write over the virtiofs shares (metal mounts narrow per-need shares,
+# hermes mounts its own hosts/hermes bundle + hermes/ runtime state) come from machines.json.
 log "Creating $STATE_DIR and per-VM subdirs ..."
 mkdir -p "$STATE_DIR"
-for sub in "${STATE_SUBDIRS[@]}"; do
+state_subdirs="$(manifest_list '.host_paths.state_subdirs_mounts')"
+while IFS= read -r sub; do
   mkdir -p "$STATE_DIR/$sub"
-done
+done <<< "$state_subdirs"
 chmod 700 "$STATE_DIR/hosts/hermes" "$STATE_DIR/hosts/metal"
 mkdir -p "$LOGS_DIR" "$LAUNCH_AGENTS_DIR"
 # The shared HF hub cache lives in the host's regular cache, not the state tree — create it so the
@@ -156,7 +152,7 @@ mkdir -p "$HF_HUB_DIR"
 # common.nix's seedNodeConfig can read key.txt + secrets.sops.yaml (+ node.env, agent-vault-ca.pem)
 # on first boot. `just bootstrap` populates it; create it here so the runner can mount it even
 # before a full bootstrap has written its contents.
-NODE_CONFIG_DIR="$HOME_DIR/.config/yclaw/vm-secrets"
+NODE_CONFIG_DIR="$HOME_DIR/$(manifest_get '.host_paths.node_config_dir_rel')"
 mkdir -p "$NODE_CONFIG_DIR"
 chmod 700 "$NODE_CONFIG_DIR"
 
@@ -211,7 +207,7 @@ write_agent hermes \
   run hermes \
   --no-graphics \
   --serial-path=/dev/null \
-  "--dir=$HOME_DIR/.config/yclaw/vm-secrets:ro,tag=sops" \
+  "--dir=$NODE_CONFIG_DIR:ro,tag=sops" \
   "--dir=$STATE_DIR/hermes:tag=hermesstate" \
   "--dir=$HOME_DIR/Code/yclaw:ro,tag=repo"
 
@@ -222,15 +218,19 @@ write_agent hermes \
 # (shared_v4 / shared_v6 / network_isolation) the VMs need for internet + tailnet egress.
 if [[ "$ENABLE_VNC_ANCHOR" == "1" ]]; then
   log "Loading pf VNC anchor (ENABLE_VNC_ANCHOR=1) ..."
-  PF_ANCHOR_FILE="/etc/pf.anchors/vnc"
-  sudo mkdir -p /etc/pf.anchors
-  sudo tee "$PF_ANCHOR_FILE" >/dev/null <<'EOF'
+  vnc_rules="$(mktemp)"
+  cat > "$vnc_rules" <<'EOF'
 table <vnc_allowed> { 100.64.0.0/10, 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12 }
 pass in quick proto { tcp udp } from <vnc_allowed> to any port 5900:5902
 block in quick proto { tcp udp } from any to any port 5900:5902
 EOF
-  # Targeted anchor reload only — leaves the NAT anchors untouched.
-  sudo pfctl -a vnc -f "$PF_ANCHOR_FILE"
+  # install_pf_anchor does a targeted `pfctl -a vnc -f` load only (NEVER `pfctl -f /etc/pf.conf`,
+  # which flushes the vmnet / Internet-Sharing NAT anchors the VMs need), and is called WITHOUT
+  # --wire-pfconf so the anchor stays out of /etc/pf.conf — this host deliberately does not
+  # boot-wire the VNC anchor. pf ops need root, so run install_pf_anchor in a sudo shell that
+  # sources the self-contained pf.sh.
+  sudo bash -c 'source "$1"; install_pf_anchor vnc "$2"' _ "$REPO_ROOT/scripts/lib/pf.sh" "$vnc_rules"
+  rm -f "$vnc_rules"
 fi
 
 log "Host setup complete. VM runners loaded as com.yclaw.tart-metal / com.yclaw.tart-bluebubbles / com.yclaw.tart-hermes."

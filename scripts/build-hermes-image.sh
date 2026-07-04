@@ -39,6 +39,11 @@ SSH_USER="${BUILDER_SSH_USER:-admin}"
 SSH_PASS="${BUILDER_SSH_PASS:-admin}" # cirruslabs Linux base-image default credentials
 OUT_LINK="$REPO/result-hermes"
 
+# wait_for (bounded polling), sourced from the script's OWN dir so a YCLAW_BUILD_DIR override of
+# REPO never redirects it. Self-contained (bash 3.2), no other lib deps.
+# shellcheck source=scripts/lib/wait.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/wait.sh"
+
 die() { echo "[build-hermes-image] FATAL: $*" >&2; exit 1; }
 
 [[ "$(uname -m)" == "arm64" ]] || die "local builder needs Apple Silicon (--nested kvm); use CI elsewhere."
@@ -62,13 +67,11 @@ trap '"$TART_BIN" stop "$BUILDER_VM" 2>/dev/null || true' EXIT
 
 # 3. Wait for the guest to report an IP (DHCP on the tart NAT).
 echo "[build-hermes-image] waiting for $BUILDER_VM IP ..."
+# wait_for checks exit status only; capture the IP into `ip` via a tiny predicate so its value
+# survives the poll (the predicate runs in this shell, not a subshell).
 ip=""
-for _ in $(seq 1 60); do
-  ip="$("$TART_BIN" ip "$BUILDER_VM" 2>/dev/null || true)"
-  [[ -n "$ip" ]] && break
-  sleep 5
-done
-[[ -n "$ip" ]] || die "$BUILDER_VM never reported an IP."
+_builder_has_ip() { ip="$("$TART_BIN" ip "$BUILDER_VM" 2>/dev/null)"; [ -n "$ip" ]; }
+wait_for "$BUILDER_VM to report an IP" 60 5 _builder_has_ip || die "$BUILDER_VM never reported an IP."
 
 ssh_guest() {
   sshpass -p "$SSH_PASS" ssh \
@@ -77,11 +80,7 @@ ssh_guest() {
 }
 
 echo "[build-hermes-image] waiting for sshd on $BUILDER_VM ..."
-for _ in $(seq 1 60); do
-  ssh_guest true 2>/dev/null && break
-  sleep 5
-done
-ssh_guest true 2>/dev/null || die "sshd on $BUILDER_VM never came up."
+wait_for "sshd on $BUILDER_VM" 60 5 ssh_guest true || die "sshd on $BUILDER_VM never came up."
 
 # 4. In-guest: prove real kvm, install Nix, build the image, drop it into the shared repo dir.
 # Verified against a running cirruslabs ubuntu builder: login is admin/admin, and tart exposes the
