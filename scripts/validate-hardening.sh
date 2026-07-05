@@ -67,7 +67,7 @@ manual "Confirm the DENY trail: \`tailscale ssh admin@hermes -- journalctl -u he
 hdr "3. M2 omlx/STT bound to the tailnet IP, not loopback/vmnet"
 if "${hermes_ssh[@]}" curl -sf --max-time 8 http://metal:8000/v1/models >/dev/null 2>&1; then ok "hermes → metal:8000 (omlx) answers"
 else no "hermes → metal:8000 (omlx) did not answer"; fi
-metal_tsip="$("${metal_ssh[@]}" tailscale ip -4 2>/dev/null | head -1 || true)"
+metal_tsip="$("${metal_ssh[@]}" /opt/homebrew/bin/tailscale ip -4 2>/dev/null | head -1 || true)"
 listen="$("${metal_ssh[@]}" lsof -nP -iTCP:8000 -iTCP:8765 -sTCP:LISTEN 2>/dev/null || true)"
 if [[ -n "$metal_tsip" ]] && grep -q "$metal_tsip:" <<<"$listen"; then ok "omlx/STT listen on metal's tailnet IP ($metal_tsip)"
 else no "omlx/STT not confirmed on the tailnet IP (metal_tsip=${metal_tsip:-none})"; fi
@@ -90,7 +90,7 @@ manual "Cross-VM negative: copy $HERMES_STATE/secrets.sops.yaml onto metal, then
 hdr "5. metal share boundary — only the narrow per-need shares"
 shares="$("${metal_ssh[@]}" ls "/Volumes/My Shared Files/" 2>/dev/null || true)"
 for s in metalsecrets agentvault hfhub mlxaudio cliproxy repo; do
-  if grep -qx "$s" <<<"$shares"; then ok "share present: $s"; else no "expected share missing: $s"; fi
+  if "${metal_ssh[@]}" "[ -e '/Volumes/My Shared Files/$s' ]" 2>/dev/null; then ok "share present: $s"; else no "expected share missing: $s"; fi
 done
 if grep -qiE '^(hosts|hermes|state)$' <<<"$shares"; then no "metal sees a forbidden share: $(tr '\n' ' ' <<<"$shares")"
 else ok "metal sees no hosts/hermes/state share"; fi
@@ -123,7 +123,9 @@ for L in com.apple.metadata.mds com.apple.backupd com.apple.analyticsd com.apple
   else no "system daemon NOT disabled: $L (debloat override missing)"; fi
 done
 madmin_uid="$("${metal_ssh[@]}" id -u admin 2>/dev/null || true)"
-mgui="$("${metal_ssh[@]}" launchctl print-disabled "gui/${madmin_uid}" 2>/dev/null || true)"
+# metal is headless (no Aqua session) so the `gui/<uid>` domain does not exist — the per-user
+# agents are disabled in the session-independent `user/<uid>` domain (see darwin/metal.nix debloat).
+mgui="$("${metal_ssh[@]}" launchctl print-disabled "user/${madmin_uid}" 2>/dev/null || true)"
 for L in com.apple.photoanalysisd com.apple.generativeexperiencesd com.apple.assistantd com.apple.gamed; do
   if grep -qE "\"$L\"[[:space:]]*=>[[:space:]]*(disabled|true)" <<<"$mgui"; then ok "user agent disabled: $L"
   else no "user agent NOT disabled: $L (debloat override missing)"; fi
