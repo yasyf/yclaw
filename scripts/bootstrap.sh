@@ -147,7 +147,7 @@ chmod 644 "$NODE_CONFIG_DIR/node.env"
 # bluebubbles, hermes). A surviving @@TAILNET_DOMAIN@@ would bake the literal placeholder into
 # the generic image — the exact defect this stage fixes. Fail loud if any remain.
 # NOTE: this guard targets ONLY @@TAILNET_DOMAIN@@. Other @@…@@ tokens live in the generic tree ON
-# PURPOSE — @@APERTURE_STATIC_KEY@@ / @@VM_ADMIN_PASS@@ (darwin/) and @@TS_AUTHKEY@@ /
+# PURPOSE — @@CLIPROXY_API_KEY@@ / @@VM_ADMIN_PASS@@ (darwin/) and @@TS_AUTHKEY@@ /
 # @@AGENT_VAULT_CA_PEM@@ (nixos/) are rendered at build- or activation-time (packer PKR_VAR_*, sops,
 # the fetched CA), never at flake-eval, so they are exempt and must survive this scan.
 # rg exits 1 when nothing matches (the pass case) and >=2 on a real scan error — distinguish

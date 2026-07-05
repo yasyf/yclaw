@@ -51,7 +51,7 @@ let
     # through the vault proxy and get injected. The model (custom provider) call reaches
     # metal's cliproxy directly on :8317 (pf-gated to hermes + the host) and MUST present
     # cliproxy's static bearer — the allowlist 401s bearerless requests (verified live) —
-    # so the model settings below carry key_env=APERTURE_STATIC_KEY (sops hermes/env).
+    # so the model settings below carry key_env=CLIPROXY_API_KEY (sops hermes/env).
     # TODO(human): confirm each SDK honors HTTPS_PROXY (so vault can intercept) — Exa/Honcho/OpenAI.
     OPENAI_API_KEY=__openai__
     EXA_API_KEY=__exa__
@@ -330,14 +330,14 @@ in
         provider = "custom";
         default = "gpt-5.5";
         base_url = "http://metal:8317/v1";
-        key_env = "APERTURE_STATIC_KEY";
+        key_env = "CLIPROXY_API_KEY";
       };
       fallback_providers = [
         {
           provider = "custom";
           model = "gemini-3-pro-preview";
           base_url = "http://metal:8317/v1";
-          key_env = "APERTURE_STATIC_KEY";
+          key_env = "CLIPROXY_API_KEY";
         }
         {
           provider = "custom";

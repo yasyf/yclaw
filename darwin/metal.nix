@@ -111,7 +111,7 @@ let
   # Decrypted sops secret paths (sops-nix installs to /run/secrets/<name>).
   masterPasswordFile = config.sops.secrets."vault/master-password".path;
   staticKeysFile = config.sops.secrets."vault/static-keys".path;
-  apertureKeyFile = config.sops.secrets."aperture/static-key".path;
+  cliproxyKeyFile = config.sops.secrets."cliproxy/api-key".path;
   tailscaleAuthkeyFile = config.sops.secrets."tailscale/authkey".path;
 
   # Shared daemon-boot preamble (reboot hardening). Each wrapper below is a launchd RunAtLoad daemon
@@ -199,7 +199,7 @@ let
     exec "$VENV/bin/python" ${sttServerPy}
   '';
 
-  # Render the cliproxy config from the committed template, substituting the sops static-key
+  # Render the cliproxy config from the committed template, substituting the sops cliproxy/api-key
   # into a runtime path the admin agent can read (the real key never enters the Nix store).
   cliproxyConfigTemplate = ./metal-cliproxyapi-config.yaml;
   cliproxyConfigRendered = "/Volumes/My Shared Files/cliproxy/config.yaml";
@@ -207,11 +207,11 @@ let
     set -euo pipefail
     ${mkDaemonPreamble {
       shares = [ cliproxyShare ];
-      secrets = [ apertureKeyFile ];
+      secrets = [ cliproxyKeyFile ];
     }}
-    KEY=$(cat ${lib.escapeShellArg apertureKeyFile})
+    KEY=$(cat ${lib.escapeShellArg cliproxyKeyFile})
     mkdir -p ${lib.escapeShellArg "/Volumes/My Shared Files/cliproxy/auth"}
-    ${pkgs.gnused}/bin/sed -e "s|@@APERTURE_STATIC_KEY@@|$KEY|g" \
+    ${pkgs.gnused}/bin/sed -e "s|@@CLIPROXY_API_KEY@@|$KEY|g" \
       ${lib.escapeShellArg "${cliproxyConfigTemplate}"} > ${lib.escapeShellArg cliproxyConfigRendered}
     chmod 600 ${lib.escapeShellArg cliproxyConfigRendered}
     exec ${pkgs.cli-proxy-api}/bin/cli-proxy-api --config ${lib.escapeShellArg cliproxyConfigRendered}

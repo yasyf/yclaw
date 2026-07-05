@@ -97,6 +97,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the tailnet over the Tailscale API. The next `just bootstrap` regenerates the rest.
 
 ### Changed
+- Renamed the cliproxy inbound-bearer secret from `aperture/static-key` /
+  `APERTURE_STATIC_KEY` to `cliproxy/api-key` / `CLIPROXY_API_KEY` across the manifest,
+  metal.nix + its cliproxy config template placeholder, hermes' `key_env`, `secrets.sh`,
+  `smoke.sh`, and the docs — the "aperture" name was a leftover from the retired hosted
+  router. The key value is unchanged (no client re-auth). `secrets.sh` fails loud if the
+  old override name is set in `.env`.
+- metal's per-user-agent debloat now uses the session-independent `user/<uid>` launchctl
+  domain instead of `gui/<uid>`: metal is headless (no Aqua session), so every `gui/`
+  operation failed `125: Domain does not support specified action` and the agents were
+  never disabled. `validate-hardening` §8 reads the same domain.
 - metal's launchd daemons are converted to `/bin/wait4path` + the shared wait lib.
   wait4path (the primitive nix-darwin's own `nix-daemon` plist uses) guards the late
   `/nix` APFS mount so no daemon fast-fails into launchd's penalty box at cold boot; the

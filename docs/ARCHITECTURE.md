@@ -44,9 +44,8 @@ of host-specific identity and lets the same artifact serve any tailnet.
   agent-vault's MITM proxy on metal (`HTTPS_PROXY=http://metal:14322`), trusting
   its CA. It carries two tailnet-internal credentials by design —
   `BLUEBUBBLES_PASSWORD` (BlueBubbles sits in `NO_PROXY` and cannot be
-  wire-injected) and `APERTURE_STATIC_KEY` (cliproxy's own inbound API key — the
-  secret name is historical; hermes calls cliproxy directly and presents the
-  bearer itself). Agent state
+  wire-injected) and `CLIPROXY_API_KEY` (cliproxy's own inbound API key — hermes
+  calls cliproxy directly and presents the bearer itself). Agent state
   in `/var/lib/hermes` (honcho memory, sessions) is externalized to the host's
   `~/.yclaw/state/hermes` over virtiofs, so it survives a VM rebuild and is backed
   up.
@@ -71,8 +70,7 @@ Model traffic is a deliberate `NO_PROXY` exclusion and goes direct: hermes calls
 metal's cliproxy (`http://metal:8317`) and omlx (`http://metal:8000`) without the
 agent-vault hop. cliproxy **enforces** its inbound static bearer — a call without
 it is a 401 — so hermes presents it on every model call via
-`key_env = "APERTURE_STATIC_KEY"` (the sops secret name is historical; the key is
-cliproxy's own API-key allowlist entry, not an Aperture credential). That key and
+`key_env = "CLIPROXY_API_KEY"` (cliproxy's own API-key allowlist entry). That key and
 `BLUEBUBBLES_PASSWORD` (BlueBubbles is the other `NO_PROXY` case) are the two
 tailnet-internal credentials hermes holds — neither is an upstream API key. omlx
 (`:8000`) needs no key; the pf gate scoping `:8317` to hermes + the host is a

@@ -1,6 +1,6 @@
 # CLIProxyAPI config for the metal VM (OAuth -> static-key proxy: Codex + Gemini-personal).
-# A template: the cliproxy wrapper (darwin/metal.nix) renders @@APERTURE_STATIC_KEY@@ from the
-# sops `aperture/static-key` secret at launch and writes the resolved file to a runtime path
+# A template: the cliproxy wrapper (darwin/metal.nix) renders @@CLIPROXY_API_KEY@@ from the
+# sops `cliproxy/api-key` secret at launch and writes the resolved file to a runtime path
 # (the real key never lands in the world-readable Nix store). Schema: cliproxyapi.md §1.
 
 # "0.0.0.0" so tailnet peers (hermes + the authorized host) reach metal's :8317. Tailscale ACLs
@@ -13,15 +13,13 @@ port: 8317
 # and CLIProxyAPI must be their only holder (cliproxyapi.md §2).
 auth-dir: "/Volumes/My Shared Files/cliproxy/auth"
 
-# The static key clients may present as `Authorization: Bearer @@APERTURE_STATIC_KEY@@` (the
-# secret's "aperture" name is historical — the retired hosted Aperture router used to inject it).
-# The allowlist is ENFORCED (bearerless requests 401): hermes presents this same key via its
-# model-plane key_env (nixos/hermes.nix), on top of the pf gate. The wrapper renders this key
-# from its sops secret.
+# The API key clients present as `Authorization: Bearer @@CLIPROXY_API_KEY@@`. The allowlist is
+# ENFORCED (bearerless requests 401): hermes presents this same key via its model-plane key_env
+# (nixos/hermes.nix), on top of the pf gate. The wrapper renders this key from its sops secret.
 # At least one real key is REQUIRED: an empty list unregisters the key-gate, and the
 # "your-api-key-1" example trips the safe-mode guard and refuses to serve (cliproxyapi.md §1).
 api-keys:
-  - "@@APERTURE_STATIC_KEY@@"
+  - "@@CLIPROXY_API_KEY@@"
 
 # Management API disabled entirely (empty secret-key -> no /v0/management routes).
 remote-management:

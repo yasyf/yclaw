@@ -25,26 +25,25 @@ for vm in hermes; do
 done
 
 # --- model-plane check --------------------------------------------------------
-# APERTURE_STATIC_KEY is minted in collect_secrets and lands ONLY in metal's sops bundle
-# (nixos/secrets-manifest.json: metal owns aperture/static-key) — it is NOT persisted to any host
+# CLIPROXY_API_KEY is minted in collect_secrets and lands ONLY in metal's sops bundle
+# (nixos/secrets-manifest.json: metal owns cliproxy/api-key) — it is NOT persisted to any host
 # plaintext file, so read it back by decrypting metal's bundle with the host-staged metal age key.
 metal_key="$YCLAW_STATE/hosts/metal/key.txt"
 metal_bundle="$YCLAW_STATE/hosts/metal/secrets.sops.yaml"
 [ -s "$metal_key" ] && [ -s "$metal_bundle" ] \
   || die "no metal secrets bundle at $metal_bundle — run \`just bootstrap\` first."
-aperture_key="$(SOPS_AGE_KEY_FILE="$metal_key" sops --decrypt --config /dev/null \
+cliproxy_key="$(SOPS_AGE_KEY_FILE="$metal_key" sops --decrypt --config /dev/null \
   --input-type yaml --output-type yaml "$metal_bundle" \
-  | sed -n 's/^[[:space:]]*static-key:[[:space:]]*//p' | tr -d '"')"
-[ -n "$aperture_key" ] || die "could not extract the Aperture static key from metal's sops bundle."
+  | sed -n 's/^[[:space:]]*api-key:[[:space:]]*//p' | tr -d '"')"
+[ -n "$cliproxy_key" ] || die "could not extract the cliproxy API key from metal's sops bundle."
 
-# TODO(bearer): this model-plane probe doubles as the allowlist-enforcement check — a 2xx means
-# cliproxy ACCEPTED the static bearer; a 401/403 would mean the allowlist REJECTED it. The
-# hermes->cliproxy bearer question is still open (blocked on the tailscale check-wall + hermes VM),
-# so revisit this assertion once that is settled.
-log "Model-plane check: GET http://metal:8317/v1/models with the Aperture static bearer ..."
-curl -fsS --max-time 10 -o /dev/null -H "Authorization: Bearer $aperture_key" \
+# This model-plane probe doubles as the allowlist-enforcement check: a 2xx means cliproxy ACCEPTED
+# the bearer; a 401/403 would mean the allowlist REJECTED it. The bearer path is settled — hermes
+# presents this same key via its model-plane key_env and gets a 2xx (verified live).
+log "Model-plane check: GET http://metal:8317/v1/models with the cliproxy bearer ..."
+curl -fsS --max-time 10 -o /dev/null -H "Authorization: Bearer $cliproxy_key" \
   http://metal:8317/v1/models \
-  || die "model-plane check failed: metal:8317/v1/models did not return 2xx with the Aperture bearer."
+  || die "model-plane check failed: metal:8317/v1/models did not return 2xx with the cliproxy bearer."
 log "Model-plane check passed."
 
 # --- live-stack checks below need a running stack; run by hand once up. ---

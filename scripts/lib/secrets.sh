@@ -220,10 +220,15 @@ collect_secrets() {
   else
     GITHUB_TOKEN="$(_secrets_ask 'GitHub token (ghp_… / github_pat_…)')"
   fi
-  # Aperture static key: mint a random one when the operator did not supply it.
-  if [ -z "${APERTURE_STATIC_KEY:-}" ]; then
-    APERTURE_STATIC_KEY="$(openssl rand -hex 32)"
-    _secrets_note 'Minted a random Aperture static key (openssl rand -hex 32).'
+  # cliproxy API key (metal:8317 inbound bearer): mint a random one when the operator did not
+  # supply it. Fail loud on the OLD override name so a stale `.env` line cannot silently mint a
+  # fresh key and desync the clients that already carry the old value.
+  if [ -z "${CLIPROXY_API_KEY:-}" ] && [ -n "${APERTURE_STATIC_KEY:-}" ]; then
+    _secrets_fail 'APERTURE_STATIC_KEY was renamed to CLIPROXY_API_KEY — update your .env override to the new name.'
+  fi
+  if [ -z "${CLIPROXY_API_KEY:-}" ]; then
+    CLIPROXY_API_KEY="$(openssl rand -hex 32)"
+    _secrets_note 'Minted a random cliproxy API key (openssl rand -hex 32).'
   fi
   # Every yclaw password lives in the dedicated yclaw keychain — ensure it exists and is
   # unlocked before any generate-or-reuse below.
@@ -314,7 +319,7 @@ collect_secrets() {
   fi
 
   export AGENT_VAULT_MASTER_PASSWORD OPENAI_API_KEY EXA_API_KEY \
-         HONCHO_API_KEY GITHUB_TOKEN BLUEBUBBLES_PASSWORD APERTURE_STATIC_KEY \
+         HONCHO_API_KEY GITHUB_TOKEN BLUEBUBBLES_PASSWORD CLIPROXY_API_KEY \
          METAL_ADMIN_PASS BLUEBUBBLES_ADMIN_PASS
 
   # One age keypair + one bundle PER HOST, each encrypted ONLY to that host's recipient and
