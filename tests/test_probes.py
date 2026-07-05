@@ -154,6 +154,11 @@ async def test_http_ok_connection_error_is_fail():
 )
 async def test_bluebubbles_health(manifest, monkeypatch, helper_connected, expected_status):
     monkeypatch.setattr(keychain, "read", lambda service: "bb-pw")
+
+    async def fake_status(timeout):
+        return {"MagicDNSSuffix": "tail1234.ts.net"}
+
+    monkeypatch.setattr(probes, "_tailscale_status", fake_status)
     seen_paths = []
 
     def handler(request):
@@ -173,6 +178,11 @@ async def test_bluebubbles_health(manifest, monkeypatch, helper_connected, expec
 
 async def test_bluebubbles_health_ping_failure_short_circuits(manifest, monkeypatch):
     monkeypatch.setattr(keychain, "read", lambda service: "bb-pw")
+
+    async def fake_status(timeout):
+        return {"MagicDNSSuffix": "tail1234.ts.net"}
+
+    monkeypatch.setattr(probes, "_tailscale_status", fake_status)
     seen_paths = []
 
     def handler(request):
@@ -183,6 +193,31 @@ async def test_bluebubbles_health_ping_failure_short_circuits(manifest, monkeypa
         result = await probes.bluebubbles_health(manifest.machines["bluebubbles"], client=client)
     assert result.status is Status.FAIL
     assert seen_paths == ["/api/v1/ping"]
+
+
+async def test_bluebubbles_health_upgrades_bare_host_to_fqdn(manifest, monkeypatch):
+    monkeypatch.setattr(keychain, "read", lambda service: "bb-pw")
+
+    async def fake_status(timeout):
+        return {"MagicDNSSuffix": "tail1234.ts.net"}
+
+    monkeypatch.setattr(probes, "_tailscale_status", fake_status)
+    seen_urls = []
+
+    def handler(request):
+        seen_urls.append(request.url)
+        if request.url.path.endswith("/ping"):
+            return httpx.Response(200, json={"status": 200})
+        return httpx.Response(200, json={"data": {"helper_connected": True}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await probes.bluebubbles_health(manifest.machines["bluebubbles"], client=client)
+    assert result.status is Status.PASS
+    assert {url.host for url in seen_urls} == {"bluebubbles.tail1234.ts.net"}
+    assert [str(url) for url in seen_urls] == [
+        "https://bluebubbles.tail1234.ts.net/api/v1/ping?password=bb-pw",
+        "https://bluebubbles.tail1234.ts.net/api/v1/server/info?password=bb-pw",
+    ]
 
 
 async def test_bluebubbles_health_keychain_error_is_fail(manifest, monkeypatch):

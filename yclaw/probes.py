@@ -165,8 +165,14 @@ async def bluebubbles_health(
     except keychain.KeychainError as exc:
         return ProbeResult("bluebubbles", Status.FAIL, f"keychain read failed: {exc}")
     params = {service.password_query_param: password}
-    ping_url = service.health.url
-    info_url = f"{ping_url.rsplit('/', 1)[0]}/server/info"
+    # tailscale serve's Let's Encrypt cert is issued for the MagicDNS FQDN only, so probe the FQDN:
+    # the bare `bluebubbles` host from the manifest fails TLS hostname verification (SNI). Resolve the
+    # suffix at runtime — mirrors nixos/hermes.nix waitForBlueBubbles, and keeps the tailnet domain out
+    # of the manifest. No bare-host fallback: if this can't resolve, tailscale is down and the whole
+    # sweep is meaningless — let it fail.
+    suffix = (await _tailscale_status(timeout))["MagicDNSSuffix"]
+    ping_url = httpx.URL(service.health.url).copy_with(host=f"bluebubbles.{suffix}")
+    info_url = ping_url.copy_with(path=f"{ping_url.path.rsplit('/', 1)[0]}/server/info")
     try:
         async with _http_client(client, timeout) as c:
             ping = await c.get(ping_url, params=params)

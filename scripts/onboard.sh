@@ -298,8 +298,12 @@ gate_d_google_oauth() {
 
 # Read the BlueBubbles server health from the host. Echoes HEALTHY / UNHEALTHY / UNREACHABLE.
 bluebubbles_health() {
-  local pw="$1" info
-  info="$(curl -sf --max-time 8 "https://bluebubbles/api/v1/server/info?password=${pw}" 2>/dev/null || true)"
+  local pw="$1" info domain
+  # The tailscale serve cert is FQDN-only (bluebubbles.<tailnet>); bare `bluebubbles` fails the TLS
+  # SNI/hostname check, so resolve the tailnet domain and probe the FQDN (mirrors bootstrap.sh + hermes.nix).
+  domain="$(tailscale status --json 2>/dev/null | jq -r '.MagicDNSSuffix' 2>/dev/null)"
+  [ -n "$domain" ] || { echo UNREACHABLE; return; }
+  info="$(curl -sf --max-time 8 "https://bluebubbles.${domain}/api/v1/server/info?password=${pw}" 2>/dev/null || true)"
   [ -z "$info" ] && { echo UNREACHABLE; return; }
   printf '%s' "$info" | grep -qiE '"helper_connected"[[:space:]]*:[[:space:]]*true' \
     && echo HEALTHY || echo UNHEALTHY
