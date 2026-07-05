@@ -783,14 +783,17 @@ in
       # experiment/differential-privacy subsystems are pure overhead here — periodic CPU/RAM spikes
       # plus attack surface. `launchctl disable` writes the persistent
       # override db (survives reboot), so no bootSetupScript duplication is needed. System jobs
-      # (/System/Library/LaunchDaemons) are addressed in the `system/` domain; the auto-login admin
-      # session's per-user agents (/System/Library/LaunchAgents) in `gui/<uid>/`, mirroring the
-      # `for BIN in …` allowlist loop above. The label lists live in machines.json (debloat.metal —
-      # the canonical manifest; bluebubbles consumes its own deliberate subset). Domains were read
-      # off this build's own /System/Library/Launch{Daemons,Agents} (the guests share the cirruslabs
-      # macos-tahoe base), not guessed. All `|| true`: SIP is ON (a protected label is refused
-      # silently), the GUI session may be down on the very first activation, and a label absent on
-      # this build no-ops.
+      # (/System/Library/LaunchDaemons) are addressed in the `system/` domain; the admin account's
+      # per-user agents (/System/Library/LaunchAgents) in the `user/<uid>/` domain — NOT `gui/<uid>/`:
+      # metal is headless (--no-graphics, no Aqua session), so the `gui/` domain does not exist and
+      # every `gui/<uid>/…` op fails `125: Domain does not support specified action`. The `user/`
+      # domain is session-independent (works with or without a login window) and writes the same
+      # durable override, so it disables these agents on headless metal where `gui/` cannot. The
+      # label lists live in machines.json (debloat.metal — the canonical manifest; bluebubbles
+      # consumes its own deliberate subset). Domains were read off this build's own
+      # /System/Library/Launch{Daemons,Agents} (the guests share the cirruslabs macos-tahoe base),
+      # not guessed. All `|| true`: SIP is ON (a protected label is refused silently) and a label
+      # absent on this build no-ops.
       # KEPT ENABLED deliberately: ReportCrash + spindump (LOCAL crash diagnostics — only the Apple
       # telemetry SUBMISSION is cut, via SubmitDiagInfo) and softwareupdated (security updates, set
       # further down). tmutil kills Time Machine's auto-schedule; the backupd daemons are belt-and-braces.
@@ -800,7 +803,7 @@ in
         /bin/launchctl disable "system/$L" >/dev/null 2>&1 || true
       done
       for L in ${toString machinesManifest.debloat.metal.gui}; do
-        /bin/launchctl disable "gui/$ADMIN_UID/$L" >/dev/null 2>&1 || true
+        /bin/launchctl disable "user/$ADMIN_UID/$L" >/dev/null 2>&1 || true
       done
       # Power: a headless always-on server must never nap or sleep (a sleeping VM drops the services).
       /usr/bin/pmset -a powernap 0 womp 0 sleep 0 disksleep 0 >/dev/null 2>&1 || true
