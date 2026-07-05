@@ -124,13 +124,18 @@ bring-up — then runs `just validate` and `just smoke`. The manual equivalents 
 are the reference for what each gate does.
 
 1. **Apple-ID iMessage sign-in (2FA) on `bluebubbles`** — the one irreducibly-human
-   step. Sign in with the dedicated Apple ID, complete 2FA, enable iMessage, then run
-   `scripts/bluebubbles-setup.sh` on the `bluebubbles` guest. It auto-grants the
-   BlueBubbles GUI permissions (Full Disk Access + Accessibility, possible because the
-   guest is SIP-off) and auto-disables Screen Sharing once the server is healthy; if it
-   prints a HUMAN FALLBACK, finish those GUI grants over Screen Sharing, then run
-   `just bb-harden`. `bluebubbles` enrollment is still a manual `tailscale up`, and it
-   must advertise its tag: `tailscale up --advertise-tags=tag:bluebubbles`.
+   step. The image already ships BlueBubbles.app (from a pinned, sha256-verified GitHub
+   release DMG — there is no Homebrew cask) with library validation disabled, so the
+   Private-API helper can inject into Messages. Sign in with the dedicated Apple ID,
+   complete 2FA, enable iMessage, then run `scripts/bluebubbles-setup.sh` on the
+   `bluebubbles` guest. It seeds the server config in `config.db` (BlueBubbles ignores
+   `config.json`), auto-grants the BlueBubbles GUI permissions (Full Disk Access +
+   Accessibility in the system TCC db, possible because the guest is SIP-off), installs a
+   launch-at-login agent so Messages + BlueBubbles come back up after a reboot, and
+   auto-disables Screen Sharing once the server is healthy. If it prints a HUMAN FALLBACK,
+   finish those GUI grants over Screen Sharing, then run `just bb-harden`. `bluebubbles`
+   enrollment is still a manual `tailscale up`, and it must advertise its tag:
+   `tailscale up --advertise-tags=tag:bluebubbles`.
 2. **CLIProxyAPI Codex login on `metal`** (browser flow). `--no-browser` prints a URL
    you approve in any browser; the redirect to `localhost:1455` fails to load, so copy
    the full URL from the address bar and paste it back (the paste prompt arms after
@@ -262,8 +267,9 @@ human input. One path per node:
   virtiofs mounts untouched, but a change that would (re)mount a virtiofs tag mid-session hits
   Apple's tag re-enumeration limit (`virtio-fs: tag not found`), so the gate auto-routes those
   to the disk-replace fallback instead.
-- **bluebubbles** — `scripts/bluebubbles-setup.sh reconfigure` in the guest; re-applies
-  the server config and never touches the iMessage session on the VM disk.
+- **bluebubbles** — `scripts/bluebubbles-setup.sh reconfigure` in the guest; re-seeds
+  `config.db` (a brief BlueBubbles restart) and never touches the iMessage session on the
+  VM disk.
 
 > **The BlueBubbles iMessage session is a single point of failure.** It lives only on the
 > `bluebubbles` VM disk. Redeploy never touches that disk, so the session survives a

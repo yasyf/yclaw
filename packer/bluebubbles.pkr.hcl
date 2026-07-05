@@ -73,10 +73,31 @@ build {
     ]
   }
 
-  # HUMAN: the remaining bring-up is NOT scripted here:
-  #   1. scripts/bluebubbles-setup.sh — sign into iMessage (a SEPARATE Apple ID),
-  #      install BlueBubbles + the Private API helper,
-  #      `tailscale up --advertise-tags=tag:bluebubbles`, then
-  #      `tailscale serve --bg --https=443 1234` to expose the REST API at
+  # Bake BlueBubbles.app + disable library validation at build time (verified live 2026-07). The app
+  # comes from the pinned GitHub release DMG (there is NO Homebrew cask); uploading the real
+  # scripts/bluebubbles-setup.sh and invoking its `install-app` subcommand keeps the build and the
+  # runtime setup on ONE pinned url+sha, so they never drift. DisableLibraryValidation is what lets the
+  # Private-API helper inject its dylib into Messages on Apple Silicon (SIP-off alone is NOT enough);
+  # AMFI reads it only at BOOT, so it must be baked here — the captured image ships with it active and
+  # bluebubbles-setup.sh only ASSERTS it at runtime (setting it mid-setup would need a reboot).
+  provisioner "file" {
+    source      = "${path.root}/../scripts/bluebubbles-setup.sh"
+    destination = "/tmp/bluebubbles-setup.sh"
+  }
+  provisioner "shell" {
+    inline = [
+      "set -euo pipefail",
+      "/bin/bash /tmp/bluebubbles-setup.sh install-app",
+      "rm -f /tmp/bluebubbles-setup.sh",
+      "sudo defaults write /Library/Preferences/com.apple.security.libraryvalidation.plist DisableLibraryValidation -bool true",
+    ]
+  }
+
+  # HUMAN: the remaining bring-up is NOT scripted here (the app + library-validation are now baked
+  # above; only these interactive steps remain):
+  #   1. Sign into iMessage in the VNC session with a SEPARATE Apple ID (2FA), enable iMessage.
+  #   2. `tailscale up --advertise-tags=tag:bluebubbles` (interactive auth), then run
+  #      scripts/bluebubbles-setup.sh — it seeds config.db, grants TCC, installs the launch-at-login
+  #      agent, and `tailscale serve --bg --https=443 1234` exposes the REST API at
   #      https://bluebubbles (MagicDNS; on your-tailnet it becomes bluebubbles.<tailnet>.ts.net).
 }
