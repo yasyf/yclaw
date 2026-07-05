@@ -14,6 +14,8 @@ for node in metal hermes bluebubbles; do
   launchctl bootout "gui/$(id -u)/com.yclaw.tart-${node}" 2>/dev/null || true
   rm -f "$HOME/Library/LaunchAgents/com.yclaw.tart-${node}.plist"
 done
+launchctl bootout "gui/$(id -u)/com.yclaw.metal-nightly-bounce" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/com.yclaw.metal-nightly-bounce.plist"
 
 # `vault` was retired into metal but its disk persists; delete it too.
 for vm in metal hermes bluebubbles vault; do

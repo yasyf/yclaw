@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `com.yclaw.metal-nightly-bounce` — a host LaunchAgent (`scripts/setup.sh`, listed in
+  `machines.json`, torn down by `scripts/destroy.sh`) that stops the metal VM at 05:00
+  daily. macOS guests have no memory balloon, so the VM service's host RSS ratchets to
+  the guest's high-water mark until a restart; KeepAlive on `com.yclaw.tart-metal`
+  relaunches the VM immediately, dropping the footprint back to the fresh-boot ~9 GB.
 - `machines.json` — the canonical fleet manifest at the repo root: machines, services,
   launchd labels, ports, health endpoints, log paths, virtiofs shares, keychain service
   names, host state paths, and the per-node debloat lists. Three readers consume it so a

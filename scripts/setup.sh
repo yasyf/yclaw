@@ -212,6 +212,44 @@ write_agent hermes \
   "--dir=$STATE_DIR/hermes:tag=hermesstate" \
   "--dir=$HOME_DIR/Code/yclaw:ro,tag=repo"
 
+# --- 3b. Nightly metal bounce -------------------------------------------------
+
+# macOS guests have no memory balloon, so metal's host-side RSS ratchets to its high-water mark
+# until the VM restarts. Nightly 05:00 stop; KeepAlive on com.yclaw.tart-metal relaunches it.
+BOUNCE_LABEL="com.yclaw.metal-nightly-bounce"
+bounce_plist="$LAUNCH_AGENTS_DIR/$BOUNCE_LABEL.plist"
+cat > "$bounce_plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$BOUNCE_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$TART_BIN</string>
+    <string>stop</string>
+    <string>metal</string>
+    <string>--timeout</string>
+    <string>120</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>5</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>$LOGS_DIR/metal-nightly-bounce.log</string>
+  <key>StandardErrorPath</key>
+  <string>$LOGS_DIR/metal-nightly-bounce.error.log</string>
+</dict>
+</plist>
+PLIST
+reload_launch_agent "$BOUNCE_LABEL" "$bounce_plist"
+log "Loaded LaunchAgent $BOUNCE_LABEL (nightly metal bounce at 05:00)."
+
 # --- 4. pf VNC anchor (optional, OFF by default) -----------------------------
 
 # Ports ONLY the targeted `pfctl -a vnc` reload from darwin/host.nix:189-204. NEVER

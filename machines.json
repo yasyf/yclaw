@@ -145,6 +145,14 @@
             "~/Library/Logs/Tart/bluebubbles.log",
             "~/Library/Logs/Tart/bluebubbles.error.log"
           ]
+        },
+        "metal-nightly-bounce": {
+          "launchd": { "domain": "gui", "label": "com.yclaw.metal-nightly-bounce" },
+          "oneshot": true,
+          "logs": [
+            "~/Library/Logs/Tart/metal-nightly-bounce.log",
+            "~/Library/Logs/Tart/metal-nightly-bounce.error.log"
+          ]
         }
       }
     }
