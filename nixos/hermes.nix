@@ -124,9 +124,11 @@ let
 
   # --- Patched hermes-agent package (upstream fixes pulled from PRs) -----------
   # We rebuild the pinned package from patched source (no fork; reuses hermes-agent's
-  # own nixpkgs + inputs). Each fix is an upstream PR, fetched as its `.diff` and applied
-  # via `applyPatches`. A non-applying patch fails the build loudly on a rev bump — so the
-  # pinned hash both verifies the download and pins the exact diff content we tested.
+  # own nixpkgs + inputs). Each fix is an upstream PR, vendored as its `.diff` under
+  # pkgs/patches/hermes-agent/ and applied via `applyPatches`. A non-applying patch fails
+  # the build loudly on a rev bump. We vendor the diffs locally (not `fetchpatch` on the
+  # live PR `.diff` URL) because GitHub's generated diffs drift as a PR is rebased/updated,
+  # which flips the fixed-output hash and breaks in-guest rebuilds; a local path has no hash.
   #
   #   * PR #45717 — fix(bluebubbles): prevent duplicate processing and DM-to-group
   #     misrouting. Covers BOTH the DM-misroute privacy fix (issue #24157) and the
@@ -146,16 +148,13 @@ let
     system = haSystem;
     config.allowUnfree = true;
   };
-  prPatch = num: hash: haPkgs.fetchpatch {
-    url = "https://github.com/NousResearch/hermes-agent/pull/${toString num}.diff";
-    inherit hash;
-  };
+  prPatch = num: ../pkgs/patches/hermes-agent/pr-${toString num}.diff;
   patchedHermesSrc = haPkgs.applyPatches {
     name = "hermes-agent-src-patched";
     src = ha;
     patches = [
-      (prPatch 45717 "sha256-odBb8kxvIjHue131FB0xAzIx0994BJjUe6cTwMeneH4=")
-      (prPatch 18366 "sha256-Q28QQH/S5oWt2stDHIXfDBUnUCppN1q8B64LMmzx2Bc=")
+      (prPatch 45717)
+      (prPatch 18366)
     ];
   };
   patchedHermesAgent = haPkgs.callPackage "${patchedHermesSrc}/nix/hermes-agent.nix" {
