@@ -104,6 +104,15 @@
           "health": { "kind": "http", "url": "https://bluebubbles/api/v1/ping" },
           "password_keychain": "yclaw-bluebubbles-server-pass",
           "password_query_param": "password"
+        },
+        "bb-pf-refresh": {
+          "launchd": { "domain": "system", "label": "com.yclaw.bb-pf-refresh" },
+          "oneshot": true,
+          "start_interval": 300,
+          "logs": [
+            "/var/log/bb-pf-refresh.log",
+            "/var/log/bb-pf-refresh.error.log"
+          ]
         }
       }
     },
