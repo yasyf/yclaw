@@ -337,11 +337,16 @@ gate_e_bluebubbles() {
 
   note "Running bluebubbles-setup.sh on the guest (config, TCC grants, tailnet serve, health gate) …"
   # Feed `setup` over guest_pipe (wait.sh/pf.sh + the debloat prelude piped ahead of the script). The
-  # two config inputs ride the stdin stream as `export` lines (GUEST_PIPE_ENV), NOT argv — bb_pw and
-  # the allowlist stay out of `ps` on host and guest. setup reads both from its environment. The
-  # names are `local` here so dynamic scope hands them to guest_pipe without leaking to onboard.
+  # three config inputs ride the stdin stream as `export` lines (GUEST_PIPE_ENV), NOT argv — the
+  # password and allowlist stay out of `ps` on host and guest. BB_ALLOWED_HOST_IP (this host's own
+  # tailnet IP, which authorizes the operator on bluebubbles' pf gate — mirrors bootstrap.sh's
+  # metal-allowed-hosts write) MUST be resolved HOST-side: the guest's own `tailscale ip -4` is
+  # bluebubbles' address, not the operator's. setup reads all three from its environment. The names are
+  # `local` so dynamic scope hands them to guest_pipe without leaking to onboard; the `local` assignment
+  # also masks a transient `tailscale` failure (empty => the guest leaves its allowlist untouched).
   local BLUEBUBBLES_PASSWORD="$bb_pw" BLUEBUBBLES_ALLOWED_USERS="$allowlist"
-  local GUEST_PIPE_ENV="BLUEBUBBLES_PASSWORD BLUEBUBBLES_ALLOWED_USERS"
+  local BB_ALLOWED_HOST_IP="$(tailscale ip -4 | head -1)"
+  local GUEST_PIPE_ENV="BLUEBUBBLES_PASSWORD BLUEBUBBLES_ALLOWED_USERS BB_ALLOWED_HOST_IP"
   guest_pipe root@bluebubbles "$REPO_ROOT/scripts/bluebubbles-setup.sh" setup || true
 
   if [ "$(bluebubbles_health "$bb_pw")" = HEALTHY ]; then

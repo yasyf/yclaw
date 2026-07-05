@@ -74,6 +74,13 @@ def test_oneshot_flag(manifest):
     assert manifest.machines["metal"].services["omlx"].oneshot is False
 
 
+def test_pf_refresh_daemons_are_resident(manifest):
+    # Resident KeepAlive loops, not StartInterval oneshots: probes render them healthy via
+    # `state == "running"`, which requires oneshot False (a oneshot expects a terminal exit 0).
+    for machine, name in (("metal", "metal-pf-refresh"), ("bluebubbles", "bb-pf-refresh")):
+        assert manifest.machines[machine].services[name].oneshot is False
+
+
 def test_keychain_login_unlock(manifest):
     assert manifest.host_paths.keychain.login_unlock == "yclaw-keychain-password"
     assert manifest.host_paths.keychain.agent_vault_master == "yclaw-agent-vault-master"

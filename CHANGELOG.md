@@ -120,9 +120,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/nix` APFS mount so no daemon fast-fails into launchd's penalty box at cold boot; the
   hand-rolled waitNix trampoline is deleted after three clean cold-boot gates (~25 s from
   power-on to the node answering on the tailnet). virtiofs sub-paths, secrets, and sockets
-  keep the bounded `wait.sh` waits (wait4path wakes only on mount events). The oneshots
-  (provision, boot-setup, pf-refresh) use `KeepAlive.SuccessfulExit = false` so they
-  relaunch until they exit 0; `ThrottleInterval` stays at the 10 s default.
+  keep the bounded `wait.sh` waits (wait4path wakes only on mount events). The provision and
+  boot-setup oneshots use `KeepAlive.SuccessfulExit = false` so they relaunch until they exit 0;
+  `ThrottleInterval` stays at the 10 s default.
+- The `metal-pf-refresh` and `bb-pf-refresh` pf-anchor daemons are resident `KeepAlive = true`
+  loops that self-pace with `sleep 300`, not `StartInterval = 300` oneshots: on macOS Tahoe the
+  StartInterval timer silently stopped firing (the job still exits 0 when kickstarted — only the
+  timer died), while launchd's process-liveness KeepAlive stays reliable. The per-tick anchor body
+  is unchanged and runs as a child under `|| true` so its exit never kills the loop. Both are now
+  `RunAtLoad = true`: on bluebubbles (no separate boot-setup daemon) the first iteration owns boot
+  pf bring-up; on metal `metal-boot-setup` still owns boot bring-up and the loop's first pass is a
+  redundant-but-idempotent re-scope. `machines.json` marks both `oneshot: false` so `yclaw status`
+  renders them healthy via `state == "running"`.
 - `HOME` is always the real user home; no daemon overrides it to a share anymore.
   agent-vault takes its state root from `AGENT_VAULT_HOME` (a state-dir override added by
   `pkgs/agent-vault-state-dir.patch` — same on-disk layout, zero data migration), so the
@@ -201,6 +210,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pasted back — no SSH tunnel to `metal` required.
 
 ### Fixed
+- The bluebubbles pf host-allowlist (`/etc/pf.anchors/bluebubbles-allowed-hosts`) is now seeded.
+  `bb-pf-refresh` scoped the REST ports (443 + 1234) to hermes plus the bare IPv4s in that file,
+  but no script ever wrote it, so the operator host was silently dropped (only hermes was admitted).
+  `onboard.sh` and `redeploy.sh` resolve this host's tailnet IP HOST-side (the guest's own
+  `tailscale ip -4` is bluebubbles' address, not the operator's) and forward it as
+  `BB_ALLOWED_HOST_IP` over the guest_pipe env; `bluebubbles-setup.sh` validates it as a bare IPv4
+  and writes it under `umask 077`, mirroring bootstrap.sh's `metal-allowed-hosts` write.
 - hermes model-plane 401s. cliproxy **enforces** its inbound API-key allowlist on `:8317`
   (verified: a bearerless call 401s even on metal's loopback), but hermes's model plane
   was configured with no bearer per "the tailnet is the auth". The gpt-5.5 primary and

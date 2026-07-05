@@ -68,7 +68,6 @@ class Service:
     serve_port: int | None
     mitm_port: int | None
     oneshot: bool
-    start_interval: int | None
     health: HealthCheck | None
     logs: tuple[str, ...]
     password_keychain: str | None
@@ -137,7 +136,6 @@ def _parse_service(name: str, d: dict[str, Any]) -> Service:
         serve_port=d.get("serve_port"),
         mitm_port=d.get("mitm_port"),
         oneshot=bool(d.get("oneshot", False)),
-        start_interval=d.get("start_interval"),
         health=_parse_health(d["health"]) if "health" in d else None,
         logs=tuple(d.get("logs", ())),
         password_keychain=d.get("password_keychain"),

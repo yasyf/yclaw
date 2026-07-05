@@ -119,11 +119,14 @@ daemon context. The reboot-hardening design has four rules:
   fail-loud helpers from `scripts/lib/wait.sh`, embedded verbatim into each
   wrapper. The same file is sourced by host scripts and piped into guests;
   there is exactly one blessed way to poll.
-- **Oneshots self-heal via `KeepAlive.SuccessfulExit = false`.** The provision,
-  boot-setup, and pf-refresh jobs relaunch until they exit 0, so a transient
-  failure retries instead of stranding the boot; `ThrottleInterval` stays at
-  the 10 s launchd default (lowering it plus a fast-exiting job is the
-  penalty-box trap).
+- **Oneshots self-heal via `KeepAlive.SuccessfulExit = false`.** The provision
+  and boot-setup jobs relaunch until they exit 0, so a transient failure retries
+  instead of stranding the boot; `ThrottleInterval` stays at the 10 s launchd
+  default (lowering it plus a fast-exiting job is the penalty-box trap). The
+  pf-refresh daemons (metal + bluebubbles) instead run as resident
+  `KeepAlive = true` loops that self-pace with `sleep 300` — macOS Tahoe silently
+  stops firing `StartInterval` timers, but launchd's process-liveness stays
+  reliable.
 - **`tailscaled install-system-daemon` runs on first install only.**
   `install-system-daemon` terminates a running tailscaled and its relaunch
   silently fails, which used to cut the node off the tailnet on every redeploy;

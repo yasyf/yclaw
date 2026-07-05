@@ -414,9 +414,13 @@ BODY
   sudo chmod 755 "$BB_PF_REFRESH"
 }
 
-# Write the LaunchDaemon plist that runs bb-pf-refresh at boot (RunAtLoad) and every 5 min
-# (StartInterval) — the single daemon mirrors metal's boot-setup + pf-refresh pair, scaled down since
-# this guest has no separate boot-setup daemon. System domain => runs as root, which pf requires.
+# Write the LaunchDaemon plist that keeps bb-pf-refresh running. It is a RESIDENT KeepAlive loop, NOT a
+# StartInterval oneshot: on macOS Tahoe the StartInterval timer silently stopped firing (the job still
+# exits 0 when kickstarted — only the timer died), while launchd's process-liveness KeepAlive stays
+# reliable. So ProgramArguments is a `while` loop that self-paces with `sleep 300` and runs the per-tick
+# bb-pf-refresh body (unchanged) as a CHILD under `|| true` — its exit (0 skip / 1 pfctl reject) never
+# kills the loop and trips KeepAlive's ThrottleInterval churn. The first iteration at RunAtLoad still
+# owns boot pf bring-up. System domain => runs as root, which pf requires.
 write_bb_pf_plist() {
   sudo tee "$BB_PF_PLIST" >/dev/null <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -426,11 +430,12 @@ write_bb_pf_plist() {
   <key>Label</key><string>${BB_PF_LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${BB_PF_REFRESH}</string>
-    <string>10</string>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>while true; do ${BB_PF_REFRESH} 10 || true; sleep 300; done</string>
   </array>
   <key>RunAtLoad</key><true/>
-  <key>StartInterval</key><integer>300</integer>
+  <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/var/log/bb-pf-refresh.log</string>
   <key>StandardErrorPath</key><string>/var/log/bb-pf-refresh.error.log</string>
 </dict>
@@ -445,6 +450,23 @@ PLIST
 # keeps it fresh. bootout before bootstrap makes the daemon reload idempotent across repeat runs.
 install_bb_pf_refresh() {
   write_bb_pf_refresh
+  # Seed this run's host allowlist (mirrors bootstrap.sh's metal-allowed-hosts write) BEFORE the
+  # synchronous first refresh below, so bluebubbles-rest admits the operator host on this pass, not 5
+  # min later. The bb-pf-refresh anchor admits hermes by hostname + the bare IPv4s in this file, but
+  # nothing else writes it — without this the operator host is silently dropped. BB_ALLOWED_HOST_IP is
+  # computed HOST-side (the guest's own `tailscale ip -4` is bluebubbles' own address, not the operator's)
+  # and flows in over guest_pipe env: unset/empty => leave the file untouched (sticky last-good, mirrors
+  # metal); set-but-malformed => warn + skip (never write a line the anchor would refuse anyway). The
+  # IPv4 guard is the same bare-/32 regex the generated bb-pf-refresh enforces on every allowlist line.
+  if [ -n "${BB_ALLOWED_HOST_IP:-}" ]; then
+    if printf '%s' "$BB_ALLOWED_HOST_IP" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+      sudo mkdir -p /etc/pf.anchors
+      ( umask 077; printf '%s\n' "$BB_ALLOWED_HOST_IP" | sudo tee /etc/pf.anchors/bluebubbles-allowed-hosts >/dev/null )
+      log "Seeded host allowlist (bluebubbles-allowed-hosts = $BB_ALLOWED_HOST_IP)."
+    else
+      warn "BB_ALLOWED_HOST_IP='$BB_ALLOWED_HOST_IP' is not a bare IPv4 — skipping host allowlist seed."
+    fi
+  fi
   sudo "$BB_PF_REFRESH" 10
   write_bb_pf_plist
   sudo launchctl bootout "system/${BB_PF_LABEL}" >/dev/null 2>&1 || true

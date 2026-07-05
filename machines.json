@@ -65,8 +65,7 @@
         },
         "metal-pf-refresh": {
           "launchd": { "domain": "system", "label": "org.nixos.metal-pf-refresh" },
-          "oneshot": true,
-          "start_interval": 300,
+          "oneshot": false,
           "logs": [
             "/var/log/metal-pf-refresh.log",
             "/var/log/metal-pf-refresh.error.log"
@@ -107,8 +106,7 @@
         },
         "bb-pf-refresh": {
           "launchd": { "domain": "system", "label": "com.yclaw.bb-pf-refresh" },
-          "oneshot": true,
-          "start_interval": 300,
+          "oneshot": false,
           "logs": [
             "/var/log/bb-pf-refresh.log",
             "/var/log/bb-pf-refresh.error.log"

@@ -392,6 +392,18 @@ let
     fi
   '';
 
+  # metal-pf-refresh runs this loop RESIDENT under KeepAlive instead of as a StartInterval oneshot: on
+  # macOS Tahoe the StartInterval timer silently stopped firing (the job still exits 0 when kickstarted
+  # — only the timer died), while launchd's process-liveness KeepAlive stays reliable. The loop
+  # self-paces with `sleep 300`; pfAnchorScript runs as a CHILD (`|| true`) so its per-tick exit (0 skip
+  # / 1 pfctl reject) never kills the loop and trips KeepAlive's 10s ThrottleInterval churn.
+  pfRefreshLoop = pkgs.writeShellScript "metal-pf-refresh-loop" ''
+    while true; do
+      ${pfAnchorScript} 3 || true
+      sleep 300
+    done
+  '';
+
   # Re-applied at EVERY boot (postActivation runs only on darwin-rebuild, and both the Metal wired
   # cap and pf reset on reboot). Raise the wired cap, reload pf.conf (re-loads the persisted `metal`
   # anchor — last-known-good), ENABLE pf and fail LOUD (non-zero, recorded by launchd) if it does not
@@ -630,15 +642,17 @@ in
     StandardErrorPath = "/var/log/metal-boot-setup.error.log";
   };
 
-  # Periodic anchor refresh: re-resolve hermes + re-read the host allow-list every 5 min and re-scope
-  # the pf anchor if a source moved (hermes destroyed + recreated, or a host IP change) — so the gate
-  # self-heals WITHOUT a reboot or darwin-rebuild. Never loosens: a transient hermes unresolve reuses
-  # the sticky last-known IP, and an unchanged source set skips the reload, so established pf state is
-  # left intact.
+  # Periodic anchor refresh: a RESIDENT KeepAlive loop (pfRefreshLoop) that re-resolves hermes +
+  # re-reads the host allow-list every 5 min and re-scopes the pf anchor if a source moved (hermes
+  # destroyed + recreated, or a host IP change) — so the gate self-heals WITHOUT a reboot or
+  # darwin-rebuild. launchd's StartInterval timer proved unreliable on macOS Tahoe (it stopped firing
+  # while the job still ran clean on demand), so the loop self-paces under process-liveness KeepAlive.
+  # Never loosens: a transient hermes unresolve reuses the sticky last-known IP, and an unchanged
+  # source set skips the reload, so established pf state is left intact.
   launchd.daemons.metal-pf-refresh.serviceConfig = {
-    ProgramArguments = wait4path [ "${pfAnchorScript}" "3" ];
-    StartInterval = 300;
-    RunAtLoad = false;
+    ProgramArguments = wait4path [ "${pfRefreshLoop}" ];
+    RunAtLoad = true;
+    KeepAlive = true;
     StandardOutPath = "/var/log/metal-pf-refresh.log";
     StandardErrorPath = "/var/log/metal-pf-refresh.error.log";
   };

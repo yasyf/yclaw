@@ -97,12 +97,17 @@ redeploy_bluebubbles() {
   # header). set -u makes a missing value fail loud; a missing file makes `.` fail loud.
   . "$NODE_CONFIG_DIR/node.env"
   # Mirror bb-harden's piping (justfile): feed bluebubbles-setup.sh's `reconfigure` over guest_pipe —
-  # wait.sh/pf.sh + the debloat prelude are piped ahead of the script, and the two config inputs ride
-  # the stdin stream as `export` lines (GUEST_PIPE_ENV), NOT argv — so the server password + allowlist
-  # stay out of `ps` on host and guest (the guest holds no keychain / state share). reconfigure reads
-  # both from its environment. The names are `local` so dynamic scope reaches guest_pipe without leaking.
+  # wait.sh/pf.sh + the debloat prelude are piped ahead of the script, and the config inputs ride the
+  # stdin stream as `export` lines (GUEST_PIPE_ENV), NOT argv — so the server password + allowlist stay
+  # out of `ps` on host and guest (the guest holds no keychain / state share). BB_ALLOWED_HOST_IP (this
+  # host's own tailnet IP, authorizing it on bluebubbles' pf gate — mirrors bootstrap.sh's
+  # metal-allowed-hosts write) MUST be resolved HOST-side: the guest's own `tailscale ip -4` is
+  # bluebubbles' address, not the operator's. reconfigure reads them from its environment. The names are
+  # `local` so dynamic scope reaches guest_pipe without leaking; the `local` assignment also masks a
+  # transient `tailscale` failure (empty => the guest leaves its allowlist untouched).
   local BLUEBUBBLES_PASSWORD="$bb_password"
-  local GUEST_PIPE_ENV="BLUEBUBBLES_PASSWORD BLUEBUBBLES_ALLOWED_USERS"
+  local BB_ALLOWED_HOST_IP="$(tailscale ip -4 | head -1)"
+  local GUEST_PIPE_ENV="BLUEBUBBLES_PASSWORD BLUEBUBBLES_ALLOWED_USERS BB_ALLOWED_HOST_IP"
   guest_pipe root@bluebubbles scripts/bluebubbles-setup.sh reconfigure
 }
 
