@@ -400,6 +400,23 @@ let
   # Final gate: assert the metal block rule is actually RESIDENT in the kernel — `Status: Enabled`
   # alone passes even with an empty anchor (e.g. if the pf.conf reload failed), which would leave the
   # 0.0.0.0-bound credential ports open; the block rule is the real default-deny.
+  # The launchctl `disable` overrides live in /var/db/com.apple.xpc.launchd/disabled.plist, which is
+  # RESET to the deploy-time baseline on reboot — so the manifest debloat must be re-applied at EVERY
+  # boot, not just on darwin-rebuild (postActivation). Shared by postActivation (immediate effect on a
+  # redeploy) and bootSetupScript (reboot survival). System jobs in the `system/` domain; the admin
+  # account's per-user agents in the session-independent `user/<uid>` domain — NOT `gui/<uid>`: metal
+  # is headless (no Aqua session), so `gui/` does not exist and every op there fails 125. All `|| true`:
+  # SIP refuses a protected label silently, and a label absent on this build no-ops.
+  debloatDisableScript = ''
+    ADMIN_UID=$(/usr/bin/id -u ${adminUser})
+    for L in ${toString machinesManifest.debloat.metal.system}; do
+      /bin/launchctl disable "system/$L" >/dev/null 2>&1 || true
+    done
+    for L in ${toString machinesManifest.debloat.metal.gui}; do
+      /bin/launchctl disable "user/$ADMIN_UID/$L" >/dev/null 2>&1 || true
+    done
+  '';
+
   bootSetupScript = pkgs.writeShellScript "metal-boot-setup" ''
     set -u
     wired=$(( $(/usr/sbin/sysctl -n hw.memsize)/1048576 - 6144 ))
@@ -415,6 +432,9 @@ let
       echo 'metal: FATAL metal pf anchor has no block rule after boot setup — credential ports exposed' >&2
       exit 1
     fi
+    # Re-apply the manifest debloat (the override db resets on reboot; postActivation runs only on
+    # darwin-rebuild). Non-fatal — a debloat miss must never block the boot's security-critical pf gate.
+    ${debloatDisableScript}
   '';
 in
 {
@@ -797,14 +817,11 @@ in
       # KEPT ENABLED deliberately: ReportCrash + spindump (LOCAL crash diagnostics — only the Apple
       # telemetry SUBMISSION is cut, via SubmitDiagInfo) and softwareupdated (security updates, set
       # further down). tmutil kills Time Machine's auto-schedule; the backupd daemons are belt-and-braces.
-      ADMIN_UID=$(/usr/bin/id -u ${adminUser})
       /usr/bin/tmutil disable >/dev/null 2>&1 || true
-      for L in ${toString machinesManifest.debloat.metal.system}; do
-        /bin/launchctl disable "system/$L" >/dev/null 2>&1 || true
-      done
-      for L in ${toString machinesManifest.debloat.metal.gui}; do
-        /bin/launchctl disable "user/$ADMIN_UID/$L" >/dev/null 2>&1 || true
-      done
+      # The launchctl-disable loops are shared with bootSetupScript (which re-runs them at every boot,
+      # because the override db resets to the deploy-time baseline on reboot). Applied here too so a
+      # redeploy takes effect immediately without waiting for a reboot.
+      ${debloatDisableScript}
       # Power: a headless always-on server must never nap or sleep (a sleeping VM drops the services).
       /usr/bin/pmset -a powernap 0 womp 0 sleep 0 disksleep 0 >/dev/null 2>&1 || true
 
