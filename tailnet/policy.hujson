@@ -25,11 +25,14 @@
     "tag:bluebubbles": ["autogroup:admin", "tag:bluebubbles"],
   },
 
-  // East-west reachability (modern `grants` syntax). hermes is the only node that initiates:
+  // East-west reachability (modern `grants` syntax). hermes initiates the model/credential and
+  // REST flows; bluebubbles initiates exactly ONE flow back — the new-message webhook to hermes:
   //   * hermes -> metal: the credential/AI service ports (cli-proxy 8317, agent-vault 14321/14322,
   //     omlx 8000, STT 8765) — mirrors the metal pf anchor's allowed port set.
   //   * hermes -> bluebubbles: the BlueBubbles REST API, served over tailnet HTTPS on :443.
-  // Nothing reaches back the other way; metal and bluebubbles never initiate east-west.
+  //   * bluebubbles -> hermes: the BlueBubbles webhook POSTs new-message events to hermes-agent's
+  //     webhook server on :8645 (BLUEBUBBLES_WEBHOOK_PORT in nixos/hermes.nix). Without this the
+  //     agent never receives incoming iMessages. metal still never initiates east-west.
   // These ports are MIRRORED in machines.json (machines.*.services.*.port) — keep the two in sync.
   "grants": [
     {
@@ -41,6 +44,11 @@
       "src": ["tag:hermes"],
       "dst": ["tag:bluebubbles"],
       "ip":  ["tcp:443"],
+    },
+    {
+      "src": ["tag:bluebubbles"],
+      "dst": ["tag:hermes"],
+      "ip":  ["tcp:8645"],
     },
   ],
 
