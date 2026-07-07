@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"add_comment","body":"Closing: done in 95eb879 — sops path aperture/static-key -\u003e cliproxy/api-key, APERTURE_STATIC_KEY -\u003e CLIPROXY_API_KEY across metal.nix, metal-cliproxyapi-config.yaml, hermes.nix, secrets-manifest.json, secrets.sh, smoke.sh, docs; re-encryption + state migration included."}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_status","status":"done"}]}
