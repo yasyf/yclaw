@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"add_comment","body":"Closing: resolved via the second option the task offered — 4a43f69 adds the hermes-scoped fail-closed pf anchor on bluebubbles (bb-pf-refresh daemon scoping :443/:1234 to hermes tailnet IP + host allowlist, fail-closed when unresolvable); fa78003 made the refresh loop resident (Tahoe StartInterval quirk)."}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_status","status":"done"}]}
