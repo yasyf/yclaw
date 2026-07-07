@@ -110,15 +110,6 @@ index 7812eba7d5f..8fd2073de15 100644
                 subcommands=("queue", "steer", "interrupt", "status")),
  
      # Tools & Skills
-@@ -1053,7 +1053,7 @@ def discord_skill_commands_by_category(
- # the telegram-parity test reads it so an entry here is a deliberate
- # "Slack-via-/hermes" decision, not a silent clamp.
- #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
--_SLACK_VIA_HERMES_ONLY = frozenset({"credits"})
-+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "debug"})
- 
- 
- def _sanitize_slack_name(raw: str) -> str:
 diff --git a/tests/gateway/test_busy_command.py b/tests/gateway/test_busy_command.py
 new file mode 100644
 index 00000000000..d08ad55923f
