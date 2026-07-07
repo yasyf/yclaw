@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"add_comment","body":"Closing: landed via be5999f (scripts onto shared lib + manifest, thin justfile), 027d3dc (bluebubbles onto shared lib), ba1a42f (packer layer hardening), 833ecc7 (docs pass) — commits carry cc-task: 870f6af trailers. Verified: machines.json + scripts/lib/{common,launchd,manifest,pf,secrets,ssh,wait}.sh present at HEAD d03e0b5."}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_status","status":"done"}]}
