@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"add_comment","body":"Closing: resolved via the vendor option in f6a3989 — PR diffs vendored at pkgs/patches/hermes-agent/pr-45717.diff + pr-18366.diff, applied by local path in nixos/hermes.nix (no fixed-output hash to drift); rationale documented inline."}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_status","status":"done"}]}
