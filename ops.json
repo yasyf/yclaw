@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"add_comment","body":"Closing: landed via 261391e (package+core modules+tests), 6c851d0 (command tree), 465d162 (hardening), cc-task trailers present. All 9 subcommands registered in yclaw/cli.py: ssh, wait, logs, status, doctor, restart, bounce, vm, secret."}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_status","status":"done"}]}
