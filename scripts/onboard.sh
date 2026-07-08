@@ -18,12 +18,13 @@
 # tmux is the fallback, and YCLAW_ONBOARD_NO_ZELLIJ=1 forces an inline run with no multiplexer.
 #
 # Multiplexer rule of thumb (verified against the live stack):
-#   * `tailscale ssh <user>@<host> -- <cmd>` for every NON-interactive remote command + stdin pipe
+#   * `tailscale ssh <user>@<host> -- <cmd>` for NON-interactive remote commands + stdin pipes
 #     (proven throughout bootstrap.sh / redeploy.sh; resolves MagicDNS; no -L, no -t).
-#   * plain `ssh -t [-L …] root@metal` ONLY for the interactive cli-proxy logins — Tailscale SSH
-#     intercepts port 22, so plain ssh authenticates transparently AND supports the PTY + the
-#     local port-forward the Gemini callback needs. `tailscale ssh` is just a wrapper around the
-#     system ssh and exposes neither -t nor -L.
+#   * plain `ssh [-t] [-L …] admin@metal` for every cli-proxy call: the interactive logins need
+#     the PTY + the local port-forward the Gemini callback uses — Tailscale SSH intercepts port 22,
+#     so plain ssh authenticates transparently, while `tailscale ssh` exposes neither -t nor -L —
+#     and the read-only cliproxy helpers ride the same path. ssh as the user the command runs as
+#     (admin, the daemon's user); root only where root is required (launchctl, system domain).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -108,10 +109,10 @@ clear_check() {
 # rebuild — never hardcode it). Prefer the running process's argv[0]; fall back to the store glob.
 resolve_cliproxy_bin() {
   local bin
-  bin="$(ssh "${SSH_OPTS[@]}" root@metal \
+  bin="$(ssh "${SSH_OPTS[@]}" admin@metal \
     "ps -axo command 2>/dev/null | grep -m1 '[c]li-proxy-api --config' | awk '{print \$1}'" 2>/dev/null || true)"
   if [ -z "$bin" ]; then
-    bin="$(ssh "${SSH_OPTS[@]}" root@metal \
+    bin="$(ssh "${SSH_OPTS[@]}" admin@metal \
       "ls -t /nix/store/*-cli-proxy-api-*/bin/cli-proxy-api 2>/dev/null | head -1" 2>/dev/null || true)"
   fi
   printf '%s' "$bin"
@@ -124,15 +125,17 @@ reload_cliproxy() {
 
 # List the cli-proxy auth-dir token files matching $1 (a shell glob), one per line. Empty if none.
 cliproxy_auth_files() {
-  ssh "${SSH_OPTS[@]}" root@metal "ls -1 \"$CLIPROXY_AUTH\"/$1 2>/dev/null" 2>/dev/null || true
+  ssh "${SSH_OPTS[@]}" admin@metal "ls -1 \"$CLIPROXY_AUTH\"/$1 2>/dev/null" 2>/dev/null || true
 }
 
 # True if a Gemini OAuth token is present. Gemini tokens are <email>-<project>.json (no provider
 # prefix), so match positively: a *.json that carries an email (@) and is NOT a codex- token. On this
 # Codex+Gemini-only stack that is exactly the Gemini token (and ignores a stray non-token .json).
+# Decided CLIENT-side from cliproxy_auth_files output (mirrors the codex-*.json check): Tailscale
+# SSH does not propagate remote exit codes (verified live — `ssh admin@metal false` returns 0), so
+# a remote grep -q rc is meaningless. Plain grep (not -q) so nothing exits early under pipefail.
 gemini_logged_in() {
-  ssh "${SSH_OPTS[@]}" root@metal \
-    "ls -1 \"$CLIPROXY_AUTH\"/*.json 2>/dev/null | grep -v '/codex-' | grep -q '@'" 2>/dev/null
+  [ -n "$(cliproxy_auth_files '*.json' | grep -v '/codex-' | grep '@')" ]
 }
 
 # ==============================================================================================
@@ -212,9 +215,11 @@ gate_codex_login() {
   note "— that is expected. Copy the FULL url from the address bar and paste it here (the prompt arms after ~15s)."
   echo
   # Codex --no-browser arms a stdin paste fallback, so no tunnel is needed: paste the failed
-  # redirect URL back. Run as `admin` (the daemon's user) so tokens land readable by the daemon.
-  ssh -t "${SSH_OPTS[@]}" root@metal \
-    "sudo -u admin '$bin' --config '$CLIPROXY_CONFIG' --codex-login --no-browser"
+  # redirect URL back. ssh directly as `admin` (the daemon's user) so tokens land readable by the
+  # daemon and the session starts in a cwd admin can stat (a root→sudo hop inherits /var/root,
+  # which crashes the Go runtime's os.Getwd() at startup).
+  ssh -t "${SSH_OPTS[@]}" admin@metal \
+    "'$bin' --config '$CLIPROXY_CONFIG' --codex-login --no-browser"
 
   if [ -n "$(cliproxy_auth_files 'codex-*.json')" ]; then
     reload_cliproxy
@@ -241,9 +246,10 @@ gate_gemini_login() {
   echo
   # Gemini --login --no-browser has NO stdin paste fallback unless --project_id is passed, so we
   # forward its localhost:8085 callback through plain ssh: the operator's browser redirect to
-  # localhost:8085/oauth2callback tunnels to metal's callback server. Run as `admin` (daemon user).
-  ssh -t "${SSH_OPTS[@]}" -L "${GEMINI_CALLBACK_PORT}:127.0.0.1:${GEMINI_CALLBACK_PORT}" root@metal \
-    "sudo -u admin '$bin' --config '$CLIPROXY_CONFIG' --login --no-browser"
+  # localhost:8085/oauth2callback tunnels to metal's callback server. ssh directly as `admin`
+  # (the daemon's user) — same os.Getwd()-safe cwd rationale as Gate B.
+  ssh -t "${SSH_OPTS[@]}" -L "${GEMINI_CALLBACK_PORT}:127.0.0.1:${GEMINI_CALLBACK_PORT}" admin@metal \
+    "'$bin' --config '$CLIPROXY_CONFIG' --login --no-browser"
 
   if gemini_logged_in; then
     reload_cliproxy
@@ -457,7 +463,7 @@ driver() {
   preflight
 
   hdr "Gate 0 — Tailscale SSH access"
-  clear_check root@metal       "metal"        || warn "metal not reachable — its gates will fail."
+  clear_check admin@metal      "metal"        || warn "metal not reachable — its gates will fail."
   clear_check admin@hermes     "hermes"       || warn "hermes not reachable — Gate A will fail."
   clear_check root@bluebubbles "bluebubbles"  || warn "bluebubbles not reachable — Gate E will fail."
 
