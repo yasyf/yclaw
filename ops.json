@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"add_comment","body":"Verified live 2026-07-07: launchctl print-disabled system on the freshly-booted bluebubbles guest shows metadata.mds, backupd, backupd-helper, analyticsd, ecosystemanalyticsd all disabled — overrides persist across the reboot. (iMessage round-trip pending human gates; tracked by onboarding.)"}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_status","status":"done"}]}
