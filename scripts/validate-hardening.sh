@@ -98,9 +98,15 @@ else ok "metal sees no hosts/hermes/state share"; fi
 # --- 6. Credential plane -----------------------------------------------------
 
 hdr "6. Credential plane — the agent egresses through the agent-vault proxy"
-envline="$("${hermes_ssh[@]}" sudo -u hermes -H sh -c 'grep "^HTTPS_PROXY=" "$HOME/.hermes/.env"' 2>/dev/null || true)"
+# One command string: tailscale ssh re-parses argv in the login shell, so multi-word args here
+# would re-split and grep would read stdin (a false "empty" FAIL).
+envline="$("${hermes_ssh[@]}" "sudo -u hermes -H sh -c 'grep \"^HTTPS_PROXY=\" \"\$HOME/.hermes/.env\"'" 2>/dev/null || true)"
 if grep -qE '^HTTPS_PROXY=http://av_agt_[^:]+:hermes@metal:14322' <<<"$envline"; then ok "HTTPS_PROXY routes through agent-vault (av_agt_…@metal:14322)"
 else no "HTTPS_PROXY is not the agent-vault proxy (got: ${envline:-empty})"; fi
+# URL shape alone can hide a dead token: a disk-replace re-mints it, and the externalized
+# ~/.hermes/.env keeps the old one (every brokered request 407s). Compare against node-config.
+if [[ "$("${hermes_ssh[@]}" "sudo sh -c 'tok=\$(cat /var/lib/node-config/agent-vault-token); grep -q -- \"\$tok\" ~hermes/.hermes/.env && echo fresh'" 2>/dev/null)" == fresh ]]; then ok "HTTPS_PROXY token matches the current node-config mint"
+else no "HTTPS_PROXY token is stale (does not match /var/lib/node-config/agent-vault-token)"; fi
 manual "Optional (consumes quota): an Exa/OpenAI/Honcho tool call from hermes returns 200, not 407 (407 = dead/missing proxy token)."
 
 # --- 7. Tailnet tags + admin SSH ---------------------------------------------
