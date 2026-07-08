@@ -49,6 +49,33 @@ async def test_run_extracts_check_wall_url(manifest, monkeypatch):
     assert excinfo.value.url == url
 
 
+@pytest.mark.parametrize("capture", [True, False], ids=["capture", "no-capture"])
+async def test_run_threads_input_to_stdin(manifest, monkeypatch, capture):
+    seen = {}
+
+    async def fake(argv, **kwargs):
+        seen["argv"] = argv
+        seen["input"] = kwargs["input"]
+        return _completed(argv, 0, b"", b"")
+
+    monkeypatch.setattr(anyio, "run_process", fake)
+    await remote.run(manifest.machines["metal"], "cat > /tmp/payload", capture=capture, input=b"s3cr3t\n")
+    assert seen["argv"] == ["tailscale", "ssh", "root@metal", "--", "cat > /tmp/payload"]
+    assert seen["input"] == b"s3cr3t\n"
+
+
+async def test_run_defaults_input_to_none(manifest, monkeypatch):
+    seen = {}
+
+    async def fake(argv, **kwargs):
+        seen["input"] = kwargs["input"]
+        return _completed(argv, 0, b"", b"")
+
+    monkeypatch.setattr(anyio, "run_process", fake)
+    await remote.run(manifest.machines["metal"], "true")
+    assert seen["input"] is None
+
+
 async def test_run_timeout_raises_remote_timeout(manifest, monkeypatch):
     async def slow(argv, **kwargs):
         await anyio.sleep(5)
@@ -129,6 +156,46 @@ def test_stream_uses_execvp(manifest, monkeypatch):
         remote.stream(manifest.machines["metal"], "tail -F /var/log/x")
     assert recorded["file"] == "tailscale"
     assert recorded["args"] == ["tailscale", "ssh", "root@metal", "--", "tail -F /var/log/x"]
+
+
+def test_direct_argv_minimal(manifest):
+    assert remote._direct_argv(manifest.machines["metal"], "echo a && echo b", user="admin") == [
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "admin@metal",
+        "echo a && echo b",
+    ]
+
+
+def test_direct_argv_tty_and_forwards(manifest):
+    argv = remote._direct_argv(
+        manifest.machines["metal"],
+        "/nix/store/x/bin/cli-proxy-api --codex-login --no-browser",
+        user="admin",
+        forwards=(1455, 8085),
+        tty=True,
+    )
+    assert argv == [
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-t",
+        "-L",
+        "1455:127.0.0.1:1455",
+        "-L",
+        "8085:127.0.0.1:8085",
+        "admin@metal",
+        "/nix/store/x/bin/cli-proxy-api --codex-login --no-browser",
+    ]
 
 
 def test_pre_tailnet_interactive_argv_and_redaction(manifest, monkeypatch):
