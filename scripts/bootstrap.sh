@@ -290,6 +290,11 @@ if ! tart list --format json 2>/dev/null | jq -re '.[]? | select(.Name=="hermes"
   log "Creating tart Linux scaffold for hermes (64 GB) ..."
   tart create --linux hermes --disk-size 64
 fi
+# A lingering persistent-node device keeps the `hermes` MagicDNS name and drifts the fresh join
+# to `hermes-1` (see deploy-vm.sh); delete it before the new image joins.
+log "Deleting any old hermes tailnet device (persistent nodes don't auto-reap) ..."
+./scripts/nuke-tailnet.sh hermes || log "  (could not delete old hermes device — check TAILSCALE_API_KEY in .env)"
+
 log "Disk-replacing hermes (APFS clonefile) ..."
 cp -c "$HERMES_IMG" "$HOME/.tart/vms/hermes/disk.img"
 # The built image is mode 0444 and APFS clonefile preserves it, so the clone is read-only and the
