@@ -22,14 +22,12 @@ diff -ruN --exclude=.claude a/cmd/server.go b/cmd/server.go
  	if err != nil {
  		return "", err
  	}
-@@ -673,4 +673,13 @@
+@@ -673,4 +673,11 @@
  	serverCmd.Flags().Int64("max-request-bytes", defaultMaxRequestBytes(), "max request body bytes forwarded to upstreams (default: 1 GiB; also respects AGENT_VAULT_MAX_REQUEST_BYTES)")
  	serverCmd.AddCommand(stopCmd)
  	rootCmd.AddCommand(serverCmd)
 +}
 +
-+// stateHomeDir returns AGENT_VAULT_HOME when set and non-empty, else the user
-+// home dir — the base under which the .agent-vault state layout lives.
 +func stateHomeDir() (string, error) {
 +	if h := os.Getenv("AGENT_VAULT_HOME"); h != "" {
 +		return h, nil
@@ -48,13 +46,11 @@ diff -ruN --exclude=.claude a/internal/ca/soft.go b/internal/ca/soft.go
  		if err != nil {
  			return nil, fmt.Errorf("resolving home dir: %w", err)
  		}
-@@ -390,3 +390,12 @@
+@@ -390,3 +390,10 @@
  }
  
  var _ Provider = (*SoftCA)(nil)
 +
-+// stateHomeDir returns AGENT_VAULT_HOME when set and non-empty, else the user
-+// home dir — the base under which the .agent-vault state layout lives.
 +func stateHomeDir() (string, error) {
 +	if h := os.Getenv("AGENT_VAULT_HOME"); h != "" {
 +		return h, nil
@@ -64,7 +60,7 @@ diff -ruN --exclude=.claude a/internal/ca/soft.go b/internal/ca/soft.go
 diff -ruN --exclude=.claude a/internal/isolation/cacopy.go b/internal/isolation/cacopy.go
 --- a/internal/isolation/cacopy.go	2026-06-14 16:04:15
 +++ b/internal/isolation/cacopy.go	2026-07-03 20:02:59
-@@ -87,9 +87,18 @@
+@@ -87,9 +87,16 @@
  }
  
  func hostIsolationDir() (string, error) {
@@ -76,8 +72,6 @@ diff -ruN --exclude=.claude a/internal/isolation/cacopy.go b/internal/isolation/
  	return filepath.Join(home, ".agent-vault", isolationDirName), nil
 +}
 +
-+// stateHomeDir returns AGENT_VAULT_HOME when set and non-empty, else the user
-+// home dir — the base under which the .agent-vault state layout lives.
 +func stateHomeDir() (string, error) {
 +	if h := os.Getenv("AGENT_VAULT_HOME"); h != "" {
 +		return h, nil
@@ -108,14 +102,12 @@ diff -ruN --exclude=.claude a/internal/pidfile/pidfile.go b/internal/pidfile/pid
  	if err != nil {
  		return "", err
  	}
-@@ -91,4 +91,13 @@
+@@ -91,4 +91,11 @@
  func IsRunning(pid int) bool {
  	err := syscall.Kill(pid, 0)
  	return err == nil || errors.Is(err, syscall.EPERM)
 +}
 +
-+// stateHomeDir returns AGENT_VAULT_HOME when set and non-empty, else the user
-+// home dir — the base under which the .agent-vault state layout lives.
 +func stateHomeDir() (string, error) {
 +	if h := os.Getenv("AGENT_VAULT_HOME"); h != "" {
 +		return h, nil
@@ -143,14 +135,12 @@ diff -ruN --exclude=.claude a/internal/session/session.go b/internal/session/ses
  	if err != nil {
  		return "", err
  	}
-@@ -114,4 +114,13 @@
+@@ -114,4 +114,11 @@
  		return ""
  	}
  	return strings.TrimSpace(string(data))
 +}
 +
-+// stateHomeDir returns AGENT_VAULT_HOME when set and non-empty, else the user
-+// home dir — the base under which the .agent-vault state layout lives.
 +func stateHomeDir() (string, error) {
 +	if h := os.Getenv("AGENT_VAULT_HOME"); h != "" {
 +		return h, nil
@@ -169,14 +159,12 @@ diff -ruN --exclude=.claude a/internal/store/store.go b/internal/store/store.go
  	if err != nil {
  		return "", err
  	}
-@@ -617,4 +617,13 @@
+@@ -617,4 +617,11 @@
  		return "", err
  	}
  	return filepath.Join(dir, "agent-vault.db"), nil
 +}
 +
-+// stateHomeDir returns AGENT_VAULT_HOME when set and non-empty, else the user
-+// home dir — the base under which the .agent-vault state layout lives.
 +func stateHomeDir() (string, error) {
 +	if h := os.Getenv("AGENT_VAULT_HOME"); h != "" {
 +		return h, nil
