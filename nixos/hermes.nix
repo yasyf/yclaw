@@ -595,6 +595,25 @@ in
   # seedNodeConfig; adding renderHermesProxyEnv guarantees the proxy.env exists before it is read.
   system.activationScripts.setupSecrets.deps = [ "renderHermesProxyEnv" ];
 
+  # A disk-replace re-mints the proxy token (deploy-vm.sh/bootstrap.sh), but the module assembles
+  # ~/.hermes/.env only when its generation changes — on the externalized stateDir the old token
+  # lingers and every brokered request 407s. Rewrite the proxy lines from node-config at every
+  # boot, before the agent reads its env. `cat >` truncates in place, preserving owner/mode/ACL.
+  systemd.services.hermes-proxy-env-refresh = {
+    description = "Refresh agent-vault proxy lines in the agent env from node-config";
+    wantedBy = [ "multi-user.target" ];
+    before = [ "hermes-agent.service" ];
+    serviceConfig.Type = "oneshot";
+    script = ''
+      env=${cfg.stateDir}/.hermes/.env
+      tmp=$(mktemp)
+      grep -v '^HTTPS_PROXY=\|^HTTP_PROXY=' "$env" > "$tmp"
+      cat /var/lib/node-config/agent-vault-proxy.env >> "$tmp"
+      cat "$tmp" > "$env"
+      rm -f "$tmp"
+    '';
+  };
+
   # --- In-VM Docker sandbox (terminal.backend = "docker") — gVisor-confined ----
   # H6 (Phase 5): the agent runs UNTRUSTED input (inbound iMessages, fetched web content) with
   # no human approval gate, so every code-exec container it spawns is a potential escape vector.
