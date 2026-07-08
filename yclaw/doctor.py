@@ -18,6 +18,7 @@ from .probes import ProbeResult, Status
 
 PROXY_RE = re.compile(r"^HTTPS_PROXY=http://av_agt_[^:]+:hermes@metal:14322")
 CHECK_HEADERS = ["CHECK", "STATE", "DETAIL"]
+SHARES_ROOT = "/Volumes/My Shared Files"
 
 
 def _metal_ports(metal: Machine) -> list[int]:
@@ -34,13 +35,22 @@ async def _pf_gate(metal: Machine) -> list[ProbeResult]:
 
 
 async def _share_diff(metal: Machine) -> ProbeResult:
-    result = await remote.run(metal, "ls -1 '/Volumes/My Shared Files/'", timeout=status.PROBE_TIMEOUT)
-    if result.returncode != 0:
-        return ProbeResult("metal shares vs manifest", Status.FAIL, f"ls exited {result.returncode}")
-    present = set(result.stdout.split())
+    # A parent-dir readdir never fires the AppleVirtIOFS automount on Tahoe, so stat each share path
+    # directly — that per-path stat is what triggers the mount (mirrors probes.share_mounted). The
+    # trailing readdir still catches a share mounted beyond the manifest.
     expected = set(metal.shares or ())
-    missing = sorted(expected - present)
-    extra = sorted(present - expected)
+    command = (
+        f'for s in {" ".join(sorted(expected))}; do '
+        f'[ -e "{SHARES_ROOT}/$s" ] && echo "present $s" || echo "absent $s"; '
+        f'done; echo ===; ls -1 "{SHARES_ROOT}"'
+    )
+    result = await remote.run(metal, command, timeout=status.PROBE_TIMEOUT)
+    if result.returncode != 0:
+        return ProbeResult("metal shares vs manifest", Status.FAIL, f"share probe exited {result.returncode}")
+    lines = result.stdout.splitlines()
+    sep = lines.index("===")
+    missing = sorted(m.removeprefix("absent ") for m in lines[:sep] if m.startswith("absent "))
+    extra = sorted(set(lines[sep + 1 :]) - expected)
     if missing or extra:
         return ProbeResult("metal shares vs manifest", Status.FAIL, f"missing={missing} extra={extra}")
     return ProbeResult("metal shares vs manifest", Status.PASS, f"{len(expected)} shares match the manifest")

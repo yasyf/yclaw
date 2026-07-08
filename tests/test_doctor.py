@@ -1,11 +1,21 @@
+import pytest
 from click.testing import CliRunner
 
-from yclaw import probes, remote
+from yclaw import doctor, probes, remote
 from yclaw.cli import main
 from yclaw.probes import ProbeResult, Status
 from yclaw.remote import RemoteResult
 
-METAL_SHARES = "metalsecrets\nagentvault\nhfhub\nmlxaudio\ncliproxy\nrepo\n"
+pytestmark = pytest.mark.anyio
+
+# metal's manifest shares, in the sorted order `_share_diff` emits into its `for s in …` probe loop.
+METAL_SHARE_NAMES = ("agentvault", "cliproxy", "hfhub", "metalsecrets", "mlxaudio", "repo")
+
+
+def _share_probe_stdout(present: tuple[str, ...], listing: tuple[str, ...]) -> str:
+    """Reproduce the per-path stat markers + `===` + parent readdir that `_share_diff`'s probe emits."""
+    markers = [f"{'present' if s in present else 'absent'} {s}" for s in METAL_SHARE_NAMES]
+    return "\n".join([*markers, "===", *listing]) + "\n"
 
 
 def _install_common_probes(monkeypatch, up_names):
@@ -35,8 +45,9 @@ def test_doctor_metal_runs_pf_gate_and_share_diff(monkeypatch):
     _install_common_probes(monkeypatch, {"metal"})
 
     async def fake_run(machine, command, *, timeout=30, capture=True):
-        assert command == "ls -1 '/Volumes/My Shared Files/'"
-        return RemoteResult(0, METAL_SHARES, "")
+        assert command.startswith("for s in agentvault cliproxy hfhub metalsecrets mlxaudio repo;")
+        assert '[ -e "/Volumes/My Shared Files/$s" ]' in command
+        return RemoteResult(0, _share_probe_stdout(METAL_SHARE_NAMES, METAL_SHARE_NAMES), "")
 
     monkeypatch.setattr(remote, "run", fake_run)
     result = CliRunner().invoke(main, ["doctor", "metal"])
@@ -51,7 +62,7 @@ def test_doctor_share_diff_flags_missing(monkeypatch):
     _install_common_probes(monkeypatch, {"metal"})
 
     async def fake_run(machine, command, *, timeout=30, capture=True):
-        return RemoteResult(0, "metalsecrets\nrepo\n", "")
+        return RemoteResult(0, _share_probe_stdout(("metalsecrets", "repo"), ("metalsecrets", "repo")), "")
 
     monkeypatch.setattr(remote, "run", fake_run)
     result = CliRunner().invoke(main, ["doctor", "metal"])
@@ -59,11 +70,48 @@ def test_doctor_share_diff_flags_missing(monkeypatch):
     assert "missing=['agentvault', 'cliproxy', 'hfhub', 'mlxaudio']" in result.output
 
 
+@pytest.mark.parametrize(
+    ("present", "listing", "expected_status", "expected_detail"),
+    [
+        (METAL_SHARE_NAMES, METAL_SHARE_NAMES, Status.PASS, "6 shares match the manifest"),
+        (METAL_SHARE_NAMES, (), Status.PASS, "6 shares match the manifest"),
+        (
+            ("metalsecrets", "repo"),
+            ("metalsecrets", "repo"),
+            Status.FAIL,
+            "missing=['agentvault', 'cliproxy', 'hfhub', 'mlxaudio'] extra=[]",
+        ),
+        (
+            METAL_SHARE_NAMES,
+            (*METAL_SHARE_NAMES, "hermes"),
+            Status.FAIL,
+            "missing=[] extra=['hermes']",
+        ),
+    ],
+    ids=["all-mounted", "readdir-empty-stat-finds-all", "four-absent", "forbidden-share-in-readdir"],
+)
+async def test_share_diff_probes_each_path(manifest, monkeypatch, present, listing, expected_status, expected_detail):
+    captured = {}
+
+    async def fake_run(machine, command, *, timeout=30, capture=True):
+        captured["command"] = command
+        return RemoteResult(0, _share_probe_stdout(present, listing), "")
+
+    monkeypatch.setattr(remote, "run", fake_run)
+    result = await doctor._share_diff(manifest.machines["metal"])
+    # The probe stats each share by its own path (the automount trigger), never a bare parent readdir.
+    assert "for s in agentvault cliproxy hfhub metalsecrets mlxaudio repo;" in captured["command"]
+    assert '[ -e "/Volumes/My Shared Files/$s" ]' in captured["command"]
+    assert captured["command"] != "ls -1 '/Volumes/My Shared Files/'"
+    assert result.status is expected_status
+    assert result.detail == expected_detail
+
+
 def test_doctor_live_hermes_down_marks_manual(monkeypatch):
     _install_common_probes(monkeypatch, {"metal"})
 
     async def fake_run(machine, command, *, timeout=30, capture=True):
-        return RemoteResult(0, METAL_SHARES, "")
+        return RemoteResult(0, _share_probe_stdout(METAL_SHARE_NAMES, METAL_SHARE_NAMES), "")
 
     monkeypatch.setattr(remote, "run", fake_run)
     result = CliRunner().invoke(main, ["doctor", "--live"])
