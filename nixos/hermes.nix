@@ -277,6 +277,10 @@ in
     options = [ "ro" "nofail" ];
   };
 
+  # In-guest rebuilds OOM without swap: hermes-web's `npm ci` alone out-eats the ~4 GiB guest
+  # (oom-killer kills dry-activate, rc=137). Disk is plentiful; 8 GiB absorbs the build peak.
+  swapDevices = [ { device = "/var/swapfile"; size = 8192; } ];
+
   # NOTE: /var/lib/tailscale is deliberately NOT externalized to a host share. hermes joins as a
   # PERSISTENT node (scripts/lib/secrets.sh `_ts_mint_key`), so the node key on its own VM disk here
   # DOES survive a reboot — hermes reconnects with no authkey, exactly what an always-on server needs.
