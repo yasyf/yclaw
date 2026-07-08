@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"add_comment","body":"Status: carry DONE (pkgs/agent-vault-state-dir.patch applied in pkgs/agent-vault.nix); upstreaming NOT started. Rebase clause: a fresh hermes-agent+nixpkgs flake bump is being prepared 2026-07-07 (replacing stale origin/ci/bump-upstream c8720a5) — if agent-vault-src moves, re-verify the patch applies."}]}
+{"v":1,"lamport":3,"ops":[{"kind":"add_comment","body":"The 2026-07-07 bump (fd24e64) did NOT move agent-vault-src (separate pinned input) — agent-vault-state-dir.patch unaffected, no rebase needed this cycle."}]}
