@@ -7,6 +7,7 @@ from loguru import logger
 
 from .doctor import doctor
 from .logs import logs
+from .onboard import onboard
 from .restart import bounce, restart
 from .secret import secret
 from .ssh import ssh
@@ -32,3 +33,4 @@ main.add_command(restart)
 main.add_command(bounce)
 main.add_command(vm)
 main.add_command(secret)
+main.add_command(onboard)
