@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"verify_note","witness":null,"verified_commit":"bf078a481e12f52de5970b952b54ab304e614408"}]}
+{"v":1,"lamport":3,"ops":[{"kind":"add_attachment","name":"imsg-bridge-spec.md","oid":"cc031a80632c04cbf3f73891541d0b18b878dc8a6a018cd6dcf0829c0826f4f3","size":28308}]}
