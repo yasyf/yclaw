@@ -1,0 +1,8 @@
+fragments = [
+  "yclaw-development-guide",
+  "cc-skills:ccx",
+  "yclaw-debug-cli-and-rules",
+]
+
+[sources.cc-skills]
+source = "github:yasyf/cc-skills@main"
