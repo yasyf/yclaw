@@ -188,6 +188,17 @@ setup_host_serving() {
     fi
   fi
 
+  # The three host.nix-era LaunchAgents (mlx-qwen/parakeet-stt/cliproxyapi) are retired — the host runs
+  # rapid-mlx + mlx-audio via the com.yclaw.* agents below, and cliproxy lives inside metal. Boot out any
+  # that are still loaded and delete their plists (and the .disabled/.bak siblings a prior manual disable
+  # left) so a fresh login cannot RunAtLoad a stale server onto :8080/:8765. Idempotent.
+  for label in org.nixos.mlx-qwen org.nixos.parakeet-stt org.nixos.cliproxyapi; do
+    launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+    rm -f "$HOME/Library/LaunchAgents/$label.plist" \
+          "$HOME/Library/LaunchAgents/$label.plist.disabled" \
+          "$HOME/Library/LaunchAgents/$label.plist.bak-prelat"
+  done
+
   # 5a. rapid-mlx venv (python@3.14 keg, matching metal.nix) + the activator's runtime deps. Build only
   # when absent — mirrors metal.nix's `-x .../bin/rapid-mlx` idempotency check. Every package is pinned
   # to the exact version the verified venv resolved, so a rebuild reproduces the audited install.
