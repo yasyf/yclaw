@@ -1,1 +1,1 @@
-{"v":1,"lamport":1,"ops":[{"kind":"create_log","nonce":"448c2263ba2b85ff155087618f8116b4","title":"papercuts","tags":["papercut"],"anchors":null}]}
+{"v":1,"lamport":2,"ops":[{"kind":"append_entry","text":"ccx vcs diff reported 'No changes' while jj diff showed 4 modified working-copy files (colocated jj repo, @ sitting on an unlanded stack above main). Had to fall back to raw jj diff to see the pending change — the jj-aware diff path seems to resolve the wrong source revision in this topology."}]}
