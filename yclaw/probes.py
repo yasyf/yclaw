@@ -111,11 +111,15 @@ async def tcp_open(host: str, port: int, *, timeout: float = 5) -> ProbeResult:
 
 
 async def tailnet_node(name: str, *, timeout: float = 10) -> ProbeResult:
-    node = _find_node(await _tailscale_status(timeout), name)
+    status = await _tailscale_status(timeout)
+    node = _find_node(status, name)
     if node is None:
         return ProbeResult(name, Status.FAIL, "not in tailnet")
     if not node.get("Online"):
         return ProbeResult(name, Status.FAIL, "registered but offline")
+    if node is status.get("Self"):
+        # Pinging our own tailnet IP always succeeds and says nothing about network reachability.
+        return ProbeResult(name, Status.PASS, "online (self)")
     reachable = await _tailscale_ping(name, timeout)
     detail = "online, ping ok" if reachable else "online, ping failed (derp-only or stale disco)"
     return ProbeResult(name, Status.PASS, detail)

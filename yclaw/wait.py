@@ -84,7 +84,8 @@ def port(machine: str, port: int, timeout: float, interval: float) -> None:
     """Wait for MACHINE:PORT to accept a TCP connection."""
     target = resolve_machine(load_manifest(), machine)
     name = f"{target.name}:{port}"
-    result = run(lambda: _poll(name, lambda: probes.tcp_open(target.name, port), timeout=timeout, interval=interval))
+    host = target.tailnet_name or target.name
+    result = run(lambda: _poll(name, lambda: probes.tcp_open(host, port), timeout=timeout, interval=interval))
     _finish(name, result)
 
 
@@ -94,6 +95,8 @@ def port(machine: str, port: int, timeout: float, interval: float) -> None:
 def ssh(machine: str, timeout: float, interval: float) -> None:
     """Wait until MACHINE answers ``tailscale ssh``."""
     target = resolve_machine(load_manifest(), machine)
+    if target.ssh is None:
+        raise click.UsageError(f"{machine!r} is the host, not a tailnet node — there is no ssh to wait for")
 
     async def probe() -> ProbeResult:
         result = await remote.run(target, "true", timeout=_ssh_probe_timeout(interval))

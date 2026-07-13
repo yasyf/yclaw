@@ -71,9 +71,12 @@ async def _bounce(machine: Machine, service: Service, *, interval: float, timeou
         if anyio.current_time() - start >= timeout:
             _fail(f"{ref.target} still loaded {timeout:g}s after bootout — cannot bootstrap over a live label", printed)
         await anyio.sleep(interval)
-    bootstrapped = await remote.run(machine, f"launchctl bootstrap {ref.domain} {ref.plist_path}")
+    bootstrapped = await remote.run(machine, f"launchctl bootstrap {ref.bootstrap_domain} {ref.plist_path}")
     if bootstrapped.returncode != 0:
-        _fail(f"bootstrap {ref.domain} {ref.plist_path} failed (exit {bootstrapped.returncode})", bootstrapped)
+        _fail(
+            f"bootstrap {ref.bootstrap_domain} {ref.plist_path} failed (exit {bootstrapped.returncode})",
+            bootstrapped,
+        )
     click.echo(output.ok(f"bounced {service.name} on {machine.name}"))
     await _health_wait(machine, service)
 

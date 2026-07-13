@@ -66,6 +66,28 @@ def test_wait_ssh_probe_timeout_decoupled_from_interval(monkeypatch, interval, e
     assert seen == {"command": "true", "timeout": expected_timeout}
 
 
+def test_wait_port_host_resolves_tailnet_name(monkeypatch):
+    # The host's manifest key `host` is not resolvable — the TCP probe must target its tailnet name.
+    seen = {}
+
+    async def fake_tcp(host, port, *, timeout=5):
+        seen["host"] = host
+        seen["port"] = port
+        return ProbeResult(f"{host}:{port}", Status.PASS, "open")
+
+    monkeypatch.setattr(probes, "tcp_open", fake_tcp)
+    result = CliRunner().invoke(main, ["wait", "port", "host", "8000"])
+    assert result.exit_code == 0
+    assert seen == {"host": "yasyf-home", "port": 8000}
+
+
+def test_wait_ssh_host_is_usage_error():
+    # The host runs its own commands locally — there is no tailscale-ssh session to wait for.
+    result = CliRunner().invoke(main, ["wait", "ssh", "host"])
+    assert result.exit_code == 2
+    assert "there is no ssh to wait for" in result.output
+
+
 def test_wait_ssh_success(monkeypatch):
     async def fake_run(machine, command, *, timeout=30, capture=True):
         assert command == "true"

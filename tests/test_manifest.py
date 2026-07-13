@@ -122,13 +122,16 @@ def test_service_is_frozen(manifest):
 def test_launchd_ref_target_and_plist_path(manifest):
     rapid_mlx = manifest.machines["metal"].services["rapid-mlx"]
     assert rapid_mlx.launchd.target == "system/org.nixos.rapid-mlx"
+    assert rapid_mlx.launchd.bootstrap_domain == "system"
     assert rapid_mlx.launchd.plist_path == "/Library/LaunchDaemons/org.nixos.rapid-mlx.plist"
 
 
 def test_launchd_ref_gui_domain_target_and_plist_path(manifest):
     # The host's tart-* supervisors are gui-domain LaunchAgents, not system LaunchDaemons: the target
-    # carries the numeric uid and the plist lives under the login user's ~/Library/LaunchAgents.
+    # carries the numeric uid and the plist lives under the login user's ~/Library/LaunchAgents. The
+    # bootstrap domain is bare `gui/<uid>` (no label) — launchctl rejects a bare `gui` there.
     ref = manifest.machines["host"].services["tart-metal"].launchd
     assert ref == LaunchdRef(domain="gui", label="com.yclaw.tart-metal")
     assert ref.target == f"gui/{os.getuid()}/com.yclaw.tart-metal"
+    assert ref.bootstrap_domain == f"gui/{os.getuid()}"
     assert ref.plist_path == str(Path.home() / "Library/LaunchAgents" / "com.yclaw.tart-metal.plist")

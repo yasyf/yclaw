@@ -70,7 +70,9 @@ async def collect(machines: list[Machine]) -> tuple[list[list[str]], list[ProbeR
     limiters = {m.name: anyio.CapacityLimiter(SSH_PROBE_CONCURRENCY) for m in machines}
     tasks: list[tuple[tuple[str, str, str], Probe]] = []
     for machine in machines:
-        if tailnet[machine.name].status is not Status.PASS:
+        # The host's probes are local exec, needing no tailnet transport — never gate them on its node
+        # probe. Only nodes reached over ssh are skipped when unreachable.
+        if machine.ssh is not None and tailnet[machine.name].status is not Status.PASS:
             continue
         limiter = limiters[machine.name]
         for service in machine.services.values():
@@ -96,7 +98,7 @@ async def collect(machines: list[Machine]) -> tuple[list[list[str]], list[ProbeR
         node = tailnet[machine.name]
         results.append(node)
         rows.append([machine.name, "(node)", "up" if node.status is Status.PASS else "down", "—", node.detail])
-        if node.status is not Status.PASS:
+        if machine.ssh is not None and node.status is not Status.PASS:
             continue
         for service in machine.services.values():
             state_key = ("state", machine.name, service.name)

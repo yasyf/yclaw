@@ -123,6 +123,28 @@ async def test_tailnet_node(fixtures_dir, monkeypatch, name, ping_ok, expected_s
     assert detail_needle in result.detail
 
 
+async def test_tailnet_node_self_skips_ping(fixtures_dir, monkeypatch):
+    # The Self node is this host — pinging our own tailnet IP always succeeds and says nothing about
+    # reachability, so it is skipped and the row reports "online (self)".
+    status = json.loads((fixtures_dir / "tailscale-status.json").read_text())
+
+    async def fake_status(timeout):
+        return status
+
+    pinged = False
+
+    async def fake_ping(node, timeout):
+        nonlocal pinged
+        pinged = True
+        return True
+
+    monkeypatch.setattr(probes, "_tailscale_status", fake_status)
+    monkeypatch.setattr(probes, "_tailscale_ping", fake_ping)
+    result = await probes.tailnet_node("yclaw-host")
+    assert result == ProbeResult("yclaw-host", Status.PASS, "online (self)")
+    assert pinged is False
+
+
 @pytest.mark.parametrize(
     ("code", "expected_status"),
     [(200, Status.PASS), (204, Status.PASS), (503, Status.FAIL), (404, Status.FAIL)],

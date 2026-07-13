@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 from click.testing import CliRunner
 
 from yclaw import probes, remote, restart
@@ -69,6 +72,30 @@ def test_bounce_order_bootout_poll_bootstrap(monkeypatch):
         "launchctl bootstrap system /Library/LaunchDaemons/org.nixos.rapid-mlx.plist",
     ]
     assert "bounced rapid-mlx on metal" in result.output
+
+
+def test_bounce_gui_domain_bootstraps_with_uid(monkeypatch):
+    # A gui-domain LaunchAgent bootstraps into `gui/<uid>` — passing a bare `gui` makes launchctl
+    # exit 64 and the service stays unloaded after its bootout.
+    seen = []
+
+    async def fake_run(machine, command, *, timeout=30, capture=True):
+        seen.append(command)
+        if command.startswith("launchctl print"):
+            return RemoteResult(1, "", "")  # label gone after bootout
+        return RemoteResult(0, "", "")
+
+    monkeypatch.setattr(remote, "run", fake_run)
+    result = CliRunner().invoke(main, ["bounce", "host", "tart-metal"])
+    assert result.exit_code == 0
+    uid = os.getuid()
+    plist = str(Path.home() / "Library/LaunchAgents" / "com.yclaw.tart-metal.plist")
+    assert seen == [
+        f"launchctl bootout gui/{uid}/com.yclaw.tart-metal",
+        f"launchctl print gui/{uid}/com.yclaw.tart-metal",
+        f"launchctl bootstrap gui/{uid} {plist}",
+    ]
+    assert "bounced tart-metal on host" in result.output
 
 
 def test_bounce_retries_while_loaded_then_bootstraps_once_drained(monkeypatch):

@@ -38,6 +38,12 @@ class LaunchdRef:
         return f"{self.domain}/{self.label}"
 
     @property
+    def bootstrap_domain(self) -> str:
+        if self.domain == "gui":
+            return f"gui/{os.getuid()}"
+        return self.domain
+
+    @property
     def plist_path(self) -> str:
         if self.domain == "gui":
             return str(Path.home() / "Library/LaunchAgents" / f"{self.label}.plist")

@@ -154,6 +154,30 @@ def test_status_sweeps_host_by_tailnet_name(monkeypatch):
     assert any(line.split()[:2] == ["host", "(node)"] for line in lines)
 
 
+def test_status_host_service_probes_run_despite_node_fail(monkeypatch):
+    # The host's node probe can FAIL, but its launchd probes are local exec — they need no tailnet
+    # transport, so they still run and render. Only ssh-reached nodes are skipped when unreachable.
+    probed_services: list[str] = []
+
+    async def fake_tailnet(name, *, timeout=10):
+        return ProbeResult(name, Status.FAIL, "registered but offline")
+
+    async def fake_launchd(machine, service, *, timeout=30):
+        probed_services.append(service.name)
+        return ProbeResult(service.name, Status.PASS, f"st-{service.name}")
+
+    monkeypatch.setattr(probes, "tailnet_node", fake_tailnet)
+    monkeypatch.setattr(probes, "launchd_state", fake_launchd)
+    result = CliRunner().invoke(main, ["status", "host"])
+    lines = result.output.splitlines()
+
+    assert "tart-metal" in probed_services
+    node_row = next(line for line in lines if line.split()[:2] == ["host", "(node)"])
+    assert "down" in node_row
+    assert any(line.startswith("host") and "tart-metal" in line for line in lines)
+    assert result.exit_code == 1  # the node itself is down
+
+
 def test_status_unknown_machine_is_usage_error():
     result = CliRunner().invoke(main, ["status", "nope"])
     assert result.exit_code == 2
