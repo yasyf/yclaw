@@ -239,6 +239,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pasted back — no SSH tunnel to `metal` required.
 
 ### Fixed
+- `scripts/remint-hermes-authkey.sh` crashed with `KeyError: 'CLIPROXY_API_KEY'` on every
+  disk-replace (`deploy-vm.sh hermes`): hermes's `hermes/env` block gained `CLIPROXY_API_KEY`
+  after the script was written, but the key's only home is metal's sops bundle — not the
+  keychain the script read. A shared `cliproxy_key_from_metal_bundle` helper
+  (`scripts/lib/secrets.sh`) now decrypts it from metal's bundle with the state-store age key
+  (never minting fresh, which would desync metal's inbound bearer); `smoke.sh`'s inline copy
+  of the same decrypt moved onto the helper.
 - The bluebubbles pf host-allowlist (`/etc/pf.anchors/bluebubbles-allowed-hosts`) is now seeded.
   `bb-pf-refresh` scoped the REST ports (443 + 1234) to hermes plus the bare IPv4s in that file,
   but no script ever wrote it, so the operator host was silently dropped (only hermes was admitted).

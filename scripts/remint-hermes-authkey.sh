@@ -11,8 +11,8 @@
 # hermes device so the new node keeps the `hermes` MagicDNS name instead of drifting to `hermes-1`.
 # In-guest `nixos-rebuild switch` (scripts/redeploy.sh) never disconnects hermes, so it needs none of this.
 #
-# Reads ONLY the dedicated yclaw keychain (the Tailscale OAuth client + the BlueBubbles server password)
-# — NO upstream API keys (those live in metal's bundle, not hermes's), so it runs unattended.
+# Reads the yclaw keychain (Tailscale OAuth client + BlueBubbles password) and decrypts metal's
+# bundle for the cliproxy key (age key = state file) — no upstream API keys, so it runs unattended.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,10 +33,12 @@ export TS_ACCESS_TOKEN
 TS_AUTHKEY_HERMES="$(_ts_mint_key hermes)"; export TS_AUTHKEY_HERMES
 BLUEBUBBLES_PASSWORD="$(kc_read "$KC_SERVICE_BLUEBUBBLES_SERVER")"
 export BLUEBUBBLES_PASSWORD
+# hermes/env also carries CLIPROXY_API_KEY — read it from metal's bundle, never mint fresh.
+CLIPROXY_API_KEY="$(cliproxy_key_from_metal_bundle)"
+export CLIPROXY_API_KEY
 
 # --- re-encrypt ONLY hermes's bundle (authkey + hermes/env) to hermes's age recipient -----------------
-# encrypt_host_bundle (scripts/lib/secrets.sh) builds + encrypts hermes's bundle; hermes's catalog
-# entries are all keychain-backed, so no API keys are needed.
+# encrypt_host_bundle (scripts/lib/secrets.sh) renders the bundle from the exported env above.
 age_key="$YCLAW_STATE/hosts/hermes/key.txt"
 [ -s "$age_key" ] || _secrets_fail "no hermes age key at $age_key."
 plain="$(mktemp)"; trap 'rm -f "$plain"' EXIT

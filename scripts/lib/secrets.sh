@@ -47,7 +47,7 @@ KC_SERVICE_TS_OAUTH_SECRET="$(manifest_get '.host_paths.keychain.ts_oauth_client
 _secrets_ask()  { gum input --password --prompt "  $1 ❯ "; }
 _secrets_note() { gum style --foreground 244 "  $*"; }
 _secrets_ok()   { gum style --foreground 84  "  $*"; }
-_secrets_fail() { gum style --foreground 196 "  $*"; exit 1; }
+_secrets_fail() { gum style --foreground 196 "  $*" >&2; exit 1; }
 
 # Ensure the dedicated yclaw keychain exists and is unlocked. On first run it is created with
 # a freshly-generated unlock password that is persisted in the LOGIN keychain under
@@ -185,6 +185,19 @@ PY
   # would otherwise wrap the document in a `data:` blob sops-nix cannot navigate (it extracts by key
   # path). --config /dev/null ignores any ambient .sops.yaml — the explicit --age is authoritative.
   sops --encrypt --config /dev/null --input-type yaml --output-type yaml --age "$pub" "$plain" > "$out"
+}
+
+# Read the cliproxy API key back from its only home, metal's sops bundle, via metal's age key.
+# Never mint fresh outside bootstrap: clients presenting the old bearer would desync.
+cliproxy_key_from_metal_bundle() {
+  local age_key="$YCLAW_STATE/hosts/metal/key.txt" bundle="$YCLAW_STATE/hosts/metal/secrets.sops.yaml" key
+  [ -s "$age_key" ] && [ -s "$bundle" ] \
+    || _secrets_fail "no metal secrets bundle at $bundle — run \`just bootstrap\` first."
+  key="$(SOPS_AGE_KEY_FILE="$age_key" sops --decrypt --config /dev/null --input-type yaml \
+    --output-type yaml --extract '["cliproxy"]["api-key"]' "$bundle")" \
+    || _secrets_fail "could not decrypt cliproxy/api-key from metal's sops bundle."
+  [ -n "$key" ] || _secrets_fail "empty cliproxy/api-key in metal's sops bundle."
+  printf '%s' "$key"
 }
 
 # Prompt for the external API secrets, generate/reuse the age key + the dedicated-keychain
