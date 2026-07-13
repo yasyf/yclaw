@@ -7,7 +7,9 @@
 # Re-runnable: brew installs are no-ops when present, mkdir -p is idempotent, and each
 # LaunchAgent is rewritten then re-bootstrapped (bootout-before-bootstrap) so a changed plist
 # takes effect. `setup.sh host-serving` re-runs ONLY §5 (the serving stack) — the full run's §3
-# bootout-before-bootstrap restarts the LIVE tart VM runners.
+# bootout-before-bootstrap restarts the LIVE tart VM runners. `setup.sh host-pf` (root-gated,
+# NOT part of the full run — the apply is deliberately operator-gated, like the hand-applied
+# tailnet ACL it backstops) installs §6: the com.yclaw.host pf anchor + its refresh daemon.
 #
 # ── darwin/host.nix responsibility mapping ───────────────────────────────────────────────────
 # DELETED (gone with the host services, which now run inside the `metal` VM):
@@ -28,7 +30,7 @@
 #   • the mise-built tailscaled 1.98.5 system daemon with `tailscale ssh` — detected, never
 #     clobbered; `brew install tailscale` runs ONLY when no tailscaled exists
 #   • the pf VNC anchor                                     — OFF by default (no VNC on the host; the
-#     §5 model ports get their own Phase-4 pf gate, not this anchor); see ENABLE_VNC_ANCHOR below
+#     §5 model ports get their own pf gate, §6 `setup.sh host-pf`); see ENABLE_VNC_ANCHOR below
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -257,6 +259,64 @@ setup_host_serving() {
     "HF_HUB_CACHE=$HF_HUB_DIR"
 }
 
+# --- 6. Host pf lockdown (optional, root, NOT in the full run) -----------------
+
+# Install the `com.yclaw.host` pf anchor + its refresh LaunchDaemon: ONLY metal may reach the
+# host's model ports (rapid-mlx :8000, mlx-audio STT :8765) and no fleet VM reaches anything else
+# on the host — the pf half of the Phase-4 lockdown (the tailnet-ACL half is hand-applied; see
+# tailnet/policy.hujson). Mirrors bluebubbles-setup.sh's install_bb_pf_refresh: bake the tick
+# script (scripts/host/host-pf.sh) beside verbatim wait.sh + pf.sh copies under
+# /usr/local/lib/yclaw, run it once synchronously (the anchor is in force when this returns, not
+# 300s later), then install the /Library/LaunchDaemons KeepAlive sleep-loop daemon (StartInterval
+# silently stops firing on Tahoe) that re-keys the anchor to the fleet's current IPs every 300s.
+# The tailscale CLI is a mise install in the login user's HOME, invisible to sudo's reset PATH —
+# honor wait.sh's TAILSCALE binary seam, die with the exact remedy otherwise.
+setup_host_pf() {
+  [ "$(id -u)" -eq 0 ] || die "host-pf writes /etc/pf.anchors + /Library/LaunchDaemons — run: sudo TAILSCALE=\"\$(command -v tailscale)\" bash scripts/setup.sh host-pf"
+
+  local ts_bin="${TAILSCALE:-}"
+  [ -n "$ts_bin" ] || ts_bin="$(command -v tailscale || true)"
+  { [ -n "$ts_bin" ] && [ -x "$ts_bin" ]; } || die "tailscale CLI not found (sudo resets PATH) — run: sudo TAILSCALE=\"\$(command -v tailscale)\" bash scripts/setup.sh host-pf"
+
+  local lib_dir="/usr/local/lib/yclaw" ports
+  ports="{ $(manifest_get '.machines.host.services["rapid-mlx"].port'), $(manifest_get '.machines.host.services["mlx-audio"].port') }"
+
+  install -d -m 755 "$lib_dir"
+  install -m 644 "$REPO_ROOT/scripts/lib/wait.sh" "$lib_dir/wait.sh"
+  install -m 644 "$REPO_ROOT/scripts/lib/pf.sh" "$lib_dir/pf.sh"
+  sed -e "s|@@TAILSCALE@@|$ts_bin|g" -e "s|@@PF_PORTS@@|$ports|g" \
+    "$REPO_ROOT/scripts/host/host-pf.sh" > "$lib_dir/host-pf.sh"
+  chmod 755 "$lib_dir/host-pf.sh"
+
+  "$lib_dir/host-pf.sh" 10 || die "first host-pf tick failed — anchor NOT in force (see above)"
+
+  local label="com.yclaw.host-pf-refresh"
+  local plist="/Library/LaunchDaemons/$label.plist"
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>while true; do $lib_dir/host-pf.sh 60 || true; sleep 300; done</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/var/log/host-pf-refresh.log</string>
+  <key>StandardErrorPath</key><string>/var/log/host-pf-refresh.error.log</string>
+</dict>
+</plist>
+PLIST
+  chown root:wheel "$plist"
+  chmod 644 "$plist"
+  bootout_drain system "$label"
+  launchctl bootstrap system "$plist"
+}
+
 # --- arg dispatch --------------------------------------------------------------
 
 case "${1:-}" in
@@ -265,8 +325,13 @@ case "${1:-}" in
     log "Host serving stack com.yclaw.{rapid-mlx,mlx-audio} loaded."
     exit 0
     ;;
+  host-pf)
+    setup_host_pf
+    log "Host pf lockdown installed: anchor com.yclaw.host + LaunchDaemon com.yclaw.host-pf-refresh."
+    exit 0
+    ;;
   "") ;;
-  *) die "usage: setup.sh [host-serving]" ;;
+  *) die "usage: setup.sh [host-serving|host-pf]" ;;
 esac
 
 # --- 0. Homebrew + tart + gum ------------------------------------------------
