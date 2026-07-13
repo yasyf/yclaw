@@ -102,6 +102,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the tailnet over the Tailscale API. The next `just bootstrap` regenerates the rest.
 
 ### Changed
+- `scripts/build-hermes-image.sh`: builder-VM disk default 80 → 140 GB. A day of image
+  builds fills 80 GB even after an in-guest store GC (hit twice on 2026-07-13); `tart set`
+  only grows, so existing builders pick the new size up on the next run.
 - The hermes disk image is built with **systemd-repart** instead of nixos-generators'
   `raw-efi` format. `raw-efi` runs nixpkgs' `make-disk-image` inside a KVM VM
   (`requiredSystemFeatures = ["kvm"]`), and GitHub's `ubuntu-24.04-arm` runners have no

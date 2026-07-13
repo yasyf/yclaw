@@ -29,7 +29,7 @@ BUILDER_VM="${BUILDER_VM:-hermes-image-builder}"
 #   docker manifest inspect --verbose ghcr.io/cirruslabs/ubuntu:latest | jq -r '.Descriptor.digest'
 # Re-run that command and update the digest below on an intentional base bump.
 BUILDER_IMAGE="${BUILDER_IMAGE:-ghcr.io/cirruslabs/ubuntu@sha256:e90dfc9e6dffb742809f32e61ee03daf5fa6ee30e24ee05c105beffa3b7c9540}"
-BUILDER_DISK_GB="${BUILDER_DISK_GB:-80}"  # 40 GB overflows ("No space left") at the final raw→img copy: Ubuntu base + warm /nix + the hermes closure + a 2× copy of the disk image all live here
+BUILDER_DISK_GB="${BUILDER_DISK_GB:-140}"  # 80 GB fills after a few same-day builds even with store GC (Ubuntu base + warm /nix + per-build closures + the 2× raw→img copy); 140 leaves GC headroom
 BUILDER_MEMORY_GB="${BUILDER_MEMORY_GB:-16}"  # base image ships 4 GB; the hermes nix build OOMs there
 BUILDER_CPU="${BUILDER_CPU:-8}"
 SSH_USER="${BUILDER_SSH_USER:-admin}"
