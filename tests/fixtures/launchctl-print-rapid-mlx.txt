@@ -1,24 +1,24 @@
-system/org.nixos.omlx = {
+system/org.nixos.rapid-mlx = {
 	active count = 1
-	path = /Library/LaunchDaemons/org.nixos.omlx.plist
+	path = /Library/LaunchDaemons/org.nixos.rapid-mlx.plist
 	type = LaunchDaemon
 	state = running
 
 	program = /usr/local/lib/yclaw/metal-wait-nix
 	arguments = {
 		/usr/local/lib/yclaw/metal-wait-nix
-		/nix/store/fvjhnap4qhmd63q03qkp4r3ak4xm4ips-metal-omlx
+		/nix/store/fvjhnap4qhmd63q03qkp4r3ak4xm4ips-metal-rapid-mlx
 	}
 
-	stdout path = /Users/admin/Library/Logs/omlx/omlx.log
-	stderr path = /Users/admin/Library/Logs/omlx/omlx.error.log
+	stdout path = /Users/admin/Library/Logs/rapid-mlx/rapid-mlx.log
+	stderr path = /Users/admin/Library/Logs/rapid-mlx/rapid-mlx.error.log
 	default environment = {
 		PATH => /usr/bin:/bin:/usr/sbin:/sbin
 	}
 
 	environment = {
 		OSLogRateLimit => 64
-		XPC_SERVICE_NAME => org.nixos.omlx
+		XPC_SERVICE_NAME => org.nixos.rapid-mlx
 	}
 
 	domain = system
@@ -45,7 +45,7 @@ system/org.nixos.omlx = {
 		type = resource
 		state = active
 		active count = 1
-		name = org.nixos.omlx
+		name = org.nixos.rapid-mlx
 	}
 
 	jetsam coalition = {
@@ -53,7 +53,7 @@ system/org.nixos.omlx = {
 		type = jetsam
 		state = active
 		active count = 1
-		name = org.nixos.omlx
+		name = org.nixos.rapid-mlx
 	}
 
 	spawn type = daemon (3)

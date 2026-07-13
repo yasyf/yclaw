@@ -16,9 +16,9 @@ def test_hermes_ssh_user_is_root(manifest):
     assert manifest.machines["hermes"].ssh.transport == "tailscale"
 
 
-def test_omlx_launchd_label(manifest):
-    omlx = manifest.machines["metal"].services["omlx"]
-    assert omlx.launchd == LaunchdRef(domain="system", label="org.nixos.omlx")
+def test_rapid_mlx_launchd_label(manifest):
+    rapid_mlx = manifest.machines["metal"].services["rapid-mlx"]
+    assert rapid_mlx.launchd == LaunchdRef(domain="system", label="org.nixos.rapid-mlx")
 
 
 def test_metal_share_list(manifest):
@@ -32,15 +32,15 @@ def test_metal_share_list(manifest):
     )
 
 
-def test_omlx_log_paths(manifest):
-    assert manifest.machines["metal"].services["omlx"].logs == (
-        "/Users/admin/Library/Logs/omlx/omlx.log",
-        "/Users/admin/Library/Logs/omlx/omlx.error.log",
+def test_rapid_mlx_log_paths(manifest):
+    assert manifest.machines["metal"].services["rapid-mlx"].logs == (
+        "/Users/admin/Library/Logs/rapid-mlx/rapid-mlx.log",
+        "/Users/admin/Library/Logs/rapid-mlx/rapid-mlx.error.log",
     )
 
 
-def test_omlx_http_health(manifest):
-    assert manifest.machines["metal"].services["omlx"].health == HttpHealth(url="http://metal:8000/v1/models")
+def test_rapid_mlx_http_health(manifest):
+    assert manifest.machines["metal"].services["rapid-mlx"].health == HttpHealth(url="http://metal:8000/v1/models")
 
 
 def test_mlx_audio_tcp_health(manifest):
@@ -71,7 +71,7 @@ def test_bluebubbles_password_fields(manifest):
 
 def test_oneshot_flag(manifest):
     assert manifest.machines["metal"].services["agent-vault-provision"].oneshot is True
-    assert manifest.machines["metal"].services["omlx"].oneshot is False
+    assert manifest.machines["metal"].services["rapid-mlx"].oneshot is False
 
 
 def test_pf_refresh_daemons_are_resident(manifest):
@@ -102,13 +102,13 @@ def test_unknown_health_kind_raises_manifest_error():
 
 
 def test_service_is_frozen(manifest):
-    svc = manifest.machines["metal"].services["omlx"]
+    svc = manifest.machines["metal"].services["rapid-mlx"]
     assert isinstance(svc, Service)
     with pytest.raises((AttributeError, TypeError)):
         svc.port = 1  # type: ignore[misc]
 
 
 def test_launchd_ref_target_and_plist_path(manifest):
-    omlx = manifest.machines["metal"].services["omlx"]
-    assert omlx.launchd.target == "system/org.nixos.omlx"
-    assert omlx.launchd.plist_path == "/Library/LaunchDaemons/org.nixos.omlx.plist"
+    rapid_mlx = manifest.machines["metal"].services["rapid-mlx"]
+    assert rapid_mlx.launchd.target == "system/org.nixos.rapid-mlx"
+    assert rapid_mlx.launchd.plist_path == "/Library/LaunchDaemons/org.nixos.rapid-mlx.plist"

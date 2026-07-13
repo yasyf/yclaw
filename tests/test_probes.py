@@ -12,7 +12,7 @@ pytestmark = pytest.mark.anyio
 
 
 def test_parse_launchctl_top_level_only(fixtures_dir):
-    text = (fixtures_dir / "launchctl-print-omlx.txt").read_text()
+    text = (fixtures_dir / "launchctl-print-rapid-mlx.txt").read_text()
     fields = probes._parse_launchctl(text)
     assert fields["state"] == "running"
     assert fields["pid"] == "12056"
@@ -22,16 +22,16 @@ def test_parse_launchctl_top_level_only(fixtures_dir):
 
 
 async def test_launchd_state_running_passes(manifest, fixtures_dir, monkeypatch):
-    text = (fixtures_dir / "launchctl-print-omlx.txt").read_text()
+    text = (fixtures_dir / "launchctl-print-rapid-mlx.txt").read_text()
 
     async def fake_run(machine, command, *, timeout=30, capture=True):
-        assert command == "launchctl print system/org.nixos.omlx"
+        assert command == "launchctl print system/org.nixos.rapid-mlx"
         return RemoteResult(0, text, "")
 
     monkeypatch.setattr(probes.remote, "run", fake_run)
     metal = manifest.machines["metal"]
-    result = await probes.launchd_state(metal, metal.services["omlx"])
-    assert result == ProbeResult("omlx", Status.PASS, "state=running pid=12056 last-exit=1")
+    result = await probes.launchd_state(metal, metal.services["rapid-mlx"])
+    assert result == ProbeResult("rapid-mlx", Status.PASS, "state=running pid=12056 last-exit=1")
 
 
 async def test_launchd_state_missing_service_fails(manifest, monkeypatch):
@@ -40,7 +40,7 @@ async def test_launchd_state_missing_service_fails(manifest, monkeypatch):
 
     monkeypatch.setattr(probes.remote, "run", fake_run)
     metal = manifest.machines["metal"]
-    result = await probes.launchd_state(metal, metal.services["omlx"])
+    result = await probes.launchd_state(metal, metal.services["rapid-mlx"])
     assert result.status is Status.FAIL
     assert "exited 113" in result.detail
 
@@ -270,7 +270,7 @@ async def test_service_health_http_dispatches(manifest):
 
     metal = manifest.machines["metal"]
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        result = await probes.service_health(metal, metal.services["omlx"], client=client)
+        result = await probes.service_health(metal, metal.services["rapid-mlx"], client=client)
     assert result == ProbeResult("http://metal:8000/v1/models", Status.PASS, "HTTP 200")
 
 

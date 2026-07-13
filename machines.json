@@ -1,5 +1,5 @@
 {
-  "_comment": "CANONICAL machines manifest — the single source of truth for the yclaw fleet's nodes, services, tailnet tags, virtiofs shares, keychain services, and host state paths. Consumed by THREE readers: (1) bash via jq (scripts/lib/manifest.sh: manifest_get / manifest_list), (2) nix via builtins.fromJSON, (3) the future yclaw Python CLI. Ports here MIRROR tailnet/policy.hujson (hermes->metal tcp:8000,8765,8317,14321,14322 and hermes->bluebubbles tcp:443) — keep the two in sync; darwin/metal.nix DERIVES its pf anchor port set from here. Health kind=http is used ONLY for endpoints verified to answer an unauthenticated GET (omlx /v1/models, agent-vault /v1/mitm/ca.pem); every other port is kind=tcp (reachability only). Debloat label lists are per-node: darwin/metal.nix derives its disable loops from debloat.metal, scripts/bluebubbles-setup.sh copies debloat.bluebubbles VERBATIM — bluebubbles is a deliberate SUBSET of metal, never merge them.",
+  "_comment": "CANONICAL machines manifest — the single source of truth for the yclaw fleet's nodes, services, tailnet tags, virtiofs shares, keychain services, and host state paths. Consumed by THREE readers: (1) bash via jq (scripts/lib/manifest.sh: manifest_get / manifest_list), (2) nix via builtins.fromJSON, (3) the future yclaw Python CLI. Ports here MIRROR tailnet/policy.hujson (hermes->metal tcp:8000,8765,8317,14321,14322 and hermes->bluebubbles tcp:443) — keep the two in sync; darwin/metal.nix DERIVES its pf anchor port set from here. Health kind=http is used ONLY for endpoints verified to answer an unauthenticated GET (rapid-mlx /v1/models, agent-vault /v1/mitm/ca.pem); every other port is kind=tcp (reachability only). Debloat label lists are per-node: darwin/metal.nix derives its disable loops from debloat.metal, scripts/bluebubbles-setup.sh copies debloat.bluebubbles VERBATIM — bluebubbles is a deliberate SUBSET of metal, never merge them.",
   "machines": {
     "metal": {
       "os": "macos",
@@ -10,13 +10,13 @@
       "admin_pass_keychain": "yclaw-metal-admin-pass",
       "shares": ["metalsecrets", "agentvault", "hfhub", "mlxaudio", "cliproxy", "repo"],
       "services": {
-        "omlx": {
-          "launchd": { "domain": "system", "label": "org.nixos.omlx" },
+        "rapid-mlx": {
+          "launchd": { "domain": "system", "label": "org.nixos.rapid-mlx" },
           "port": 8000,
           "health": { "kind": "http", "url": "http://metal:8000/v1/models" },
           "logs": [
-            "/Users/admin/Library/Logs/omlx/omlx.log",
-            "/Users/admin/Library/Logs/omlx/omlx.error.log"
+            "/Users/admin/Library/Logs/rapid-mlx/rapid-mlx.log",
+            "/Users/admin/Library/Logs/rapid-mlx/rapid-mlx.error.log"
           ]
         },
         "mlx-audio": {

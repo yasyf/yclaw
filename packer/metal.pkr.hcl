@@ -1,5 +1,5 @@
 # Packer template: the macOS "metal" guest (cirruslabs/tart) — the locked-down, SIP-on
-# credential + AI services VM (omlx, mlx-audio STT, CLIProxyAPI, agent-vault). Holds no
+# credential + AI services VM (rapid-mlx, mlx-audio STT, CLIProxyAPI, agent-vault). Holds no
 # iMessage/BlueBubbles. Clones the cirruslabs SIP-ON vanilla Tahoe base, installs Nix, and
 # PRE-BUILDS `darwinConfigurations.metal` (darwin/metal.nix) into the image's store.
 #
@@ -59,8 +59,9 @@ source "tart-cli" "metal" {
   # metal runs the 35B MLX model + the STT model + the Go services, so it is the heavy node.
   # 48 GB leaves a ~42 GB GPU wired cap (hw.memsize - 6 GB, darwin/metal.nix). Sizing is
   # measured, not guessed (2026-07 qmlx/Rapid-MLX evaluation): on a 32 GB guest (~26 GB cap)
-  # a resident 20 GB model thrashes — 0.025 tok/s and a macOS kernel-panic warning — and omlx
-  # only fit by idle-unloading. 48 GB holds the model, KV, and the co-resident STT model.
+  # a resident 20 GB model thrashes — 0.025 tok/s and a macOS kernel-panic warning — and the
+  # retired omlx engine only fit by idle-unloading, which rapid-mlx (model resident from startup)
+  # has no equivalent of. 48 GB holds the model, KV, and the co-resident STT model.
   cpu_count    = 10
   memory_gb    = 48
   disk_size_gb = 200
@@ -84,8 +85,8 @@ build {
   }
 
   # Install Nix (Determinate) and PRE-BUILD metal's system closure WITHOUT activating it.
-  # `darwin-rebuild build` validates darwin/metal.nix and bakes the whole closure (omlx, the
-  # mlx-audio STT venv, the nix-built cliproxy + agent-vault, the pf/app-firewall lockdown,
+  # `darwin-rebuild build` validates darwin/metal.nix and bakes the whole closure (the rapid-mlx
+  # + STT service wrappers, the nix-built cliproxy + agent-vault, the pf/app-firewall lockdown,
   # sops-nix) into the image's store, but does NOT run activation — activation copies the age key
   # and decrypts sops from the runtime-only metalsecrets share, so the `switch` is deferred to
   # first boot (metal-activate.sh below). Build from the flake on GitHub: the vanilla base has no
@@ -96,16 +97,10 @@ build {
     inline = [
       "set -euo pipefail",
       # The vanilla base has no Homebrew (only the cirruslabs *-base images add it on top), but
-      # metal's nix-darwin config uses the homebrew module (omlx is a brew formula) — which aborts
-      # activation if brew is absent. Install it (NONINTERACTIVE for the non-tty packer shell).
+      # metal's nix-darwin config uses the homebrew module (python@3.14 + tailscale are brew
+      # formulae) — which aborts activation if brew is absent. Install it (NONINTERACTIVE for the
+      # non-tty packer shell).
       "NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"",
-      # omlx's Homebrew tap lives at github.com/jundot/omlx, NOT the default `homebrew-omlx` repo
-      # `brew tap jundot/omlx` would clone (that 404s). Pre-tap with the explicit clone URL so the
-      # nix-darwin homebrew module's `brew bundle` (taps = [\"jundot/omlx\"]) finds it already present.
-      "/opt/homebrew/bin/brew tap jundot/omlx https://github.com/jundot/omlx",
-      # Homebrew refuses to install formulae from an untrusted third-party tap; trust it so the
-      # nix-darwin homebrew module's `brew install omlx` succeeds.
-      "/opt/homebrew/bin/brew trust jundot/omlx",
       "curl -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm",
       # The Determinate installer writes /etc/{zshenv,zshrc,zprofile,bashrc} to put Nix on the
       # non-interactive PATH, but nix-darwin's activation also manages those and aborts rather than

@@ -28,7 +28,7 @@
   // East-west reachability (modern `grants` syntax). hermes initiates the model/credential and
   // REST flows; bluebubbles initiates exactly ONE flow back — the new-message webhook to hermes:
   //   * hermes -> metal: the credential/AI service ports (cli-proxy 8317, agent-vault 14321/14322,
-  //     omlx 8000, STT 8765) — mirrors the metal pf anchor's allowed port set.
+  //     rapid-mlx 8000, STT 8765) — mirrors the metal pf anchor's allowed port set.
   //   * hermes -> bluebubbles: the BlueBubbles REST API, served over tailnet HTTPS on :443.
   //   * bluebubbles -> hermes: the BlueBubbles webhook POSTs new-message events to hermes-agent's
   //     webhook server on :8645 (BLUEBUBBLES_WEBHOOK_PORT in nixos/hermes.nix). Without this the

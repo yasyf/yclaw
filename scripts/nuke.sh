@@ -26,10 +26,10 @@ while IFS= read -r d; do
 done <<< "$wipe_subdirs"
 rm -f "$state"/secrets.sops.yaml* "$state/values.env"
 if [ "${WIPE_MODELS:-0}" = "1" ]; then
-  rm -rf "$state/hf" "$state/omlx" "$HOME/.cache/huggingface/hub"
+  rm -rf "$state/hf" "$HOME/.cache/huggingface/hub"
   echo "nuke: dropped model caches (WIPE_MODELS=1) — redeploy will re-download ~20 GB"
 else
-  echo "nuke: preserved model caches ($state/{hf,omlx}, ~/.cache/huggingface/hub); set WIPE_MODELS=1 to drop them"
+  echo "nuke: preserved model caches ($state/hf, ~/.cache/huggingface/hub); set WIPE_MODELS=1 to drop them"
 fi
 # The hermes node-config share source, so a fresh hermes can't re-seed stale secrets.
 rm -rf "$HOME/.config/yclaw/vm-secrets"

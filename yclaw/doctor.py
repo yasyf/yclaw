@@ -67,7 +67,7 @@ async def _cross_vm_curl(hermes: Machine) -> ProbeResult:
     result = await remote.run(hermes, "curl -sf --max-time 8 http://metal:8000/v1/models", timeout=15)
     passed = result.returncode == 0
     return ProbeResult(
-        "hermes→metal:8000 (omlx)", Status.PASS if passed else Status.FAIL, f"curl exit {result.returncode}"
+        "hermes→metal:8000 (rapid-mlx)", Status.PASS if passed else Status.FAIL, f"curl exit {result.returncode}"
     )
 
 

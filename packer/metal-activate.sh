@@ -34,7 +34,7 @@ export HOME="${HOME:-/var/root}" USER="${USER:-root}"
 # `darwin-rebuild activate` does no flake/GitHub access; set the system profile first (activate does
 # not set it). All services are UserName=admin system daemons, so activation has NO `launchctl
 # asuser` user-agent step (which aborts headless with no GUI session) — it runs the Homebrew bundle
-# (omlx + tailscale) and postActivation (tailscaled install-system-daemon + the tailnet join).
+# (python@3.14 + tailscale) and postActivation (tailscaled install-system-daemon + the tailnet join).
 TOPLEVEL="@@METAL_TOPLEVEL@@"
 nix-env -p /nix/var/nix/profiles/system --set "$TOPLEVEL" || echo "metal-activate: nix-env --set returned non-zero"
 

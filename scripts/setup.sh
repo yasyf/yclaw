@@ -45,7 +45,7 @@ TART_BIN="/opt/homebrew/bin/tart"
 LOGS_DIR="$HOME_DIR/Library/Logs/Tart"
 
 # The host's REGULAR Hugging Face hub cache (NOT the state tree). metal mounts this as the
-# `hfhub` share and serves models (omlx + STT) from it, so host and VM share ONE model cache and
+# `hfhub` share and serves models (rapid-mlx + STT) from it, so host and VM share ONE model cache and
 # `hf download` on the host lands where the VM reads. Only the `hub/` subdir is shared — the
 # sibling `token` file stays on the host and never enters the VM.
 HF_HUB_DIR="${HF_HOME:-$HOME_DIR/.cache/huggingface}/hub"
@@ -165,7 +165,7 @@ chmod 700 "$NODE_CONFIG_DIR"
 # metal.nix's preActivation + sops.defaultSopsFile point under /Volumes/My Shared Files/metalsecrets.
 #
 # metal runs HEADLESS (--no-graphics): it holds ONLY the credential + AI services and NO
-# iMessage, so it needs no host-side GUI window. omlx's Metal GPU works headless from the
+# iMessage, so it needs no host-side GUI window. rapid-mlx's Metal GPU works headless from the
 # UserName=admin system daemons — no auto-login or aqua session required (verified; packer passes
 # VM_AUTOLOGIN=drop for metal). The repo is shared
 # read-only at /Volumes/My Shared Files/repo so the in-guest nix-darwin can rebuild itself

@@ -98,9 +98,9 @@ def test_wait_service_polls_launchd_state(monkeypatch):
         return ProbeResult(service.name, Status.PASS, "state=running")
 
     monkeypatch.setattr(probes, "launchd_state", fake_launchd)
-    result = CliRunner().invoke(main, ["wait", "service", "metal", "omlx"])
+    result = CliRunner().invoke(main, ["wait", "service", "metal", "rapid-mlx"])
     assert result.exit_code == 0
-    assert seen == {"service": "omlx"}
+    assert seen == {"service": "rapid-mlx"}
 
 
 def test_wait_service_polls_systemd_state(monkeypatch):

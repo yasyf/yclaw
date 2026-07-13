@@ -13,7 +13,8 @@ from .dispatch import resolve_machine, resolve_service, run
 from .manifest import Machine, Service, load_manifest
 from .probes import Status
 
-HEALTH_TIMEOUT = 30.0
+# Must cover rapid-mlx's model load: ~101 s measured cold-start to LISTEN on metal.
+HEALTH_TIMEOUT = 150.0
 HEALTH_INTERVAL = 2.0
 
 

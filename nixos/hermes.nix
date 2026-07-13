@@ -326,10 +326,10 @@ in
     settings = {
       # ── Model plane (direct to metal) ──
       # gpt-5.5 + gemini → cliproxy :8317,
-      # Qwen → omlx :8000. Bare `metal` resolves via MagicDNS and is in NO_PROXY, so these
+      # Qwen → rapid-mlx :8000. Bare `metal` resolves via MagicDNS and is in NO_PROXY, so these
       # stay DIRECT (no agent-vault MITM hop). cliproxy's :8317 is pf-gated AND enforces its
       # api-keys allowlist (bearerless requests 401), so both cliproxy entries present the
-      # static bearer via key_env; omlx :8000 needs no key.
+      # static bearer via key_env; rapid-mlx :8000 needs no key.
       model = {
         provider = "custom";
         default = "gpt-5.5";

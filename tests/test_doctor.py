@@ -142,7 +142,7 @@ def test_doctor_live_hermes_up_checks_proxy_without_leaking_token(monkeypatch):
     assert "routes through av_agt_…@metal:14322" in result.output
     assert "SECRET123" not in result.output
     assert "hermes doctor" in result.output
-    assert "hermes→metal:8000 (omlx)" in result.output
+    assert "hermes→metal:8000 (rapid-mlx)" in result.output
 
 
 def test_doctor_help():

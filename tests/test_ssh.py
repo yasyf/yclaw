@@ -34,9 +34,9 @@ def test_ssh_multiple_args_shlex_joined(monkeypatch):
         return _completed(argv, 0, b"", b"")
 
     monkeypatch.setattr(anyio, "run_process", fake)
-    result = CliRunner().invoke(main, ["ssh", "metal", "launchctl", "print", "system/org.nixos.omlx"])
+    result = CliRunner().invoke(main, ["ssh", "metal", "launchctl", "print", "system/org.nixos.rapid-mlx"])
     assert result.exit_code == 0
-    assert seen[0][-1] == "launchctl print system/org.nixos.omlx"
+    assert seen[0][-1] == "launchctl print system/org.nixos.rapid-mlx"
 
 
 def test_ssh_user_override(monkeypatch):

@@ -6,10 +6,11 @@ the shortest correct path for an operator who already has the repo cloned.
 
 ## Prerequisites
 
-- An **Apple Silicon** Mac. `metal` is sized for the 35B MLX model (`unsloth--Qwen3.6-35B-A3B-UD-MLX-4bit`):
+- An **Apple Silicon** Mac. `metal` is sized for the 35B MLX model (`unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit`):
   a 48 GB-RAM guest whose ~42 GB GPU wired cap holds the model, KV cache, and the STT model
-  resident. A 32 GB guest measured out too tight; the model only fit via omlx's idle-unload.
-  On a smaller Mac, point `qwen` in `nixos/models.nix` at a smaller model.
+  resident. A 32 GB guest measured out too tight for the always-resident model — rapid-mlx
+  loads it at startup and never unloads. On a smaller Mac, point `qwen` in
+  `nixos/models.nix` at a smaller model.
 - Host tooling on `PATH`: `tart`, `tailscale`, `gum`, `packer`, `restic`, plus
   `age-keygen`, `sops`, `openssl`, `jq`, `python3`, `security`, `rsync`, `curl`,
   and `nix` (the hermes image builds inside a Linux builder VM). `just bootstrap`
@@ -197,7 +198,7 @@ destroying and rebuilding a VM.
 | `hosts/<host>/secrets.sops.yaml` | that host's encrypted bundle (only its own secrets, per `nixos/secrets-manifest.json`) | **No** (without that host's key) |
 | `agent-vault/` | credential-broker DB: owner account, static keys, the Google OAuth refresh token, minted agent tokens | **No** — re-provisioning re-mints tokens hermes would need re-injected |
 | `cli-proxy-api/auth/` | Codex/Gemini OAuth sessions | Yes — re-run the `--login` flows |
-| `hf/`, `omlx/` | model weights + KV cache (~20–25 GB) | Yes — re-downloaded on demand |
+| `hf/` | model weights (~20–25 GB) | Yes — re-downloaded on demand |
 | `mlx-audio/` | the STT server venv | Yes — rebuilt on first STT start |
 | `hermes/` | hermes agent state (honcho memory, sessions), externalized from the VM's `/var/lib/hermes` | **No** — agent memory and sessions survive only via this share |
 
@@ -206,7 +207,7 @@ and bundle) and `agent-vault/`.
 
 ## Back up and restore
 
-`just backup` wraps restic, skipping the large regenerable caches (`hf/`, `omlx/`,
+`just backup` wraps restic, skipping the large regenerable caches (`hf/`,
 `mlx-audio/`). Set the repo and password first — `YCLAW_RESTIC_REPO` is a B2/S3
 URL or a local/NAS path:
 
@@ -293,7 +294,7 @@ the virtiofs automount, and the sops decrypt all happen at boot, not at
 2. Reboot the guest: `tailscale ssh root@metal -- reboot`. Expect it back on
    the tailnet in ~25 s (`uv run yclaw wait ssh metal`).
 3. Run the daemon battery on the rebooted guest:
-   - every `org.nixos.*` daemon is running: `launchctl print system/org.nixos.omlx`
+   - every `org.nixos.*` daemon is running: `launchctl print system/org.nixos.rapid-mlx`
      (and the rest of the labels in `machines.json`);
    - the provision oneshot's last exit was 0;
    - agent-vault answers: `curl -fs http://127.0.0.1:14321/health` (from the

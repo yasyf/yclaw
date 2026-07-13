@@ -102,6 +102,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the tailnet over the Tailscale API. The next `just bootstrap` regenerates the rest.
 
 ### Changed
+- metal's LLM daemon swapped from omlx to rapid-mlx 0.10.9: 25.9 tok/s decode vs omlx's 8.6
+  on the same weights and VM. The KV cache is pinned to int8 over rapid-mlx's int4 default
+  (tool-call fidelity on the agent lane), and pflash is off — it lossily compresses prompts
+  (measured 2994 → 2304 tokens), unacceptable for tool calling. Prefix caching is a no-op on
+  the hybrid GatedDeltaNet model in both engines' disk caches, so omlx's ~4 s warm-context
+  reuse is traded for the ~3× decode. `nixos/models.nix` now carries the real slashed HF id
+  (`unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit`) instead of omlx's `--`-mangled form; the model
+  loads at startup (~101 s) and stays resident — no idle-TTL unload.
 - The metal VM is sized at 48 GB RAM (`packer/metal.pkr.hcl`). An interim shrink to 32 GB
   (~26 GB GPU wired cap) measured out untenable in the 2026-07 qmlx/Rapid-MLX evaluation —
   a resident 20 GB model thrashes the cap (0.025 tok/s, a macOS kernel-panic warning) and

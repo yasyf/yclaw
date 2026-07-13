@@ -21,8 +21,8 @@ of host-specific identity and lets the same artifact serve any tailnet.
   (`darwinConfigurations.metal` / `darwin/metal.nix`). It is the sole credential
   custodian and runs only the credential and inference services — **no iMessage**.
   Four OpenAI-compatible services bind tailnet-only:
-  - **omlx** (`:8000`) — local Qwen MLX inference, with per-model idle-TTL unload
-    after 1800s of inactivity.
+  - **rapid-mlx** (`:8000`) — local Qwen MLX inference; the single model loads at
+    startup (~101 s) and stays resident — no idle unload.
   - **mlx-audio** (`:8765`) — `ibm-granite/granite-speech-4.1-2b` STT, lazy-loaded
     and idle-unloaded.
   - **cliproxy** (`:8317`) — CLIProxyAPI: Codex/Gemini OAuth in, a static key out.
@@ -67,12 +67,12 @@ Gemini) is held only by cliproxy — those refresh tokens are single-use and
 rotate, so a second holder would mutually revoke them.
 
 Model traffic is a deliberate `NO_PROXY` exclusion and goes direct: hermes calls
-metal's cliproxy (`http://metal:8317`) and omlx (`http://metal:8000`) without the
+metal's cliproxy (`http://metal:8317`) and rapid-mlx (`http://metal:8000`) without the
 agent-vault hop. cliproxy **enforces** its inbound static bearer — a call without
 it is a 401 — so hermes presents it on every model call via
 `key_env = "CLIPROXY_API_KEY"` (cliproxy's own API-key allowlist entry). That key and
 `BLUEBUBBLES_PASSWORD` (BlueBubbles is the other `NO_PROXY` case) are the two
-tailnet-internal credentials hermes holds — neither is an upstream API key. omlx
+tailnet-internal credentials hermes holds — neither is an upstream API key. rapid-mlx
 (`:8000`) needs no key; the pf gate scoping `:8317` to hermes + the host is a
 second, independent layer.
 
@@ -152,13 +152,13 @@ All persistent state and secrets live in `~/.yclaw/state`, never in the repo:
   so each VM decrypts only what it owns. `hermes` and `metal` get bundles; `bluebubbles` owns none.
 - `agent-vault/` — the broker's credential store.
 - `cli-proxy-api/auth/` — the cliproxy OAuth tokens.
-- `hf/` and `omlx/` — the model caches (~20–25 GB), regenerable on demand.
+- `hf/` — the model weights cache (~20–25 GB), regenerable on demand.
 - `mlx-audio/` — the STT venv.
 - `hermes/` — the externalized agent state (honcho memory, sessions).
 
 The irreplaceable set is everything under `hosts/` (every per-host key and bundle) plus
 `agent-vault/`: lose those and you cannot decrypt or re-broker anything. `just backup` runs a
-`restic` backup of `~/.yclaw/state`, excluding the regenerable `hf/`, `omlx/`, and
+`restic` backup of `~/.yclaw/state`, excluding the regenerable `hf/` and
 `mlx-audio/` caches. Restore is `restic restore latest`, then `just setup` to
 rebuild the caches and re-boot the guests. Secrets decrypt at runtime; nothing
 secret is committed or written to the world-readable Nix store.

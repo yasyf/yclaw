@@ -334,15 +334,14 @@ fi
 
 # --- 8c. download the Qwen model into the shared HF hub cache ----------------
 
-# The model the agent serves (omlx on metal) lives in the host's REGULAR HF hub cache, which metal
+# The model the agent serves (rapid-mlx on metal) lives in the host's REGULAR HF hub cache, which metal
 # mounts as the `hfhub` virtiofs share (scripts/setup.sh) — host and VM share one cache, so the
 # download lands exactly where the VM reads. `hf download` is idempotent (skips files already
-# present). models.nix stores the id in HF cache-dir form (org--repo); the first `--` becomes the
-# repo-id `/`. Public model — no HF token needed (the token never enters the VM regardless).
+# present). models.nix stores the real HF repo id (org/repo). Public model — no HF token needed
+# (the token never enters the VM regardless).
 QWEN_ID="$(rg -o 'qwen = "[^"]+"' nixos/models.nix | sed -E 's/qwen = "(.*)"/\1/')"
-QWEN_REPO="${QWEN_ID/--//}"
-log "Downloading model $QWEN_REPO into the shared HF hub cache (${HF_HOME:-$HOME/.cache/huggingface}/hub) ..."
-hf download "$QWEN_REPO"
+log "Downloading model $QWEN_ID into the shared HF hub cache (${HF_HOME:-$HOME/.cache/huggingface}/hub) ..."
+hf download "$QWEN_ID"
 
 # --- 9. human gates ----------------------------------------------------------
 

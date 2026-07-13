@@ -62,17 +62,17 @@ if printf '%s' "${dockergrp##*:}" | tr ',' '\n' | grep -qx hermes; then no "herm
 else ok "hermes is not a docker-group member (members: ${dockergrp##*:})"; fi
 manual "Confirm the DENY trail: \`tailscale ssh admin@hermes -- journalctl -u hermes-docker-proxy --no-pager | grep DENY\` shows the three refusals above."
 
-# --- 3. M2 omlx/STT tailnet bind ---------------------------------------------
+# --- 3. M2 rapid-mlx/STT tailnet bind ---------------------------------------------
 
-hdr "3. M2 omlx/STT bound to the tailnet IP, not loopback/vmnet"
-if "${hermes_ssh[@]}" curl -sf --max-time 8 http://metal:8000/v1/models >/dev/null 2>&1; then ok "hermes → metal:8000 (omlx) answers"
-else no "hermes → metal:8000 (omlx) did not answer"; fi
+hdr "3. M2 rapid-mlx/STT bound to the tailnet IP, not loopback/vmnet"
+if "${hermes_ssh[@]}" curl -sf --max-time 8 http://metal:8000/v1/models >/dev/null 2>&1; then ok "hermes → metal:8000 (rapid-mlx) answers"
+else no "hermes → metal:8000 (rapid-mlx) did not answer"; fi
 metal_tsip="$("${metal_ssh[@]}" /opt/homebrew/bin/tailscale ip -4 2>/dev/null | head -1 || true)"
 listen="$("${metal_ssh[@]}" lsof -nP -iTCP:8000 -iTCP:8765 -sTCP:LISTEN 2>/dev/null || true)"
-if [[ -n "$metal_tsip" ]] && grep -q "$metal_tsip:" <<<"$listen"; then ok "omlx/STT listen on metal's tailnet IP ($metal_tsip)"
-else no "omlx/STT not confirmed on the tailnet IP (metal_tsip=${metal_tsip:-none})"; fi
-if grep -qE '\*:(8000|8765)|127\.0\.0\.1:(8000|8765)' <<<"$listen"; then no "omlx/STT also listen on wildcard/loopback"
-else ok "omlx/STT do not listen on wildcard/loopback"; fi
+if [[ -n "$metal_tsip" ]] && grep -q "$metal_tsip:" <<<"$listen"; then ok "rapid-mlx/STT listen on metal's tailnet IP ($metal_tsip)"
+else no "rapid-mlx/STT not confirmed on the tailnet IP (metal_tsip=${metal_tsip:-none})"; fi
+if grep -qE '\*:(8000|8765)|127\.0\.0\.1:(8000|8765)' <<<"$listen"; then no "rapid-mlx/STT also listen on wildcard/loopback"
+else ok "rapid-mlx/STT do not listen on wildcard/loopback"; fi
 
 # --- 4. Per-VM crypto isolation ----------------------------------------------
 
@@ -141,9 +141,9 @@ for L in com.apple.ReportCrash.Root com.apple.spindump; do
   if grep -qE "\"$L\"[[:space:]]*=>[[:space:]]*(disabled|true)" <<<"$mdis"; then no "$L is disabled (local crash diagnostics must stay ENABLED)"
   else ok "$L left enabled (local crash diagnostics preserved)"; fi
 done
-# Slimming did not break the compute plane — omlx still answers over the tailnet.
-if "${hermes_ssh[@]}" curl -sf --max-time 8 http://metal:8000/v1/models >/dev/null 2>&1; then ok "omlx still serves after slimming (metal:8000)"
-else no "omlx does NOT serve after slimming (metal:8000)"; fi
+# Slimming did not break the compute plane — rapid-mlx still answers over the tailnet.
+if "${hermes_ssh[@]}" curl -sf --max-time 8 http://metal:8000/v1/models >/dev/null 2>&1; then ok "rapid-mlx still serves after slimming (metal:8000)"
+else no "rapid-mlx does NOT serve after slimming (metal:8000)"; fi
 manual "bluebubbles slimming (deferred until it rejoins the tailnet): \`tailscale ssh admin@bluebubbles -- launchctl print-disabled system | grep -E 'metadata.mds|analyticsd'\` shows the debloat overrides, and iMessage send/receive still works."
 
 # --- summary -----------------------------------------------------------------

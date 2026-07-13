@@ -64,7 +64,7 @@ just rebuild
 
 Three nodes on your tailnet, reached by Tailscale MagicDNS names:
 
-- **metal** — the locked-down macOS guest and sole credential custodian. Runs the local Qwen inference server (`omlx`), speech-to-text, the Codex/Gemini OAuth proxy (CLIProxyAPI), and the `agent-vault` broker.
+- **metal** — the locked-down macOS guest and sole credential custodian. Runs the local Qwen inference server (`rapid-mlx`), speech-to-text, the Codex/Gemini OAuth proxy (CLIProxyAPI), and the `agent-vault` broker.
 - **bluebubbles** — a separate macOS guest that bridges iMessage. Holds no credentials.
 - **hermes** — the Linux gateway that runs `hermes-agent` in a Docker sandbox. Holds no API credentials and reaches the internet only through `agent-vault` on `metal`; its agent state is backed up off-VM.
 

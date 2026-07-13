@@ -6,7 +6,10 @@ from click.testing import CliRunner
 from yclaw import remote
 from yclaw.cli import main
 
-OMLX_LOGS = "/Users/admin/Library/Logs/omlx/omlx.log /Users/admin/Library/Logs/omlx/omlx.error.log"
+RAPID_MLX_LOGS = (
+    "/Users/admin/Library/Logs/rapid-mlx/rapid-mlx.log "
+    "/Users/admin/Library/Logs/rapid-mlx/rapid-mlx.error.log"
+)
 
 
 def _completed(argv, returncode=0, stdout=b"", stderr=b""):
@@ -18,13 +21,13 @@ def test_logs_darwin_tail_default_lines(monkeypatch):
 
     async def fake(argv, **kwargs):
         seen.append(argv)
-        return _completed(argv, 0, b"==> omlx.log <==\nline\n", b"")
+        return _completed(argv, 0, b"==> rapid-mlx.log <==\nline\n", b"")
 
     monkeypatch.setattr(anyio, "run_process", fake)
-    result = CliRunner().invoke(main, ["logs", "metal", "omlx"])
+    result = CliRunner().invoke(main, ["logs", "metal", "rapid-mlx"])
     assert result.exit_code == 0
-    assert seen[0] == ["tailscale", "ssh", "root@metal", "--", f"tail -n 50 {OMLX_LOGS}"]
-    assert "==> omlx.log <==" in result.output
+    assert seen[0] == ["tailscale", "ssh", "root@metal", "--", f"tail -n 50 {RAPID_MLX_LOGS}"]
+    assert "==> rapid-mlx.log <==" in result.output
 
 
 def test_logs_darwin_tail_custom_lines(monkeypatch):
@@ -35,9 +38,9 @@ def test_logs_darwin_tail_custom_lines(monkeypatch):
         return _completed(argv, 0, b"", b"")
 
     monkeypatch.setattr(anyio, "run_process", fake)
-    result = CliRunner().invoke(main, ["logs", "metal", "omlx", "-n", "5"])
+    result = CliRunner().invoke(main, ["logs", "metal", "rapid-mlx", "-n", "5"])
     assert result.exit_code == 0
-    assert seen[0][-1] == f"tail -n 5 {OMLX_LOGS}"
+    assert seen[0][-1] == f"tail -n 5 {RAPID_MLX_LOGS}"
 
 
 def test_logs_darwin_follow_streams_with_F(monkeypatch):
@@ -49,9 +52,9 @@ def test_logs_darwin_follow_streams_with_F(monkeypatch):
         raise SystemExit(0)
 
     monkeypatch.setattr(remote, "stream", fake_stream)
-    result = CliRunner().invoke(main, ["logs", "metal", "omlx", "-f", "-n", "10"])
+    result = CliRunner().invoke(main, ["logs", "metal", "rapid-mlx", "-f", "-n", "10"])
     assert result.exit_code == 0
-    assert called == {"name": "metal", "command": f"tail -n 10 -F {OMLX_LOGS}"}
+    assert called == {"name": "metal", "command": f"tail -n 10 -F {RAPID_MLX_LOGS}"}
 
 
 def test_logs_hermes_journalctl(monkeypatch):
@@ -89,8 +92,8 @@ def test_logs_bluebubbles_is_usage_error():
 def test_logs_no_service_lists_services():
     result = CliRunner().invoke(main, ["logs", "metal"])
     assert result.exit_code == 0
-    assert "omlx" in result.output
-    assert "/Users/admin/Library/Logs/omlx/omlx.log" in result.output
+    assert "rapid-mlx" in result.output
+    assert "/Users/admin/Library/Logs/rapid-mlx/rapid-mlx.log" in result.output
     assert "metal-boot-setup" in result.output
 
 

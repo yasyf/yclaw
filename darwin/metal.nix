@@ -4,7 +4,7 @@
 # metal is the SIP-ON, MAX-LOCKED credential + AI services VM — one of three guests on the
 # bare-macOS host (alongside `bluebubbles` and `hermes`), with its own tailnet node. It holds
 # ALL credentials and serves four OpenAI-compatible services over the tailnet:
-#   omlx        :8000   local Qwen (replaces mlx_lm.server)
+#   rapid-mlx   :8000   local Qwen (replaces omlx)
 #   mlx-audio   :8765   STT, ibm-granite/granite-speech-4.1-2b (replaces parakeet)
 #   cliproxy    :8317   CLIProxyAPI, Codex/Gemini OAuth -> static key
 #   agent-vault :14321  credential broker API  + :14322 transparent MITM proxy
@@ -95,7 +95,7 @@ let
   servicesYaml = ../nixos/vault-services.yaml;
 
   # The shared HF hub cache: metal mounts the host's regular ~/.cache/huggingface/hub here (the
-  # `hfhub` share, scripts/setup.sh). omlx + STT read models from it via HF_HUB_CACHE — host and
+  # `hfhub` share, scripts/setup.sh). rapid-mlx + STT read models from it via HF_HUB_CACHE — host and
   # VM share ONE cache, so `hf download` on the host is what the VM serves. The host's HF token
   # stays on the host (only the `hub/` subdir is shared, never the sibling `token` file).
   hfHubCache = "/Volumes/My Shared Files/hfhub";
@@ -147,27 +147,40 @@ let
   # Wrappers: launchd has no EnvironmentFile, so each wrapper sources the secret/env it needs
   # and exec's the absolute binary. The daemons run as `adminUser` so they read the admin-owned
   # sops secrets; MLX/Metal GPU works headless from a daemon context — no login session needed.
-  # omlx discovers the model from the shared HF hub cache (HF_HUB_CACHE → the `hfhub` share, the
-  # host's regular cache) via --hf-cache (default on); no --model-dir (verified: serving the 35B
-  # this way cold-loads in ~14s).
-  omlxWrapper = pkgs.writeShellScript "metal-omlx" ''
+  # rapid-mlx loads its single model at startup and holds it resident (no idle-unload; model
+  # load → LISTEN takes ~101 s on the 35B — size health waits accordingly). It reads the model
+  # from the shared HF hub cache (HF_HUB_CACHE → the `hfhub` share, the host's regular cache);
+  # HF_HUB_OFFLINE=1 because the weights are pre-placed by the human `hf download` gate — a
+  # missing model must fail loud, never re-download.
+  rapidMlxWrapper = pkgs.writeShellScript "metal-rapid-mlx" ''
     set -euo pipefail
     ${mkDaemonPreamble {
       shares = [ hfHubCache ];
     }}
     export HF_HUB_CACHE=${lib.escapeShellArg hfHubCache}
-    mkdir -p ${lib.escapeShellArg "${home}/Library/Caches/omlx-kv"}
+    export HF_HUB_OFFLINE=1
     # Bind to THIS node's tailnet (CGNAT 100.64.0.0/10) IPv4 instead of 0.0.0.0, so the port is never
     # exposed on the vmnet LAN bridge even if the pf anchor is down — the pf anchor (scoped to
     # hermes's resolved tailnet IP) stays the PRIMARY gate; this is the bind-layer backstop (M2).
     # wait_tailscale_ip fails LOUD on exhaustion (a service bound to nothing is useless); set -e
     # aborts and KeepAlive restarts the wrapper to retry once tailscaled is up.
     TSIP="$(wait_tailscale_ip)"
-    exec /opt/homebrew/bin/omlx serve \
+    VENV=${lib.escapeShellArg "${home}/.venvs/rapid-mlx"}
+    if [ ! -x "$VENV/bin/rapid-mlx" ]; then
+      mkdir -p "$(dirname "$VENV")"
+      /opt/homebrew/opt/python@3.14/bin/python3.14 -m venv "$VENV"
+      "$VENV/bin/python" -m pip install --upgrade pip
+      "$VENV/bin/python" -m pip install 'rapid-mlx==0.10.9'
+    fi
+    # int8 KV over rapid-mlx's int4 default: tool-call fidelity on the agent lane.
+    # --pflash off: pflash lossily compresses prompts (measured 2994→2304 tokens) — breaks tool calls.
+    exec "$VENV/bin/rapid-mlx" serve "${(import ../nixos/models.nix).qwen}" \
       --host "$TSIP" --port 8000 \
-      --memory-guard balanced \
-      --paged-ssd-cache-dir ${lib.escapeShellArg "${home}/Library/Caches/omlx-kv"} \
-      --hot-cache-max-size 8GB
+      --max-num-seqs 1 \
+      --kv-cache-dtype int8 \
+      --pflash off \
+      --default-temperature 0.6 --default-top-p 0.95 --default-top-k 20 \
+      --default-repetition-penalty 1.05
   '';
 
   # mlx-audio's own multi-threaded `mlx_audio.server` crashes granite-speech with
@@ -186,7 +199,7 @@ let
     }}
     export HF_HUB_CACHE=${lib.escapeShellArg hfHubCache}
     export STT_MODEL=${(import ../nixos/models.nix).stt} STT_PORT=8765
-    # Tailnet-only bind (M2) — see the omlx wrapper.
+    # Tailnet-only bind (M2) — see the rapid-mlx wrapper.
     TSIP="$(wait_tailscale_ip)"
     export STT_HOST="$TSIP"
     VENV=${lib.escapeShellArg sttVenv}
@@ -298,7 +311,7 @@ let
   # anchor can never drift from it. builtins.fromJSON sorts attrsets, so the manifest's service
   # order is pinned here by name to keep the historical port order.
   pfPortServices = [
-    "omlx"
+    "rapid-mlx"
     "mlx-audio"
     "cliproxy"
     "agent-vault"
@@ -523,9 +536,9 @@ in
     DisableConsoleAccess = true;
   };
 
-  # --- Homebrew (omlx + OSS Tailscale) -----------------------------------------
+  # --- Homebrew (rapid-mlx's venv python + OSS Tailscale) ----------------------
   # cleanup="none" keeps untracked packages; autoUpdate=false keeps `switch` idempotent.
-  # omlx is the jundot/omlx FORMULA (bin /opt/homebrew/bin/omlx); tailscale is the OSS CLI
+  # python@3.14 is the keg the rapid-mlx wrapper builds its venv from; tailscale is the OSS CLI
   # (the tailscaled daemon is brew-managed; `tailscale up` runs at activation, below).
   homebrew = {
     enable = true;
@@ -533,9 +546,8 @@ in
       cleanup = "none";
       autoUpdate = false;
     };
-    taps = [ "jundot/omlx" ];
     brews = [
-      "omlx"
+      "python@3.14"
       "tailscale"
     ];
   };
@@ -547,7 +559,7 @@ in
   # The age key is copied from the share to /var/lib/sops-nix/key.txt by copyAgeKey (below),
   # which runs in preActivation — BEFORE sops-nix decrypts in postActivation.
   #
-  # The cliproxy/omlx/STT/agent-vault wrappers run as the `admin` GUI user, so the secrets they
+  # The cliproxy/rapid-mlx/STT/agent-vault wrappers run as the `admin` GUI user, so the secrets they
   # source are owned by admin (the default 0400 root-only would be unreadable by a user agent).
   sops = {
     defaultSopsFile = "${metalSecrets}/secrets.sops.yaml";
@@ -566,15 +578,15 @@ in
   # system daemons loads them in the global context (no GUI session) while still running as the
   # admin uid, so they read the admin-owned sops secrets.
   # MLX/Metal GPU compute is verified to work headless from a daemon context (no login session),
-  # so omlx/mlx-audio do NOT need a GUI session. All ProgramArguments are absolute (launchd does
+  # so rapid-mlx/mlx-audio do NOT need a GUI session. All ProgramArguments are absolute (launchd does
   # not use PATH or expand ~). RunAtLoad + KeepAlive = restart-always, except the provision oneshot.
-  launchd.daemons.omlx.serviceConfig = {
-    ProgramArguments = wait4path [ "${omlxWrapper}" ];
+  launchd.daemons.rapid-mlx.serviceConfig = {
+    ProgramArguments = wait4path [ "${rapidMlxWrapper}" ];
     UserName = adminUser;
     RunAtLoad = true;
     KeepAlive = true;
-    StandardOutPath = "${logs}/omlx/omlx.log";
-    StandardErrorPath = "${logs}/omlx/omlx.error.log";
+    StandardOutPath = "${logs}/rapid-mlx/rapid-mlx.log";
+    StandardErrorPath = "${logs}/rapid-mlx/rapid-mlx.error.log";
   };
 
   launchd.daemons.mlx-audio.serviceConfig = {
@@ -624,7 +636,7 @@ in
   # postActivation (below) sets the Metal wired cap, enables pf, and scopes the anchor to hermes +
   # the host — but activation runs only on `darwin-rebuild`, NOT at boot, and all three reset on reboot:
   #   * iogpu.wired_limit_mb is a runtime sysctl that reverts to the macOS default (~36 GB) on boot,
-  #     too small for the 35B model + KV cache, so omlx would fail/OOM on first serve.
+  #     too small for the 35B model + KV cache, so rapid-mlx would fail/OOM on first serve.
   #   * macOS's boot-time com.apple.pfctl loads /etc/pf.conf (so the `metal` anchor rules are present)
   #     but never ENABLES pf, so the gate would sit inert after a reboot (including the
   #     auto-security-update reboots this module keeps on), exposing the credential services.
@@ -680,7 +692,7 @@ in
     fi
   '';
 
-  # Metal working-set cap, omlx idle-unload, pf tailnet-only anchor, app-firewall allowlist
+  # Metal working-set cap, one-time omlx cleanup, pf tailnet-only anchor, app-firewall allowlist
   # (normal priority — none need a decrypted secret), then the tailscale join (mkAfter, so it
   # runs after sops-nix installs the authkey, which it also appends via mkAfter to this hook).
   # Idempotent throughout.
@@ -692,24 +704,16 @@ in
       wired=$(( $(/usr/sbin/sysctl -n hw.memsize)/1048576 - 6144 ))
       /usr/sbin/sysctl iogpu.wired_limit_mb=$wired || true
 
-      # omlx idle-unload: merge idle_timeout into ~/.omlx/settings.json (created by omlx on first
-      # serve; JSON). Write as the admin user so ownership stays correct.
-      OMLX_DIR=${lib.escapeShellArg "${home}/.omlx"}
-      SETTINGS="$OMLX_DIR/settings.json"
-      mkdir -p "$OMLX_DIR"
-      if [ -s "$SETTINGS" ]; then
-        ${pkgs.jq}/bin/jq '.idle_timeout.idle_timeout_seconds = 1800' "$SETTINGS" > "$SETTINGS.tmp"
-      else
-        echo '{}' | ${pkgs.jq}/bin/jq '.idle_timeout.idle_timeout_seconds = 1800' > "$SETTINGS.tmp"
-      fi
-      mv "$SETTINGS.tmp" "$SETTINGS"
-      chown -R ${adminUser} "$OMLX_DIR"
+      # One-time cleanup of the retired omlx engine (replaced by rapid-mlx 2026-07-12): its
+      # settings/state, SSD KV cache, logs, and app-firewall allowlist entry.
+      rm -rf ${lib.escapeShellArg "${home}/.omlx"} ${lib.escapeShellArg "${home}/Library/Caches/omlx-kv"} ${lib.escapeShellArg "${logs}/omlx"}
+      /usr/libexec/ApplicationFirewall/socketfilterfw --remove /opt/homebrew/bin/omlx >/dev/null 2>&1 || true
 
       # The service daemons run as `admin` and log under admin's ~/Library/Logs; launchd needs each
       # StandardOutPath's parent dir to exist, so pre-create them owned by admin.
-      mkdir -p ${lib.escapeShellArg "${logs}/omlx"} ${lib.escapeShellArg "${logs}/mlx-audio"} \
+      mkdir -p ${lib.escapeShellArg "${logs}/rapid-mlx"} ${lib.escapeShellArg "${logs}/mlx-audio"} \
         ${lib.escapeShellArg "${logs}/cliproxy"} ${lib.escapeShellArg "${logs}/agent-vault"}
-      chown ${adminUser} ${lib.escapeShellArg "${logs}/omlx"} ${lib.escapeShellArg "${logs}/mlx-audio"} \
+      chown ${adminUser} ${lib.escapeShellArg "${logs}/rapid-mlx"} ${lib.escapeShellArg "${logs}/mlx-audio"} \
         ${lib.escapeShellArg "${logs}/cliproxy"} ${lib.escapeShellArg "${logs}/agent-vault"}
 
       # pf anchor — scope the five service ports to hermes (resolved by hostname) + the host admin IP.
@@ -746,10 +750,10 @@ in
       "$FW" --setglobalstate on >/dev/null 2>&1 || true
       "$FW" --setstealthmode on >/dev/null 2>&1 || true
       "$FW" --setloggingmode on >/dev/null 2>&1 || true
-      # Allowlist the ACTUAL listening binaries. omlx and the STT wrapper each serve from a Python
-      # framework interpreter (the process renames itself to "omlx-server" via setproctitle, but the
-      # kernel — and socketfilterfw — see the interpreter), so allowlist the Homebrew python
-      # framework (omlx) and the CommandLineTools python framework (STT) by glob: version-agnostic
+      # Allowlist the ACTUAL listening binaries. rapid-mlx and the STT wrapper each serve from a
+      # Python framework interpreter (the venv pythons are symlinks — the kernel, and
+      # socketfilterfw, see the interpreter), so allowlist the Homebrew python framework
+      # (rapid-mlx) and the CommandLineTools python framework (STT) by glob: version-agnostic
       # and robust across brew/CLT upgrades. cli-proxy-api/agent-vault are the real nix-store
       # listeners; tailscaled is allowlisted so direct (non-DERP) inbound and tailscale-ssh survive.
       # pf above is the real tailnet-only gate; this allowlist is per-app defense-in-depth.
@@ -770,7 +774,6 @@ in
       for BIN in \
         /opt/homebrew/opt/python@*/Frameworks/Python.framework/Versions/*/Resources/Python.app/Contents/MacOS/Python \
         /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/*/Resources/Python.app/Contents/MacOS/Python \
-        /opt/homebrew/bin/omlx \
         ${pkgs.cli-proxy-api}/bin/cli-proxy-api \
         ${pkgs.agent-vault}/bin/agent-vault \
         /opt/homebrew/bin/tailscaled; do

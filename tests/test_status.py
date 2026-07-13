@@ -46,7 +46,7 @@ def test_status_metal_renders_exact_table(monkeypatch):
 
     expected_rows = [
         ["metal", "(node)", "up", DASH, "online, ping ok"],
-        ["metal", "omlx", "ok", "ok", "st-omlx; hp-omlx"],
+        ["metal", "rapid-mlx", "ok", "ok", "st-rapid-mlx; hp-rapid-mlx"],
         ["metal", "mlx-audio", "ok", "fail", "st-mlx-audio; hp-mlx-audio"],
         ["metal", "cliproxy", "fail", "ok", "st-cliproxy; hp-cliproxy"],
         ["metal", "agent-vault", "ok", "ok", "st-agent-vault; hp-agent-vault"],
@@ -79,7 +79,7 @@ def test_status_node_online_ping_failed_still_probes_services(monkeypatch):
     node_row = next(line for line in lines if "(node)" in line)
     assert "up" in node_row
     assert "ping failed (derp-only or stale disco)" in node_row
-    assert any(line.startswith("metal") and "omlx" in line for line in lines)
+    assert any(line.startswith("metal") and "rapid-mlx" in line for line in lines)
     assert any(line.startswith("metal") and "share:metalsecrets" in line for line in lines)
 
 

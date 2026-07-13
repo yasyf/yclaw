@@ -8,7 +8,7 @@ granite-speech with "RuntimeError: There is no Stream(gpu, 1) in current thread"
 path is correct, so this wrapper drives it directly. The model lazy-loads on the
 first request and unloads after STT_IDLE_TTL seconds of inactivity to free unified
 memory — both load and unload run on the same worker thread that owns the GPU
-stream, mirroring omlx's idle-TTL behaviour on :8000.
+stream.
 """
 import asyncio
 import concurrent.futures

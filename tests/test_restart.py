@@ -19,10 +19,10 @@ def test_restart_launchd_kickstart(monkeypatch):
 
     monkeypatch.setattr(remote, "run", fake_run)
     monkeypatch.setattr(probes, "service_health", _health_pass)
-    result = CliRunner().invoke(main, ["restart", "metal", "omlx"])
+    result = CliRunner().invoke(main, ["restart", "metal", "rapid-mlx"])
     assert result.exit_code == 0
-    assert seen == ["launchctl kickstart -k system/org.nixos.omlx"]
-    assert "restarted omlx on metal" in result.output
+    assert seen == ["launchctl kickstart -k system/org.nixos.rapid-mlx"]
+    assert "restarted rapid-mlx on metal" in result.output
     assert "healthy" in result.output
 
 
@@ -45,9 +45,9 @@ def test_restart_kickstart_not_loaded_points_to_bounce(monkeypatch):
         return RemoteResult(3, "", "Could not find service\n")
 
     monkeypatch.setattr(remote, "run", fake_run)
-    result = CliRunner().invoke(main, ["restart", "metal", "omlx"])
+    result = CliRunner().invoke(main, ["restart", "metal", "rapid-mlx"])
     assert result.exit_code == 1
-    assert "yclaw bounce metal omlx" in result.stderr
+    assert "yclaw bounce metal rapid-mlx" in result.stderr
 
 
 def test_bounce_order_bootout_poll_bootstrap(monkeypatch):
@@ -61,14 +61,14 @@ def test_bounce_order_bootout_poll_bootstrap(monkeypatch):
 
     monkeypatch.setattr(remote, "run", fake_run)
     monkeypatch.setattr(probes, "service_health", _health_pass)
-    result = CliRunner().invoke(main, ["bounce", "metal", "omlx"])
+    result = CliRunner().invoke(main, ["bounce", "metal", "rapid-mlx"])
     assert result.exit_code == 0
     assert seen == [
-        "launchctl bootout system/org.nixos.omlx",
-        "launchctl print system/org.nixos.omlx",
-        "launchctl bootstrap system /Library/LaunchDaemons/org.nixos.omlx.plist",
+        "launchctl bootout system/org.nixos.rapid-mlx",
+        "launchctl print system/org.nixos.rapid-mlx",
+        "launchctl bootstrap system /Library/LaunchDaemons/org.nixos.rapid-mlx.plist",
     ]
-    assert "bounced omlx on metal" in result.output
+    assert "bounced rapid-mlx on metal" in result.output
 
 
 def test_bounce_retries_while_loaded_then_bootstraps_once_drained(monkeypatch):
@@ -89,15 +89,15 @@ def test_bounce_retries_while_loaded_then_bootstraps_once_drained(monkeypatch):
 
     monkeypatch.setattr(remote, "run", fake_run)
     monkeypatch.setattr(probes, "service_health", _health_pass)
-    result = CliRunner().invoke(main, ["bounce", "metal", "omlx"])
+    result = CliRunner().invoke(main, ["bounce", "metal", "rapid-mlx"])
     assert result.exit_code == 0
     assert seen == [
-        "launchctl bootout system/org.nixos.omlx",
-        "launchctl print system/org.nixos.omlx",
-        "launchctl print system/org.nixos.omlx",
-        "launchctl bootstrap system /Library/LaunchDaemons/org.nixos.omlx.plist",
+        "launchctl bootout system/org.nixos.rapid-mlx",
+        "launchctl print system/org.nixos.rapid-mlx",
+        "launchctl print system/org.nixos.rapid-mlx",
+        "launchctl bootstrap system /Library/LaunchDaemons/org.nixos.rapid-mlx.plist",
     ]
-    assert "bounced omlx on metal" in result.output
+    assert "bounced rapid-mlx on metal" in result.output
 
 
 def test_bounce_fails_loudly_when_label_never_drains(monkeypatch):
@@ -113,13 +113,13 @@ def test_bounce_fails_loudly_when_label_never_drains(monkeypatch):
 
     monkeypatch.setattr(remote, "run", fake_run)
     monkeypatch.setattr(probes, "service_health", _health_pass)
-    result = CliRunner().invoke(main, ["bounce", "metal", "omlx"])
+    result = CliRunner().invoke(main, ["bounce", "metal", "rapid-mlx"])
     assert result.exit_code == 1
     assert seen == [
-        "launchctl bootout system/org.nixos.omlx",
-        "launchctl print system/org.nixos.omlx",
-        "launchctl print system/org.nixos.omlx",
-        "launchctl print system/org.nixos.omlx",
+        "launchctl bootout system/org.nixos.rapid-mlx",
+        "launchctl print system/org.nixos.rapid-mlx",
+        "launchctl print system/org.nixos.rapid-mlx",
+        "launchctl print system/org.nixos.rapid-mlx",
     ]
     assert not any(c.startswith("launchctl bootstrap") for c in seen)
     assert "still loaded" in result.stderr
