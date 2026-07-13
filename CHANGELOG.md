@@ -102,9 +102,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the tailnet over the Tailscale API. The next `just bootstrap` regenerates the rest.
 
 ### Changed
-- The metal VM shrinks from 48 GB to 32 GB RAM (`packer/metal.pkr.hcl`). The derived GPU
-  wired cap (~26 GB) still fits the 20 GB 35B model + KV cache; only the two largest
-  models can no longer be resident at the same time.
+- The metal VM is sized at 48 GB RAM (`packer/metal.pkr.hcl`). An interim shrink to 32 GB
+  (~26 GB GPU wired cap) measured out untenable in the 2026-07 qmlx/Rapid-MLX evaluation —
+  a resident 20 GB model thrashes the cap (0.025 tok/s, a macOS kernel-panic warning) and
+  omlx only fit by idle-unloading — so 48 GB (~42 GB cap) is restored, with headroom for
+  the model, KV cache, and the co-resident STT model. The live VM was resized in place
+  (`tart set metal --memory 49152`); the wired cap derives from guest RAM automatically.
 - Renamed the cliproxy inbound-bearer secret from `aperture/static-key` /
   `APERTURE_STATIC_KEY` to `cliproxy/api-key` / `CLIPROXY_API_KEY` across the manifest,
   metal.nix + its cliproxy config template placeholder, hermes' `key_env`, `secrets.sh`,

@@ -6,9 +6,10 @@ the shortest correct path for an operator who already has the repo cloned.
 
 ## Prerequisites
 
-- An **Apple Silicon** Mac. `metal` is sized for the 35B MLX model (`unsloth--Qwen3.6-35B-A3B-UD-MLX-4bit`),
-  which fits inside the ~26 GB GPU wired cap of a 32 GB-RAM guest. On a smaller Mac,
-  point `qwen` in `nixos/models.nix` at a smaller model.
+- An **Apple Silicon** Mac. `metal` is sized for the 35B MLX model (`unsloth--Qwen3.6-35B-A3B-UD-MLX-4bit`):
+  a 48 GB-RAM guest whose ~42 GB GPU wired cap holds the model, KV cache, and the STT model
+  resident. A 32 GB guest measured out too tight; the model only fit via omlx's idle-unload.
+  On a smaller Mac, point `qwen` in `nixos/models.nix` at a smaller model.
 - Host tooling on `PATH`: `tart`, `tailscale`, `gum`, `packer`, `restic`, plus
   `age-keygen`, `sops`, `openssl`, `jq`, `python3`, `security`, `rsync`, `curl`,
   and `nix` (the hermes image builds inside a Linux builder VM). `just bootstrap`

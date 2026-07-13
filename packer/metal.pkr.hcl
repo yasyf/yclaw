@@ -57,10 +57,12 @@ source "tart-cli" "metal" {
   vm_base_name = "ghcr.io/cirruslabs/macos-tahoe-vanilla@sha256:e12d678b248f3122e276fa64632970a8e1c6dc60ff6738d21fe9bfa5ea58f426"
   vm_name      = "metal"
   # metal runs the 35B MLX model + the STT model + the Go services, so it is the heavy node.
-  # 32 GB leaves a ~26 GB GPU wired cap (hw.memsize - 6 GB, darwin/metal.nix) — fits the 20 GB
-  # 35B model + KV; the two large models are just never resident simultaneously.
+  # 48 GB leaves a ~42 GB GPU wired cap (hw.memsize - 6 GB, darwin/metal.nix). Sizing is
+  # measured, not guessed (2026-07 qmlx/Rapid-MLX evaluation): on a 32 GB guest (~26 GB cap)
+  # a resident 20 GB model thrashes — 0.025 tok/s and a macOS kernel-panic warning — and omlx
+  # only fit by idle-unloading. 48 GB holds the model, KV, and the co-resident STT model.
   cpu_count    = 10
-  memory_gb    = 32
+  memory_gb    = 48
   disk_size_gb = 200
   ssh_username = var.vm_admin_user
   # The vanilla base ships admin/admin; reset-admin-password.sh sets the real var.vm_admin_pass

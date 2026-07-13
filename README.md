@@ -91,7 +91,7 @@ Exit codes are scriptable: 0 clean, 1 FAIL, 2 usage, 4 Tailscale check-wall, 5 t
 
 ## Hardware
 
-Apple Silicon only. `metal` is sized for a 35B MLX model (~26 GB of wired GPU memory on a 32 GB guest) — on a smaller Mac, point it at a smaller model in `nixos/models.nix`. Budget ~20-25 GB for the model cache on top of the VM disks, and expect a long first boot while macOS installs and the models download.
+Apple Silicon only. `metal` is sized for a 35B MLX model (~42 GB of wired GPU memory on a 48 GB guest) — on a smaller Mac, point it at a smaller model in `nixos/models.nix`. Budget ~20-25 GB for the model cache on top of the VM disks, and expect a long first boot while macOS installs and the models download.
 
 ## More on yclaw
 
