@@ -120,25 +120,49 @@ def tick(sandbox: HostPfSandbox) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_tick_renders_the_to_self_lockdown_under_000(tmp_path: Path) -> None:
+def test_tick_renders_the_bridge_ingress_lockdown_under_000(tmp_path: Path) -> None:
     sandbox = make_sandbox(tmp_path)
     proc = tick(sandbox)
     assert proc.returncode == 0, proc.stderr
 
     loaded = (sandbox.cap / "loaded.com.apple.000.yclaw.host").read_text()
-    assert "block drop in quick on bridge101 from 192.168.64.0/24 to self" in loaded
-    assert "block drop in quick on bridge101 inet6 from any to self" in loaded
+    # The ingress block keys `from any`, never the subnet: a root-capable guest spoofing a source
+    # outside 192.168.64.0/24 must still die on it (and `self` spans both address families, so the
+    # one rule replaces the old subnet-source v4 + inet6 pair).
+    self_block = "block drop in quick on bridge101 from any to self"
+    assert self_block in loaded
+    assert "block drop in quick on bridge101 from 192.168.64.0/24 to self" not in loaded
+    assert "block drop in quick on bridge101 inet from any to 224.0.0.0/4" in loaded
+    assert "block drop in quick on bridge101 from any to 255.255.255.255" in loaded
+    assert "block drop in quick on bridge101 from any to 192.168.64.255" in loaded
+    assert "block drop in quick on bridge101 inet6 from any to ff00::/8" in loaded
     assert "pass out quick on bridge101 to 192.168.64.0/24 keep state" in loaded
     assert "pass in quick on bridge101 proto udp from 192.168.64.0/24 to 192.168.64.1 port { 53, 67, 68 }" in loaded
     assert "pass in quick on bridge101 proto tcp from 192.168.64.0/24 to 192.168.64.1 port 53" in loaded
-    assert "pass in quick proto tcp from { 100.100.0.1, fd7a:115c:a1e0::1 } to any port { 8000, 8765 }" in loaded
+    metal_pass = "pass in quick proto tcp from { 100.100.0.1, fd7a:115c:a1e0::1 } to any port { 8000, 8765 }"
+    assert metal_pass in loaded
 
     # The WireGuard carve-out (fleet->gateway UDP on the pinned tailscaled port) admits direct vmnet
     # magicsock; it MUST precede the to-self block (pf quick = first-match) or the block would swallow it.
     carveout = "pass in quick on bridge101 proto udp from 192.168.64.0/24 to 192.168.64.1 port 41641"
     assert carveout in loaded
-    assert loaded.index(carveout) < loaded.index("block drop in quick on bridge101 from 192.168.64.0/24 to self")
-    assert "block drop in quick on bridge101 from 192.168.64.0/24 to 192.168.64.1" not in loaded
+    assert loaded.index(carveout) < loaded.index(self_block)
+    assert "block drop in quick on bridge101 from any to 192.168.64.1" not in loaded
+
+    # DHCP DISCOVER (the one legitimate to-broadcast flow) must outrank the broadcast block.
+    discover = "pass in quick on bridge101 proto udp from 0.0.0.0 to 255.255.255.255 port 67"
+    assert discover in loaded
+    assert loaded.index(discover) < loaded.index("block drop in quick on bridge101 from any to 255.255.255.255")
+
+    # Bridge group before fleet group: a bridge packet forging metal's tailnet source must die on
+    # the to-self block before the model-port pass (which polices the decrypted utunN path, where
+    # rule order still puts the metal pass ahead of the fleet-wide block) can see it.
+    assert loaded.index(self_block) < loaded.index(metal_pass)
+    fleet_block = (
+        "block drop in quick from { 100.100.0.1, fd7a:115c:a1e0::1, 100.100.0.2, fd7a:115c:a1e0::2,"
+        " 100.100.0.3, fd7a:115c:a1e0::3 } to any"
+    )
+    assert loaded.index(metal_pass) < loaded.index(fleet_block)
 
     assert (sandbox.cap / "load-calls").read_text() == "com.apple/000.yclaw.host\n"
     assert 'load anchor "com.apple/000.yclaw.host" from' in sandbox.pfconf.read_text()

@@ -383,8 +383,13 @@ PLIST
   #   3. BLOCK — LAN-IP side-door to any 0.0.0.0-bound host listener, from metal AND hermes:
   #        tailscale ssh metal  -- curl -sS --max-time 5 http://LAN:PORT/            -> timeout
   #        tailscale ssh hermes -- curl -sS --max-time 5 http://LAN:PORT/            -> timeout
-  #   4. COUNTERS — both `block drop ... to self` rules incremented across 2-3:
+  #   4. COUNTERS — the `block drop ... from any to self` rule incremented across 2-3:
   #        pfctl -a com.apple/000.yclaw.host -v -sr
+  #   5. RESIDUAL — the WG carve-out trusts the port pin, but --port is a preference, not a
+  #      reservation: on a bind collision tailscaled silently falls back to a random port, and
+  #      the carve-out then admits fleet datagrams to whatever process DOES own the pinned port.
+  #      Confirm ownership before relying on the carve-out:
+  #        sudo lsof -nP -iUDP:41641   -> the owning command must be tailscaled
 }
 
 # --- arg dispatch --------------------------------------------------------------

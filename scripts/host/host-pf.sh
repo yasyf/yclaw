@@ -5,9 +5,11 @@
 # reaches anything else on the host over the tailnet, and the vmnet side-door is shut: Darwin's
 # weak-host model answers a bridge-ingress packet addressed to ANY host address — the bridge
 # gateway 192.168.64.1, the LAN IP, even the tailnet IP over a forced VM route — past both the
-# tailnet ACL and the tailnet-IP rules. Personal devices and non-fleet traffic never match —
-# every rule is keyed on the resolved fleet addresses or the fleet's vmnet subnet, never a
-# CGNAT-wide source. A single carve-out passes fleet->gateway UDP on the host's pinned tailscaled
+# tailnet ACL and the tailnet-IP rules, and a root-capable guest can forge ANY source address, so
+# the bridge blocks key `from any` (dests: self + multicast + broadcast) and the whole bridge
+# group evaluates before the fleet rules. Personal devices and non-fleet traffic never match —
+# every rule is keyed on the resolved fleet addresses or scoped to the fleet-only vmnet bridge,
+# never a CGNAT-wide source. A single carve-out passes fleet->gateway UDP on the host's pinned tailscaled
 # port (WG_PORT) so host<->fleet magicsock can land the sub-ms 192.168.64.x path instead of the
 # LAN-reflexive hairpin or DERP; it admits ONLY encrypted WireGuard, so it never touches the model
 # plane (pf polices the decrypted 100.x tunnel on utunN independently — see the carve-out comment).
@@ -53,6 +55,7 @@ MARKER="$YCLAW_LIB/host-pf.last-ok"
 # rather than hardcoding bridgeN.
 VMNET_HOST=192.168.64.1
 VMNET_NET=192.168.64.0/24
+VMNET_BCAST=192.168.64.255
 
 # The host tailscaled is pinned to this UDP port (--port in its LaunchDaemon plist); setup.sh bakes
 # it from machines.json host.wireguard_port. Pinning lets the vmnet carve-out below be a static rule
@@ -94,42 +97,59 @@ VMNET_IF="$(ifconfig | awk -v ip="$VMNET_HOST" \
 RULES=$(mktemp) || { echo "host-pf: ERROR mktemp failed for pf rules" >&2; exit 1; }
 {
   echo "# Generated at runtime by host-pf.sh (fleet VMs resolved live by tailnet hostname)."
-  echo "# Keyed on bare fleet IPs, both address families: pf cannot match tailnet tags (that policy"
-  echo "# lives in tailnet/policy.hujson), and no \`on utunN\` scope — the utun unit is dynamic across"
-  echo "# tailscaled restarts, the metal anchor (the prior art) keys on bare IPs too, and an unscoped"
-  echo "# IP block is strictly tighter (it also drops a spoofed fleet source arriving on vmnet)."
-  echo "# The pass out is load-bearing: host-initiated flows to the fleet (tailscale ssh, yclaw"
-  echo "# probes, bootstrap) get state entries, and pf consults state BEFORE rules, so fleet replies"
-  echo "# to those flows never reach the block."
-  echo "pass out quick to $FLEET keep state"
-  echo "pass in quick proto tcp from { $METAL4, $METAL6 } to any port $PORTS"
-  echo "block drop in quick from $FLEET to any"
-  echo "# vmnet side-door: Darwin's weak-host model answers a bridge-ingress packet addressed to ANY"
-  echo "# host address — the gateway $VMNET_HOST, the LAN IP, even the tailnet IP over a forced VM"
-  echo "# route — so the block's dest is pf's \`self\` (every address on every host interface,"
-  echo "# re-expanded at each tick's load), not just $VMNET_HOST. NAT'd VM->internet traffic arrives"
-  echo "# on $VMNET_IF with a PUBLIC destination — never in \`self\` — so the fleet's egress falls"
-  echo "# through untouched. DHCP renews (67/68; the initial DISCOVER is 0.0.0.0->255.255.255.255"
-  echo "# and matches neither pass nor block — broadcast is not \`self\`) and DNS (53) stay open"
-  echo "# against the host-side vmnet daemons, dest-scoped to the gateway. The pass out keeps"
-  echo "# host-initiated vmnet flows (packer image builds, \`yclaw vm ssh\` pre-tailnet) alive: pf's"
-  echo "# implicit default pass creates NO state, so their replies to $VMNET_HOST would otherwise"
-  echo "# die on the block."
+  echo "# Bridge group FIRST, fleet group second: a root-capable guest can put ANY source address on"
+  echo "# the bridge — one outside $VMNET_NET slips a subnet-keyed block, and a forged metal tailnet"
+  echo "# source would hit the fleet model-port pass — so every bridge-ingress packet is adjudicated"
+  echo "# by these \`on $VMNET_IF\` rules (ingress blocks keyed \`from any\`) before a fleet-IP rule"
+  echo "# can see it. The fleet rules police the DECRYPTED tunnel path (utunN), whose packets never"
+  echo "# arrive on $VMNET_IF."
+  echo "#"
+  echo "# The pass out keeps host-initiated vmnet flows (packer image builds, \`yclaw vm ssh\`"
+  echo "# pre-tailnet) alive: pf's implicit default pass creates NO state, so their replies to"
+  echo "# $VMNET_HOST would otherwise die on the to-self block. DNS (53) and DHCP renews (67/68)"
+  echo "# stay open against the host-side vmnet daemons, dest-scoped to the gateway."
   echo "pass out quick on $VMNET_IF to $VMNET_NET keep state"
   echo "pass in quick on $VMNET_IF proto udp from $VMNET_NET to $VMNET_HOST port { 53, 67, 68 }"
   echo "pass in quick on $VMNET_IF proto tcp from $VMNET_NET to $VMNET_HOST port 53"
   echo "# WireGuard/disco to the host's pinned magicsock port ($WG_PORT). This admits ONLY encrypted"
   echo "# WireGuard ciphertext, so it does NOT reopen the side-door: pf filters the transport"
   echo "# (this bridge, UDP $WG_PORT) and the decrypted tunnel (utunN, 100.x sources) independently —"
-  echo "# every decrypted fleet packet still hits the fleet-IP block above and the tailnet ACL. This"
+  echo "# every decrypted fleet packet still hits the fleet-IP block below and the tailnet ACL. This"
   echo "# is what lets host<->fleet magicsock land the sub-ms 192.168.64.x path; with it, the block's"
   echo "# \`to self\` deny on the LAN hairpin below FORCES the clean vmnet endpoint to win over 192.168.1.x."
   echo "pass in quick on $VMNET_IF proto udp from $VMNET_NET to $VMNET_HOST port $WG_PORT"
-  echo "block drop in quick on $VMNET_IF from $VMNET_NET to self"
-  echo "# An IPv4 source can never match an IPv6 packet, so the guests' link-local v6 needs its own"
-  echo "# family's block against ::-bound host listeners (vmnet v6 is link-local only — no"
-  echo "# DHCPv6/RAs to pass — and neighbor discovery rides multicast dests, which are not \`self\`)."
-  echo "block drop in quick on $VMNET_IF inet6 from any to self"
+  echo "# A fresh guest's DHCP DISCOVER (0.0.0.0 -> 255.255.255.255) is the one legitimate broadcast,"
+  echo "# passed explicitly now that broadcast dests are blocked below. Renewals are unicast to the"
+  echo "# gateway (67/68 above); a REBIND broadcast from an assigned source stays blocked — worst"
+  echo "# case the lease expires and the guest re-DISCOVERs from 0.0.0.0, which this rule passes."
+  echo "pass in quick on $VMNET_IF proto udp from 0.0.0.0 to 255.255.255.255 port 67"
+  echo "# Everything else inbound on the bridge dies here, whatever the source claims. \`self\` is"
+  echo "# every address on every host interface, both families, re-expanded at each tick's load —"
+  echo "# Darwin's weak-host model answers a bridge-ingress packet addressed to ANY of them: the"
+  echo "# gateway $VMNET_HOST, the LAN IP, even the tailnet IP over a forced VM route. Multicast and"
+  echo "# broadcast dests are NOT in \`self\` yet still reach 0.0.0.0/::-bound host listeners (mDNS/"
+  echo "# SSDP responders; every UDP daemon on the subnet broadcast), so they get their own"
+  echo "# dest-scoped blocks; vmnet v6 is link-local only — no DHCPv6/RAs to pass — and blocking"
+  echo "# ff00::/8 (neighbor discovery included) costs nothing since every guest->host v6 dest is"
+  echo "# denied anyway. NAT'd VM->internet traffic arrives on $VMNET_IF with a PUBLIC unicast"
+  echo "# destination — never \`self\`, multicast, or broadcast — so the fleet's egress falls"
+  echo "# through untouched."
+  echo "block drop in quick on $VMNET_IF from any to self"
+  echo "block drop in quick on $VMNET_IF inet from any to 224.0.0.0/4"
+  echo "block drop in quick on $VMNET_IF from any to 255.255.255.255"
+  echo "block drop in quick on $VMNET_IF from any to $VMNET_BCAST"
+  echo "block drop in quick on $VMNET_IF inet6 from any to ff00::/8"
+  echo "# Fleet tailnet rules — keyed on bare fleet IPs, both address families: pf cannot match"
+  echo "# tailnet tags (that policy lives in tailnet/policy.hujson), and no \`on utunN\` scope — the"
+  echo "# utun unit is dynamic across tailscaled restarts, the metal anchor (the prior art) keys on"
+  echo "# bare IPs too, and an unscoped IP block is strictly tighter (a spoofed fleet source arriving"
+  echo "# on vmnet toward a public dest dies here instead of reaching NAT). The pass out is"
+  echo "# load-bearing: host-initiated flows to the fleet (tailscale ssh, yclaw probes, bootstrap)"
+  echo "# get state entries, and pf consults state BEFORE rules, so fleet replies to those flows"
+  echo "# never reach the block."
+  echo "pass out quick to $FLEET keep state"
+  echo "pass in quick proto tcp from { $METAL4, $METAL6 } to any port $PORTS"
+  echo "block drop in quick from $FLEET to any"
 } > "$RULES"
 
 # pf consults the state table BEFORE rules, so a fleet->host connection admitted under the
@@ -183,4 +203,4 @@ fi
 
 date +%s > "$MARKER" || { echo "host-pf: FATAL cannot write enforcement marker $MARKER" >&2; exit 1; }
 
-echo "host-pf: $ANCHOR keyed to metal={$METAL4, $METAL6} hermes=$HERMES4 bluebubbles=$BB4; metal -> host $PORTS allowed; vmnet $VMNET_NET -> self blocked on $VMNET_IF (dhcp+dns open)"
+echo "host-pf: $ANCHOR keyed to metal={$METAL4, $METAL6} hermes=$HERMES4 bluebubbles=$BB4; metal -> host $PORTS allowed; $VMNET_IF ingress from any source blocked to self+multicast+broadcast (dhcp+dns+wg open)"
