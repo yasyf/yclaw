@@ -1,6 +1,7 @@
 # Build the GENERIC hermes gateway image in CI so the host can PULL it (the host runs no Nix).
-# Native aarch64-linux, raw-efi for tart. Only hermes is built here (metal + bluebubbles are
-# macOS guests built locally by packer).
+# Native aarch64-linux, built with systemd-repart in the plain Nix sandbox — no KVM, no VM — so
+# GitHub's `ubuntu-24.04-arm` runners (which have no /dev/kvm) build it fine. Only hermes is built
+# here (metal + bluebubbles are macOS guests built locally by packer).
 #
 # The image carries NO per-machine identity: configs use bare Tailscale MagicDNS names, and
 # per-user secrets/config are injected at first boot via the tart virtiofs share
@@ -46,15 +47,20 @@ jobs:
       - name: Enable Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
 
-      - name: Build hermes raw-efi image
+      # Ubuntu 24.04's AppArmor restricts unprivileged user namespaces; repart's `unshare` needs
+      # them. Lift the knob so the build's fakeroot/unshare works in the sandbox.
+      - name: Allow unprivileged user namespaces (repart's unshare)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Build hermes image
         run: nix build --print-build-logs .#packages.aarch64-linux.hermes-image
 
-      - name: Locate raw-efi image and derive asset name
+      - name: Locate image and derive asset name
         id: img
         run: |
           set -euo pipefail
-          raw="$(find -L result -maxdepth 1 -type f -name '*.img' | head -1)"
-          test -n "$raw" || { echo "no *.img under result/"; ls -lL result; exit 1; }
+          raw="$(find -L result -maxdepth 1 -type f -name '*.raw' | head -1)"
+          test -n "$raw" || { echo "no *.raw under result/"; ls -lL result; exit 1; }
           echo "raw=$raw" >> "$GITHUB_OUTPUT"
           if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
             name="hermes-${GITHUB_REF_NAME}"
@@ -71,19 +77,38 @@ jobs:
           set -uo pipefail
           # A clean build is GENERIC — per-user identity is injected at first boot, never baked.
           # Fail if a high-precision secret pattern leaks into the closure or the ext4 image
-          # (plaintext, so a byte-grep scans the whole baked store). These patterns don't
-          # false-positive on nixpkgs maintainer metadata. Operators can add their own host facts
-          # (tailnet id, hostname, email) via the GENERICITY_BLOCKLIST repo variable, keeping
-          # those strings OUT of this public file.
+          # (plaintext, so a byte-grep scans the whole baked store). Operators can add their own
+          # host facts (tailnet id, hostname, email) via the GENERICITY_BLOCKLIST repo variable,
+          # keeping those strings OUT of this public file.
+          fail=0
+
+          # Scan 1 — closure store-path NAMES. A name is a short package label (no spaces, no key
+          # bodies), so the full high-precision set applies with no false-positive risk.
           pattern='tskey-(auth|api)-[A-Za-z0-9]|sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9]{20}|AKIA[0-9A-Z]{16}|AGE-SECRET-KEY-1|BEGIN [A-Z ]*PRIVATE KEY'
           [ -n "${EXTRA_BLOCKLIST:-}" ] && pattern="$pattern|$EXTRA_BLOCKLIST"
-          fail=0
           echo "== scanning image-closure store-path names =="
           ph="$(nix path-info -r ./result | grep -E "$pattern" || true)"
           if [ -n "$ph" ]; then echo "::error::author-specific string in a closure store-path name:"; echo "$ph"; fail=1; fi
+
+          # Scan 2 — raw image bytes. The image bakes the whole dependency closure, so its pattern
+          # diverges from scan 1 to stay a load-bearing tripwire instead of a noise generator:
+          #  - AGE-SECRET-KEY-1 requires its full 58-char body, so the hermes-agent redaction
+          #    ruleset's own regex SOURCE text ("AGE-SECRET-KEY-1[0-9A-Z]{58}") no longer trips it.
+          #  - AKIA[0-9A-Z]{16} DROPPED: 16 uppercase-alnum after AKIA recurs by chance in any large
+          #    binary (wordlists, base64, WASM) and nothing here uses AWS; GENERICITY_BLOCKLIST still
+          #    catches a known-real value.
+          #  - BEGIN ... PRIVATE KEY DROPPED: the closure bakes hundreds of test-vector PEM keys
+          #    (openssl/cryptography/go-tls/openssh test data) that a line-oriented grep can't tell
+          #    from a real leak; per-host key material is virtiofs-injected at first boot, never
+          #    flake-baked, and GENERICITY_BLOCKLIST still catches a known-real value.
+          # Exact benign residue (all-x doc placeholders in the closure) is stripped by the
+          # committed allowlist; a real sk-/ghp_ token is not whole-line-equal to it and still trips.
+          img_pattern='tskey-(auth|api)-[A-Za-z0-9]|sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9]{20}|AGE-SECRET-KEY-1[0-9A-Z]{58}'
+          [ -n "${EXTRA_BLOCKLIST:-}" ] && img_pattern="$img_pattern|$EXTRA_BLOCKLIST"
           echo "== scanning raw image bytes =="
-          hits="$(LC_ALL=C grep -aoE "$pattern" "$RAW" | sort -u || true)"
+          hits="$(LC_ALL=C grep -aoE "$img_pattern" "$RAW" | sort -u | grep -vFxf .github/genericity-allowlist.txt || true)"
           if [ -n "$hits" ]; then echo "::error::author-specific string baked into the image:"; echo "$hits"; fail=1; fi
+
           test "$fail" -eq 0 || exit 1
           echo "genericity guard passed"
 

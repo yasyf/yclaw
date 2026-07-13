@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Disk-replace FALLBACK for ONE Linux VM (hermes), reserved for REBOOT-CLASS changes —
 # kernel / initrd / bootloader / stateVersion — that an in-guest switch can't apply live.
-# It rebuilds hermes's raw-efi image (with the REAL agent-vault CA baked in) and clonefiles
+# It rebuilds hermes's systemd-repart image (with the REAL agent-vault CA baked in) and clonefiles
 # the fresh disk into the tart VM, then reloads the launchd runner so the new disk boots.
 #
 # PRIMARY hermes redeploy is in-guest `nixos-rebuild switch` via scripts/redeploy.sh — use that
 # for everything that doesn't touch the boot chain; this script only for the reboot-class subset
-# above. Run on the de-Nix'd host: the image builds inside the nested Linux builder VM
+# above. Run on the de-Nix'd host: the image builds inside a throwaway tart Linux builder VM
 # (scripts/build-hermes-image.sh), never via host nix.
 set -euo pipefail
 
@@ -47,7 +47,7 @@ mkdir -p "$build_dir"
 sync_build_mirror "$build_dir"
 printf '%s' "$ca_pem" > "$build_dir/nixos/agent-vault-ca.pem"
 
-# Build the raw-efi image inside the nested Linux builder VM (scripts/build-hermes-image.sh).
+# Build the systemd-repart image inside the tart Linux builder VM (scripts/build-hermes-image.sh).
 # GITHUB_TOKEN authenticates the build's nix flake-input fetches (unauthenticated GitHub API is
 # 60/hr — one hermes closure exhausts it); YCLAW_BUILD_DIR points the build at the staged copy.
 echo "Building hermes image from the build copy ..."

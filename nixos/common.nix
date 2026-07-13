@@ -1,5 +1,5 @@
 # Shared base for every NixOS Linux VM (just hermes now). Booted by tart from a
-# nixos-generators `raw-efi` image.
+# systemd-repart image (nixos/image.nix).
 {
   config,
   lib,
@@ -8,19 +8,18 @@
 }:
 {
   # --- Boot (tart / Apple Virtualization EFI) ----------------------------------
-  # The raw-efi IMAGE provides its own bootloader + root partition at normal priority,
-  # overriding the mkDefault values below. Those defaults exist so the *standalone*
-  # nixosConfiguration (consumed by `nixos-rebuild` and `nix flake check`) is COMPLETE —
-  # without a filesystem + bootloader it fails to evaluate.
-  #   * GRUB EFI + efiInstallAsRemovable → writes \EFI\BOOT\BOOTAA64.EFI, the removable
-  #     path Apple VZ boots (tart's fresh nvram has no Boot#### entry).
-  #   * canTouchEfiVariables = false — REQUIRED by GRUB's efiInstallAsRemovable assertion.
-  #   * console=hvc0 — Apple VZ virtio console (`tart run --serial`); raw-efi also adds ttyS0.
-  boot.loader.grub = {
-    enable = lib.mkDefault true;
-    efiSupport = true;
-    efiInstallAsRemovable = lib.mkDefault true;
-    device = lib.mkDefault "nodev";
+  # systemd-boot, not GRUB: the disk image is built with systemd-repart (no VM), so the
+  # bootloader must be declaratively seedable — the retired make-disk-image VM was what generated
+  # GRUB's config. The image (nixos/image.nix) seeds systemd-boot at the EFI removable path plus a
+  # generation-1 entry; Apple VZ boots that removable path (tart's fresh nvram has no Boot#### entry).
+  # From the first in-guest `nixos-rebuild switch` on, bootctl manages the ESP. This config is
+  # SHARED with the standalone nixosConfiguration (consumed by `nixos-rebuild` + `nix flake check`),
+  # so the image toplevel and the switch toplevel stay bit-identical.
+  #   * canTouchEfiVariables = false → bootctl runs `--no-variables` (VZ nvram is not persisted).
+  #   * console=hvc0 — Apple VZ virtio console (`tart run --serial`).
+  boot.loader.systemd-boot = {
+    enable = true;
+    configurationLimit = 8;
   };
   boot.loader.efi.canTouchEfiVariables = false;
   boot.kernelParams = [ "console=hvc0" ];
@@ -39,6 +38,20 @@
     device = "/dev/disk/by-label/ESP";
     fsType = "vfat";
   };
+
+  # First-boot Nix store-DB registration. repart bakes NO store database (make-disk-image did),
+  # so load it once from the /nix-path-registration image.nix writes into the root partition —
+  # without it the first in-guest `nixos-rebuild switch` has no registered paths to build against.
+  # Guarded on the file, which never exists on an already-provisioned system: a no-op after boot 1.
+  boot.postBootCommands = ''
+    if [ -f /nix-path-registration ]; then
+      set -euo pipefail
+      ${config.nix.package.out}/bin/nix-store --load-db < /nix-path-registration
+      touch /etc/NIXOS
+      ${config.nix.package.out}/bin/nix-env -p /nix/var/nix/profiles/system --set /run/current-system
+      rm -f /nix-path-registration
+    fi
+  '';
 
   # --- Networking --------------------------------------------------------------
   # Bridged networking gives each VM its own LAN IP (tart --net-bridged). DHCP for

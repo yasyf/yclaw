@@ -17,11 +17,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    nixos-generators = {
-      url = "github:nix-community/nixos-generators";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
     sops-nix = {
       url = "github:Mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -52,7 +47,6 @@
       self,
       nixpkgs,
       nix-darwin,
-      nixos-generators,
       sops-nix,
       hermes-agent,
       ...
@@ -113,7 +107,7 @@
       };
 
       # One module list per VM, reused for BOTH the toplevel nixosConfiguration (for
-      # `nixos-rebuild`) AND the raw-efi image (for `tart`), so the two never drift.
+      # `nixos-rebuild`) AND the systemd-repart image (for `tart`), so the two never drift.
       hermesModules = [
         overlayModuleLinux
         hermes-agent.nixosModules.default
@@ -122,14 +116,15 @@
         ./nixos/hermes.nix
       ];
 
+      # Build the disk image via systemd-repart (nixos/image.nix) rather than a KVM VM, so CI's
+      # KVM-less aarch64 runners can build it. The image reuses the exact hermesModules toplevel.
       mkImage =
         modules:
-        nixos-generators.nixosGenerate {
+        (nixpkgs.lib.nixosSystem {
           system = linuxSystem;
-          format = "raw-efi";
           specialArgs = { inherit inputs; };
-          inherit modules;
-        };
+          modules = modules ++ [ ./nixos/image.nix ];
+        }).config.system.build.image;
     in
     {
       overlays.default = overlayLinux;
@@ -164,6 +159,9 @@
         agent-vault = pkgsLinux.agent-vault;
         hermes-docker-proxy = pkgsLinux.hermes-docker-proxy;
         hermes-image = mkImage hermesModules;
+        # Local-only: same image with a known root password for scratch-VM boot validation.
+        # Never built or published by CI — it must not reach a released asset.
+        hermes-image-scratch = mkImage (hermesModules ++ [ ./nixos/scratch-login.nix ]);
       };
 
       packages.${darwinSystem} = {

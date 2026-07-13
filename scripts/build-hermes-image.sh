@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# Build the aarch64-linux hermes raw-efi image WITHOUT Nix on the de-Nix'd host.
+# Build the aarch64-linux hermes image WITHOUT Nix on the de-Nix'd host.
 #
 # CANONICAL PATH IS CI. .github/workflows/build-images.yml builds this image natively on a
-# GitHub `ubuntu-24.04-arm` runner (which exposes /dev/kvm), runs the genericity guard, and
-# publishes `hermes-<ver>.img.zst` as a release asset on every `v*` tag (plus weekly + on
-# nixos/** pushes). The de-Nix'd host PULLS that published image — it does NOT build locally
-# in the normal flow.
+# GitHub `ubuntu-24.04-arm` runner, runs the genericity guard, and publishes
+# `hermes-<ver>.img.zst` as a release asset on every `v*` tag (plus weekly + on nixos/**
+# pushes). The de-Nix'd host PULLS that published image — it does NOT build locally in the
+# normal flow.
 #
-# This script is the LOCAL fallback for iterating on the image without cutting a tag. The host
-# runs no Nix, so the build happens inside a throwaway tart LINUX VM launched with `--nested`:
-# nixpkgs' make-disk-image runs qemu with a hard `-enable-kvm` (no TCG fallback), so the image
-# step needs a real /dev/kvm, and `--nested` is the only way to get one on Apple Silicon (M3+).
-# Docker Desktop / OrbStack do NOT expose nested-virt kvm to their Linux VMs on Apple Silicon
-# (verified Jun 2026), so the old `nixos/nix` container path is gone.
+# This script is the LOCAL fallback for iterating on the image without cutting a tag. The image
+# builds with systemd-repart in the plain Nix sandbox (no KVM, no VM); the throwaway tart LINUX
+# VM below exists only to supply the Nix + aarch64-linux platform the de-Nix'd macOS host lacks.
+# (The retired make-disk-image path needed /dev/kvm via `--nested`; repart does not, so that VM
+# no longer runs nested virt.)
 #
 # Output: ./result-hermes/nixos.img.
 #
@@ -46,7 +45,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/wait.sh"
 
 die() { echo "[build-hermes-image] FATAL: $*" >&2; exit 1; }
 
-[[ "$(uname -m)" == "arm64" ]] || die "local builder needs Apple Silicon (--nested kvm); use CI elsewhere."
+[[ "$(uname -m)" == "arm64" ]] || die "local builder needs an Apple Silicon tart VM; use CI elsewhere."
 [[ -x "$TART_BIN" ]] || die "tart not at $TART_BIN (brew install cirruslabs/cli/tart)."
 command -v sshpass >/dev/null || die "sshpass not found (brew install sshpass) — needed to log in to the builder VM."
 
@@ -60,9 +59,9 @@ fi
 # OOM-kills the hermes image nix build — give it enough RAM + CPU. Applied to persisted builders too.
 "$TART_BIN" set "$BUILDER_VM" --disk-size "$BUILDER_DISK_GB" --memory "$((BUILDER_MEMORY_GB * 1024))" --cpu "$BUILDER_CPU"
 
-# 2. Boot it headless WITH nested virt and the repo shared rw over virtiofs (tag `repo`).
-echo "[build-hermes-image] starting $BUILDER_VM (--nested, repo shared rw) ..."
-"$TART_BIN" run "$BUILDER_VM" --no-graphics --nested "--dir=repo:$REPO" &
+# 2. Boot it headless with the repo shared rw over virtiofs (tag `repo`).
+echo "[build-hermes-image] starting $BUILDER_VM (repo shared rw) ..."
+"$TART_BIN" run "$BUILDER_VM" --no-graphics "--dir=repo:$REPO" &
 trap '"$TART_BIN" stop "$BUILDER_VM" 2>/dev/null || true' EXIT
 
 # 3. Wait for the guest to report an IP (DHCP on the tart NAT).
@@ -82,13 +81,15 @@ ssh_guest() {
 echo "[build-hermes-image] waiting for sshd on $BUILDER_VM ..."
 wait_for "sshd on $BUILDER_VM" 60 5 ssh_guest true || die "sshd on $BUILDER_VM never came up."
 
-# 4. In-guest: prove real kvm, install Nix, build the image, drop it into the shared repo dir.
-# Verified against a running cirruslabs ubuntu builder: login is admin/admin, and tart exposes the
-# --dir shares under the single virtiofs tag `com.apple.virtio-fs.automount` (the `repo` share is a
-# subdir), mounted below.
+# 4. In-guest: allow repart's unprivileged unshare, install Nix, build the image, drop it into the
+# shared repo dir. Verified against a running cirruslabs ubuntu builder: login is admin/admin, and
+# tart exposes the --dir shares under the single virtiofs tag `com.apple.virtio-fs.automount` (the
+# `repo` share is a subdir), mounted below.
 echo "[build-hermes-image] building inside $BUILDER_VM ..."
 ssh_guest "YCLAW_GH_TOKEN='${GITHUB_TOKEN:-}' bash -euo pipefail" <<'GUEST'
-test -e /dev/kvm || { echo "FATAL: /dev/kvm missing — --nested did not expose nested virt." >&2; exit 1; }
+# cirruslabs' Ubuntu base carries the same AppArmor userns restriction as GitHub's runners;
+# repart's `unshare --map-root-user` needs it lifted. Harmless if already open or absent.
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 if ! command -v nix >/dev/null; then
   # UNPINNED INSTALLER (audit M7): `curl … | sh` of the rolling Determinate installer; a
   # registry/CDN-side change is executed unverified. Hardened the transport (--proto '=https'
@@ -123,7 +124,9 @@ cd /mnt/shares/repo
 nix --extra-experimental-features "nix-command flakes" \
   build .#packages.aarch64-linux.hermes-image --out-link /tmp/result-hermes --print-build-logs
 sudo install -d -m 755 /mnt/shares/repo/result-hermes
-sudo cp -L /tmp/result-hermes/nixos.img /mnt/shares/repo/result-hermes/nixos.img
+# repart's output dir holds hermes.raw (image.repart name) + repart-output.json; copy the raw
+# image out under the historical nixos.img name so deploy-vm.sh / bootstrap.sh stay unchanged.
+sudo cp -L /tmp/result-hermes/hermes.raw /mnt/shares/repo/result-hermes/nixos.img
 GUEST
 
 IMG="$OUT_LINK/nixos.img"

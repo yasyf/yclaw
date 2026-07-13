@@ -24,9 +24,9 @@ onboard:
 setup:
     ./scripts/setup.sh
 
-# Build the hermes NixOS raw-efi image WITHOUT host Nix, in a linux/arm64 Docker container
-# (scripts/build-hermes-image.sh). This is the de-Nix'd builder; CI runs the same nix build
-# remotely. Output: ./result-hermes/nixos.img.
+# Build the hermes NixOS image (systemd-repart) WITHOUT host Nix, in a throwaway linux/arm64 tart
+# builder VM (scripts/build-hermes-image.sh). This is the de-Nix'd builder; CI runs the same nix
+# build remotely. Output: ./result-hermes/nixos.img.
 build-hermes-image:
     ./scripts/build-hermes-image.sh
 
