@@ -9,7 +9,7 @@
 # takes effect. `setup.sh host-serving` re-runs ONLY §5 (the serving stack) — the full run's §3
 # bootout-before-bootstrap restarts the LIVE tart VM runners. `setup.sh host-pf` (root-gated,
 # NOT part of the full run — the apply is deliberately operator-gated, like the hand-applied
-# tailnet ACL it backstops) installs §6: the host pf anchor (com.apple/999.yclaw.host) + its
+# tailnet ACL it backstops) installs §6: the host pf anchor (com.apple/000.yclaw.host) + its
 # refresh daemon.
 #
 # ── darwin/host.nix responsibility mapping ───────────────────────────────────────────────────
@@ -275,8 +275,9 @@ setup_host_serving() {
 
 # Install the host's fleet-lockdown pf anchor + its refresh LaunchDaemon: ONLY metal may reach
 # the host's model ports (rapid-mlx :8000, mlx-audio STT :8765) and no fleet VM reaches anything
-# else on the host — over the tailnet or via the vmnet side-door (the bridge gateway
-# 192.168.64.1, where every host-bound listener is otherwise reachable past the tailnet ACL) —
+# else on the host — over the tailnet or via the vmnet side-door (Darwin's weak-host delivery
+# answers a bridge-ingress packet for ANY host address: the gateway 192.168.64.1, the LAN IP,
+# even the tailnet IP over a forced VM route — all past the tailnet ACL) —
 # the pf half of the Phase-4 lockdown (the tailnet-ACL half is hand-applied; see
 # tailnet/policy.hujson). Mirrors bluebubbles-setup.sh's install_bb_pf_refresh: bake the tick
 # script (scripts/host/host-pf.sh) beside verbatim wait.sh + pf.sh copies under
@@ -284,7 +285,9 @@ setup_host_serving() {
 # 300s later), then install the /Library/LaunchDaemons KeepAlive sleep-loop daemon (StartInterval
 # silently stops firing on Tahoe) that re-keys the anchor to the fleet's current IPs every 300s.
 #
-# The anchor attaches at com.apple/999.yclaw.host (host-pf.sh's header has the full rationale):
+# The anchor attaches at com.apple/000.yclaw.host (host-pf.sh's header has the full rationale;
+# 000 sorts ahead of Apple's own wildcard children, whose quick passes would otherwise end
+# evaluation first):
 # the stock pf.conf's `anchor "com.apple/*"` wildcard evaluates it from the FIRST targeted load —
 # a root-level anchor would stay orphaned until a boot-time /etc/pf.conf reload, and a live full
 # reload is off the table because it flushes the dynamically-inserted Internet-Sharing/vmnet
@@ -298,6 +301,10 @@ setup_host_serving() {
 # path into the tick; re-running host-pf refreshes the copy. TAILSCALE stays the seam for
 # FINDING the source binary (it lives in the login user's HOME, invisible to sudo's reset PATH) —
 # die with the exact remedy otherwise.
+#
+# APPLY CHECKLIST (host remediation, not fixable in this repo): /usr/local/bin/tailscaled — the
+# binary the root system daemon EXECS — is itself a symlink into that same user-writable mise
+# tree; repoint it at a root-owned copy. This script only hardens the CLI copy it bakes.
 setup_host_pf() {
   [ "$(id -u)" -eq 0 ] || die "host-pf writes /etc/pf.anchors + /Library/LaunchDaemons — run: sudo TAILSCALE=\"\$(command -v tailscale)\" bash scripts/setup.sh host-pf"
 
@@ -318,10 +325,25 @@ setup_host_pf() {
     "$REPO_ROOT/scripts/host/host-pf.sh" > "$lib_dir/host-pf.sh"
   chmod 755 "$lib_dir/host-pf.sh"
 
+  # One-time 999 -> 000 re-namespace (wildcard children evaluate alphabetically; Apple's own
+  # could quick-pass ahead of a 999 sibling): flush the retired kernel anchor and drop its
+  # boot-time wiring. No-ops once migrated (the flush errors on a nonexistent anchor).
+  pfctl -a com.apple/999.yclaw.host -F rules 2>/dev/null || true
+  if grep -q '999\.yclaw\.host' /etc/pf.conf; then
+    sed -i '' '/999\.yclaw\.host/d' /etc/pf.conf
+  fi
+  rm -f /etc/pf.anchors/com.apple.999.yclaw.host
+
   "$lib_dir/host-pf.sh" 10 || die "first host-pf tick failed — anchor NOT in force (see above)"
 
   local label="com.yclaw.host-pf-refresh"
   local plist="/Library/LaunchDaemons/$label.plist"
+  # Boot-window backoff: at RunAtLoad the fleet bridge may not exist yet (tart creates it with
+  # the first VM boot) and tailscaled may still be settling — a flat `|| true; sleep 300` loop
+  # would sit unenforced for up to 5 min per miss while launchd reports the job healthy. Retry
+  # at 5s doubling to a 30s cap until the FIRST successful tick, then the 300s cadence; later
+  # failures stay || true (fail-closed: the last-good ruleset remains in force, and the tick's
+  # host-pf.last-ok marker goes stale for a doctor check to catch).
   cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -332,7 +354,7 @@ setup_host_pf() {
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>while true; do $lib_dir/host-pf.sh 60 || true; sleep 300; done</string>
+    <string>d=5; until $lib_dir/host-pf.sh 60; do sleep \$d; d=\$((d*2)); if [ \$d -gt 30 ]; then d=30; fi; done; while true; do sleep 300; $lib_dir/host-pf.sh 60 || true; done</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -345,6 +367,22 @@ PLIST
   chmod 644 "$plist"
   bootout_drain system "$label"
   launchctl bootstrap system "$plist"
+
+  # APPLY-TIME VERIFICATION (operator, after this returns) — judge by OUTPUT, never exit code
+  # (tailscale ssh always reports rc 0). HOST4 = the host's tailnet IPv4 (`tailscale ip -4`);
+  # LAN = the host's LAN address (`ipconfig getifaddr en0`). The model ports listen ONLY on
+  # HOST4, so a curl at 192.168.64.1:<model-port> fails even with pf disabled and proves nothing.
+  #   1. PASS  — model plane intact (tailnet ingress rides WAN/DERP, never the bridge):
+  #        tailscale ssh metal -- curl -sS --max-time 5 http://HOST4:8000/v1/models  -> model list
+  #   2. BLOCK — weak-host delivery of the tailnet IP via the vmnet gateway:
+  #        tailscale ssh hermes -- sudo ip route replace HOST4/32 via 192.168.64.1
+  #        tailscale ssh hermes -- curl -sS --max-time 5 http://HOST4:8000/v1/models -> timeout
+  #        tailscale ssh hermes -- sudo ip route del HOST4/32
+  #   3. BLOCK — LAN-IP side-door to any 0.0.0.0-bound host listener, from metal AND hermes:
+  #        tailscale ssh metal  -- curl -sS --max-time 5 http://LAN:PORT/            -> timeout
+  #        tailscale ssh hermes -- curl -sS --max-time 5 http://LAN:PORT/            -> timeout
+  #   4. COUNTERS — both `block drop ... to self` rules incremented across 2-3:
+  #        pfctl -a com.apple/000.yclaw.host -v -sr
 }
 
 # --- arg dispatch --------------------------------------------------------------
@@ -357,8 +395,8 @@ case "${1:-}" in
     ;;
   host-pf)
     setup_host_pf
-    log "Host pf lockdown installed: anchor com.apple/999.yclaw.host + LaunchDaemon com.yclaw.host-pf-refresh."
-    log "Verify from a fleet VM: tailscale ssh metal -- curl --max-time 5 http://192.168.64.1:<host-port>/ must now FAIL."
+    log "Host pf lockdown installed: anchor com.apple/000.yclaw.host + LaunchDaemon com.yclaw.host-pf-refresh."
+    log "Run the APPLY-TIME VERIFICATION block at the end of setup_host_pf (model plane PASS; vmnet + LAN side-doors BLOCKED)."
     exit 0
     ;;
   "") ;;

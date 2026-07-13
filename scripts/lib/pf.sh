@@ -8,14 +8,23 @@
 # need (the hard-won rule from darwin/host.nix). The ruleset is loaded into the kernel FIRST and
 # the on-disk anchor file (the boot-time `load anchor` source) is written only once pf accepts it.
 
+# The /etc paths are the mock boundary: tests point these at a sandbox, production never sets them.
+PF_ANCHOR_DIR="${PF_ANCHOR_DIR:-/etc/pf.anchors}"
+PF_CONF="${PF_CONF:-/etc/pf.conf}"
+
 _pf_log() { printf '%s\n' "$*" >&2; }
 
+# The on-disk file backing an anchor: a slashed child-anchor path flattens to a dotted filename,
+# because /etc/pf.anchors already holds a FILE named com.apple — a subdirectory of that name is
+# impossible.
+pf_anchor_file() { printf '%s/%s' "$PF_ANCHOR_DIR" "$(printf '%s' "$1" | tr '/' '.')"; }
+
 # install_pf_anchor <name> <rules-file> [--wire-pfconf|--wire-load-only] [--enable]
-#   --wire-pfconf     append the `anchor`/`load anchor` lines to /etc/pf.conf idempotently
-#   --wire-load-only  append ONLY the `load anchor` line — for a child anchor (com.apple/999.x)
+#   --wire-pfconf     append the `anchor`/`load anchor` lines to pf.conf idempotently
+#   --wire-load-only  append ONLY the `load anchor` line — for a child anchor (com.apple/000.x)
 #                     that an existing parent wildcard call already evaluates; an `anchor` call
 #                     line would evaluate its ruleset a second time per packet
-#   --enable          `pfctl -E` after loading (macOS refcounted enable; failure propagates)
+#   --enable          ensure pf is enabled (idempotent; failure propagates)
 install_pf_anchor() {
   local name="$1" rules="$2"
   shift 2
@@ -32,13 +41,11 @@ install_pf_anchor() {
   [ -n "$name" ] && [ -n "$rules" ] || { _pf_log "usage: install_pf_anchor <name> <rules-file> [--wire-pfconf|--wire-load-only] [--enable]"; return 2; }
   [ -s "$rules" ] || { _pf_log "FATAL: pf rules file missing or empty: $rules"; return 1; }
 
-  # A slashed child-anchor path flattens to a dotted filename: /etc/pf.anchors already holds a
-  # FILE named com.apple, so a subdirectory of that name is impossible.
-  local anchor_dir="/etc/pf.anchors" fname anchor_file tmp eout
+  local fname anchor_file tmp eout
   fname="$(printf '%s' "$name" | tr '/' '.')"
-  anchor_file="$anchor_dir/$fname"
-  mkdir -p "$anchor_dir"
-  tmp="$(mktemp "$anchor_dir/.$fname.XXXXXX")" || { _pf_log "FATAL: mktemp failed for pf anchor $name"; return 1; }
+  anchor_file="$(pf_anchor_file "$name")"
+  mkdir -p "$PF_ANCHOR_DIR"
+  tmp="$(mktemp "$PF_ANCHOR_DIR/.$fname.XXXXXX")" || { _pf_log "FATAL: mktemp failed for pf anchor $name"; return 1; }
   cat "$rules" > "$tmp"
 
   if pfctl -a "$name" -f "$tmp"; then
@@ -50,17 +57,21 @@ install_pf_anchor() {
     return 1
   fi
 
-  if [ "$wire" = full ] && ! grep -qF "anchor \"$name\"" /etc/pf.conf; then
-    printf '\nanchor "%s"\nload anchor "%s" from "%s"\n' "$name" "$name" "$anchor_file" >> /etc/pf.conf \
-      || { _pf_log "FATAL: cannot append the $name anchor lines to /etc/pf.conf"; return 1; }
-  elif [ "$wire" = load ] && ! grep -qF "load anchor \"$name\"" /etc/pf.conf; then
-    printf '\nload anchor "%s" from "%s"\n' "$name" "$anchor_file" >> /etc/pf.conf \
-      || { _pf_log "FATAL: cannot append the $name load line to /etc/pf.conf"; return 1; }
+  if [ "$wire" = full ] && ! grep -qF "anchor \"$name\"" "$PF_CONF"; then
+    printf '\nanchor "%s"\nload anchor "%s" from "%s"\n' "$name" "$name" "$anchor_file" >> "$PF_CONF" \
+      || { _pf_log "FATAL: cannot append the $name anchor lines to $PF_CONF"; return 1; }
+  elif [ "$wire" = load ] && ! grep -qF "load anchor \"$name\"" "$PF_CONF"; then
+    printf '\nload anchor "%s" from "%s"\n' "$name" "$anchor_file" >> "$PF_CONF" \
+      || { _pf_log "FATAL: cannot append the $name load line to $PF_CONF"; return 1; }
   fi
 
   if [ "$enable" -eq 1 ]; then
-    # macOS boots pf loaded-but-DISABLED; swallowing a failed -E here would let a caller claim
-    # enforcement while pf is off.
-    eout="$(pfctl -E 2>&1)" || { _pf_log "FATAL: pfctl -E failed — pf NOT enabled: $eout"; return 1; }
+    # macOS boots pf loaded-but-DISABLED, but every `pfctl -E` acquires a fresh refcount token a
+    # fire-and-forget tick would leak (288/day at a 300s cadence) — so probe first and enable
+    # with the un-refcounted -e only when pf is actually off. Swallowing a failure here would
+    # let a caller claim enforcement while pf is disabled.
+    if ! pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'; then
+      eout="$(pfctl -e 2>&1)" || { _pf_log "FATAL: pfctl -e failed — pf NOT enabled: $eout"; return 1; }
+    fi
   fi
 }
