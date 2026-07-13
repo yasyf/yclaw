@@ -61,7 +61,9 @@ def _state_probe(machine: Machine, service: Service) -> Probe | None:
 
 
 async def collect(machines: list[Machine]) -> tuple[list[list[str]], list[ProbeResult], dict[str, ProbeResult]]:
-    tailnet = await _gather([(m.name, partial(probes.tailnet_node, m.name, timeout=PROBE_TIMEOUT)) for m in machines])
+    tailnet = await _gather(
+        [(m.name, partial(probes.tailnet_node, m.tailnet_name or m.name, timeout=PROBE_TIMEOUT)) for m in machines]
+    )
 
     # Bound the ssh-based probes per host: an unbounded fan-out opens one tailscale-ssh session per
     # probe, and a dozen simultaneous handshakes to one sshd make healthy probes exceed their timeout.
@@ -127,7 +129,7 @@ def _fleet(machine: str | None) -> list[Machine]:
     manifest = load_manifest()
     if machine is not None:
         return [resolve_machine(manifest, machine)]
-    return [m for m in manifest.machines.values() if m.ssh is not None]
+    return list(manifest.machines.values())
 
 
 @click.command("status")

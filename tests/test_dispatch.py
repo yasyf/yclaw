@@ -17,9 +17,9 @@ def test_resolve_machine_unknown_raises_bad_parameter():
         resolve_machine(load_manifest(), "nope")
 
 
-def test_resolve_machine_host_is_rejected():
-    with pytest.raises(click.BadParameter, match="not a tailnet node"):
-        resolve_machine(load_manifest(), "host")
+def test_resolve_machine_host_resolves_like_any_node():
+    # The host is a first-class node now; the `yclaw ssh host` rejection lives in ssh.py, not here.
+    assert resolve_machine(load_manifest(), "host").name == "host"
 
 
 def test_resolve_service_unknown_raises_bad_parameter():

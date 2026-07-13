@@ -135,7 +135,7 @@ def _fleet(machine: str | None) -> list[Machine]:
     manifest = load_manifest()
     if machine is not None:
         return [resolve_machine(manifest, machine)]
-    return [m for m in manifest.machines.values() if m.ssh is not None]
+    return list(manifest.machines.values())
 
 
 @click.command("doctor")

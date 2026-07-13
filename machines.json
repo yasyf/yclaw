@@ -119,6 +119,7 @@
       "managed_by": "setup.sh",
       "tart_vm": null,
       "tag": null,
+      "tailnet_name": "yasyf-home",
       "ssh": null,
       "admin_pass_keychain": null,
       "shares": null,

@@ -18,6 +18,8 @@ from .manifest import load_manifest
 def ssh(machine: str, cmd: tuple[str, ...], user: str | None, timeout: float) -> None:
     """Open a shell on MACHINE, or run CMD there and exit with its status."""
     target = resolve_machine(load_manifest(), machine)
+    if target.ssh is None:
+        raise click.UsageError(f"{machine!r} is the host, not a tailnet node — run its commands locally")
     if user is not None:
         target = dataclasses.replace(target, ssh=dataclasses.replace(target.ssh, user=user))
     if not cmd:

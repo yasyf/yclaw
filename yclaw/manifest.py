@@ -12,6 +12,7 @@ to ``None`` — that is real fleet shape, not a defaulted-away requirement.
 """
 
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,10 +33,14 @@ class LaunchdRef:
 
     @property
     def target(self) -> str:
+        if self.domain == "gui":
+            return f"gui/{os.getuid()}/{self.label}"
         return f"{self.domain}/{self.label}"
 
     @property
     def plist_path(self) -> str:
+        if self.domain == "gui":
+            return str(Path.home() / "Library/LaunchAgents" / f"{self.label}.plist")
         return f"/Library/LaunchDaemons/{self.label}.plist"
 
 
@@ -81,6 +86,7 @@ class Machine:
     managed_by: str
     tart_vm: str | None
     tag: str | None
+    tailnet_name: str | None
     ssh: Ssh | None
     admin_pass_keychain: str | None
     shares: tuple[str, ...] | None
@@ -152,6 +158,7 @@ def _parse_machine(name: str, d: dict[str, Any]) -> Machine:
         managed_by=d["managed_by"],
         tart_vm=d["tart_vm"],
         tag=d["tag"],
+        tailnet_name=d.get("tailnet_name"),
         ssh=Ssh(transport=ssh["transport"], user=ssh["user"]) if ssh is not None else None,
         admin_pass_keychain=d["admin_pass_keychain"],
         shares=tuple(shares) if shares is not None else None,

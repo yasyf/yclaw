@@ -64,6 +64,49 @@ async def test_run_threads_input_to_stdin(manifest, monkeypatch, capture):
     assert seen["input"] == b"s3cr3t\n"
 
 
+@pytest.mark.parametrize("capture", [True, False], ids=["capture", "no-capture"])
+async def test_run_local_branch_for_ssh_less_host(manifest, monkeypatch, capture):
+    seen = []
+
+    async def fake(argv, **kwargs):
+        seen.append(argv)
+        return _completed(argv, 7, b"out\n", b"err\n")
+
+    monkeypatch.setattr(anyio, "run_process", fake)
+    result = await remote.run(manifest.machines["host"], "echo hi", capture=capture)
+    # No tailscale ssh: the host execs its own shell, so the real exit code survives (rc is not 0).
+    assert seen == [["/bin/sh", "-c", "echo hi"]]
+    assert result.returncode == 7
+    if capture:
+        assert result == RemoteResult(7, "out\n", "err\n")
+    else:
+        assert result == RemoteResult(7, "", "")
+
+
+async def test_run_local_nonzero_rc_is_not_check_wall(manifest, monkeypatch):
+    async def fake(argv, **kwargs):
+        return _completed(argv, 1, b"", b"some local error\n")
+
+    monkeypatch.setattr(anyio, "run_process", fake)
+    result = await remote.run(manifest.machines["host"], "false")
+    assert result == RemoteResult(1, "", "some local error\n")
+
+
+def test_stream_local_branch_for_ssh_less_host(manifest, monkeypatch):
+    recorded = {}
+
+    def fake_execvp(file, args):
+        recorded["file"] = file
+        recorded["args"] = args
+        raise SystemExit(0)
+
+    monkeypatch.setattr(remote.os, "execvp", fake_execvp)
+    with pytest.raises(SystemExit):
+        remote.stream(manifest.machines["host"], "tail -F ~/Library/Logs/Tart/metal.log")
+    assert recorded["file"] == "/bin/sh"
+    assert recorded["args"] == ["/bin/sh", "-c", "tail -F ~/Library/Logs/Tart/metal.log"]
+
+
 async def test_run_defaults_input_to_none(manifest, monkeypatch):
     seen = {}
 

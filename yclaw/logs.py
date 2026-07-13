@@ -5,6 +5,7 @@ headers separate the two files); hermes streams its systemd journal through ``jo
 BlueBubbles keeps its logs inside the app, so there is nothing to tail over ssh.
 """
 
+import os
 import shlex
 
 import click
@@ -21,7 +22,9 @@ def _log_command(machine: Machine, service: Service, lines: int, follow: bool) -
         return f"journalctl -u {service.systemd} -n {lines}{' -f' if follow else ''}"
     if service.logs:
         flag = "-F " if follow else ""
-        paths = " ".join(shlex.quote(p) for p in service.logs)
+        # The host's log paths are ~-relative; a shlex-quoted tilde never expands under `/bin/sh -c`,
+        # so resolve it against the local $HOME here. A no-op for the VMs' absolute log paths.
+        paths = " ".join(shlex.quote(os.path.expanduser(p)) for p in service.logs)
         return f"tail -n {lines} {flag}{paths}"
     raise click.UsageError(f"service {service.name!r} on {machine.name} has no logs to tail")
 

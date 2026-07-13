@@ -19,13 +19,10 @@ from .remote import CheckWallError, RemoteTimeout
 
 def resolve_machine(manifest: Manifest, name: str) -> Machine:
     try:
-        machine = manifest.machines[name]
+        return manifest.machines[name]
     except KeyError:
-        known = ", ".join(n for n, m in manifest.machines.items() if m.ssh is not None)
+        known = ", ".join(manifest.machines)
         raise click.BadParameter(f"unknown machine {name!r}; known: {known}", param_hint="MACHINE") from None
-    if machine.ssh is None:
-        raise click.BadParameter(f"{name!r} is the host, not a tailnet node", param_hint="MACHINE")
-    return machine
 
 
 def resolve_service(machine: Machine, name: str) -> Service:

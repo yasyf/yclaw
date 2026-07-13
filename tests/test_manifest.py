@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 import pytest
 
 from yclaw.manifest import (
@@ -62,6 +65,14 @@ def test_host_has_null_ssh_and_shares(manifest):
     assert host.admin_pass_keychain is None
 
 
+def test_host_tailnet_name_parsed(manifest):
+    assert manifest.machines["host"].tailnet_name == "yasyf-home"
+
+
+def test_tailnet_name_absent_is_none(manifest):
+    assert manifest.machines["metal"].tailnet_name is None
+
+
 def test_bluebubbles_password_fields(manifest):
     svc = manifest.machines["bluebubbles"].services["bluebubbles"]
     assert svc.password_keychain == "yclaw-bluebubbles-server-pass"
@@ -112,3 +123,12 @@ def test_launchd_ref_target_and_plist_path(manifest):
     rapid_mlx = manifest.machines["metal"].services["rapid-mlx"]
     assert rapid_mlx.launchd.target == "system/org.nixos.rapid-mlx"
     assert rapid_mlx.launchd.plist_path == "/Library/LaunchDaemons/org.nixos.rapid-mlx.plist"
+
+
+def test_launchd_ref_gui_domain_target_and_plist_path(manifest):
+    # The host's tart-* supervisors are gui-domain LaunchAgents, not system LaunchDaemons: the target
+    # carries the numeric uid and the plist lives under the login user's ~/Library/LaunchAgents.
+    ref = manifest.machines["host"].services["tart-metal"].launchd
+    assert ref == LaunchdRef(domain="gui", label="com.yclaw.tart-metal")
+    assert ref.target == f"gui/{os.getuid()}/com.yclaw.tart-metal"
+    assert ref.plist_path == str(Path.home() / "Library/LaunchAgents" / "com.yclaw.tart-metal.plist")

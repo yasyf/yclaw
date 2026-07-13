@@ -137,6 +137,23 @@ def test_status_share_probes_skip_non_macos_machines(monkeypatch):
     assert any(line.startswith("metal") and "share:metalsecrets" in line for line in lines)
 
 
+def test_status_sweeps_host_by_tailnet_name(monkeypatch):
+    probed_names: list[str] = []
+
+    async def fake_tailnet(name, *, timeout=10):
+        probed_names.append(name)
+        return ProbeResult(name, Status.FAIL, "registered but offline")
+
+    monkeypatch.setattr(probes, "tailnet_node", fake_tailnet)
+    result = CliRunner().invoke(main, ["status"])
+    lines = result.output.splitlines()
+
+    # The host is swept now (filter dropped), and probed by its tailnet identity, not the manifest key.
+    assert "yasyf-home" in probed_names
+    assert "host" not in probed_names
+    assert any(line.split()[:2] == ["host", "(node)"] for line in lines)
+
+
 def test_status_unknown_machine_is_usage_error():
     result = CliRunner().invoke(main, ["status", "nope"])
     assert result.exit_code == 2

@@ -145,6 +145,14 @@ def test_doctor_live_hermes_up_checks_proxy_without_leaking_token(monkeypatch):
     assert "hermes→metal:8000 (rapid-mlx)" in result.output
 
 
+def test_doctor_sweeps_host_in_fleet(monkeypatch):
+    _install_common_probes(monkeypatch, set())  # every node down
+    result = CliRunner().invoke(main, ["doctor"])
+    lines = result.output.splitlines()
+    # The host joins the status sweep; doctor's host-vantage checks still target metal/hermes only.
+    assert any(line.split()[:2] == ["host", "(node)"] for line in lines)
+
+
 def test_doctor_help():
     result = CliRunner().invoke(main, ["doctor", "--help"])
     assert result.exit_code == 0

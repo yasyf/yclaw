@@ -98,7 +98,12 @@ async def run(
     capture: bool = True,
     input: bytes | None = None,
 ) -> RemoteResult:
-    argv = ["tailscale", "ssh", f"{machine.ssh.user}@{machine.name}", "--", command]
+    # The host runs its own services (ssh is None): exec locally, where exit codes are real —
+    # unlike Tailscale-intercepted ssh, whose rc is always 0 on the macOS nodes.
+    if machine.ssh is None:
+        argv = ["/bin/sh", "-c", command]
+    else:
+        argv = ["tailscale", "ssh", f"{machine.ssh.user}@{machine.name}", "--", command]
     logger.debug("remote argv: {}", argv)
     try:
         with anyio.fail_after(timeout):
@@ -124,6 +129,10 @@ def interactive(machine: Machine) -> NoReturn:
 
 
 def stream(machine: Machine, command: str) -> NoReturn:
+    if machine.ssh is None:
+        argv = ["/bin/sh", "-c", command]
+        logger.debug("stream argv: {}", argv)
+        os.execvp("/bin/sh", argv)
     argv = ["tailscale", "ssh", f"{machine.ssh.user}@{machine.name}", "--", command]
     logger.debug("stream argv: {}", argv)
     os.execvp("tailscale", argv)
