@@ -13,8 +13,9 @@
 // below fully apply only on a tailnet dedicated to yclaw. HuJSON — comments + trailing commas ok.
 //
 // Posture: DEFAULT-DENY east-west. There is no broad `autogroup:member` ACL; the only node->node
-// flows are the explicit grants below. pf on metal (darwin/metal.nix) is a host-local backstop —
-// it cannot see tags (only CGNAT), so the tag-level source restriction lives HERE.
+// flows are the explicit grants below. pf on metal (darwin/metal.nix) and on the Tart host
+// (scripts/host/host-pf.sh) are host-local backstops — pf cannot see tags (only addresses), so
+// the tag-level source restriction lives HERE.
 {
   // Each node owns its own tag (self-tag) so it can re-advertise on re-join without an admin in
   // the loop; admins own them too so the OAuth bootstrap client (an admin actor) can mint keys
@@ -25,14 +26,29 @@
     "tag:bluebubbles": ["autogroup:admin", "tag:bluebubbles"],
   },
 
+  // The Tart host itself ("yasyf-home", the operator's Mac running the fleet + the bare-host
+  // model plane). Not a tagged yclaw node — it is a personal device already on the tailnet — so
+  // grants address it by this pinned-IP alias instead of a tag.
+  "hosts": {
+    "yasyf-home": "100.88.252.58",
+  },
+
   // East-west reachability (modern `grants` syntax). hermes initiates the model/credential and
-  // REST flows; bluebubbles initiates exactly ONE flow back — the new-message webhook to hermes:
+  // REST flows; bluebubbles initiates exactly ONE flow back — the new-message webhook to hermes;
+  // metal initiates exactly ONE flow northbound — the model relay to the Tart host:
   //   * hermes -> metal: the credential/AI service ports (cli-proxy 8317, agent-vault 14321/14322,
-  //     rapid-mlx 8000, STT 8765) — mirrors the metal pf anchor's allowed port set.
+  //     rapid-mlx 8000, STT 8765) — mirrors the metal pf anchor's allowed port set. tcp:8000,8765
+  //     STAY in this grant after the model plane moves to the host: they become the relay ports
+  //     hermes consumes ON metal (metal forwards to the host) — do NOT shrink this grant.
   //   * hermes -> bluebubbles: the BlueBubbles REST API, served over tailnet HTTPS on :443.
   //   * bluebubbles -> hermes: the BlueBubbles webhook POSTs new-message events to hermes-agent's
   //     webhook server on :8645 (BLUEBUBBLES_WEBHOOK_PORT in nixos/hermes.nix). Without this the
-  //     agent never receives incoming iMessages. metal still never initiates east-west.
+  //     agent never receives incoming iMessages.
+  //   * metal -> yasyf-home: rapid-mlx :8000 + mlx-audio STT :8765, served on the bare host —
+  //     metal's ONE northbound flow. hermes and bluebubbles deliberately get NO grant to the
+  //     host: hermes consumes the models via metal's relay, so a compromised agent VM cannot
+  //     address the host at all. The host-side backstop is the `com.yclaw.host` pf anchor
+  //     (scripts/host/host-pf.sh), which re-keys this policy to the fleet's resolved IPs.
   // These ports are MIRRORED in machines.json (machines.*.services.*.port) — keep the two in sync.
   "grants": [
     {
@@ -49,6 +65,11 @@
       "src": ["tag:bluebubbles"],
       "dst": ["tag:hermes"],
       "ip":  ["tcp:8645"],
+    },
+    {
+      "src": ["tag:metal"],
+      "dst": ["yasyf-home"],
+      "ip":  ["tcp:8000", "tcp:8765"],
     },
   ],
 
