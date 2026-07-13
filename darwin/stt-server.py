@@ -27,6 +27,7 @@ MODEL_ID = os.environ.get("STT_MODEL", "ibm-granite/granite-speech-4.1-2b")
 HOST = os.environ.get("STT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("STT_PORT", "8765"))
 IDLE_TTL = int(os.environ.get("STT_IDLE_TTL", "1800"))
+MAX_UPLOAD_BYTES = int(os.environ.get("STT_MAX_UPLOAD_BYTES", str(64 * 1024 * 1024)))
 
 _pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 _model = None
@@ -57,7 +58,53 @@ def _idle_watchdog() -> None:
         _pool.submit(_unload_if_idle).result()
 
 
+async def _send_too_large(send) -> None:
+    body = b'{"detail":"request body too large"}'
+    await send({
+        "type": "http.response.start",
+        "status": 413,
+        "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+    })
+    await send({"type": "http.response.body", "body": body})
+
+
+class BodySizeLimitMiddleware:
+    """Rejects oversized uploads: declared Content-Length up front, chunked bodies as read."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        declared = next((int(v) for k, v in scope["headers"] if k == b"content-length"), 0)
+        if declared > MAX_UPLOAD_BYTES:
+            await _send_too_large(send)
+            return
+        seen = 0
+        rejected = False
+
+        async def capped_receive():
+            nonlocal seen, rejected
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body", b""))
+                if seen > MAX_UPLOAD_BYTES:
+                    rejected = True
+                    await _send_too_large(send)
+                    return {"type": "http.disconnect"}
+            return message
+
+        async def guarded_send(message):
+            if not rejected:
+                await send(message)
+
+        await self.app(scope, capped_receive, guarded_send)
+
+
 app = FastAPI()
+app.add_middleware(BodySizeLimitMiddleware)
 
 
 @app.get("/v1/models")

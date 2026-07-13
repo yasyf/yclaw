@@ -1,14 +1,16 @@
 """Tests for scripts/host/model-activator.py (loaded via importlib — the path has a dash).
 
 The child-spawn subprocess seam and the upstream httpx transport are mocked; the
-routing, single-flight, streaming, and reaper logic under test stay real.
+routing allowlist, single-flight, admission bounds, streaming, and reaper logic
+under test stay real.
 """
 
 import asyncio
 import importlib.util
 import json
+import socket
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import httpx
@@ -25,10 +27,15 @@ pytestmark = pytest.mark.anyio
 CONFIG = ma.Config(
     host_ip="100.64.0.1",
     port=8000,
-    child_port=18000,
-    rapid_mlx_cmd="rapid-mlx serve --host 127.0.0.1 --port 18000",
+    # child_port=0: the lifespan test binds a real loopback listener; an ephemeral port never
+    # collides with a live activator's 18000 on the same machine.
+    child_port=0,
+    rapid_mlx_cmd="rapid-mlx serve test-model --listen-fd {LISTEN_FD}",
     idle_seconds=1800.0,
     child_start_timeout=5.0,
+    wake_concurrency=8,
+    upstream_timeout=600.0,
+    spawn_cooldown=30.0,
 )
 
 CHAT_COMPLETION = {"id": "chatcmpl-1", "object": "chat.completion", "choices": []}
@@ -84,13 +91,13 @@ def default_upstream(calls: list[str]):
     return handler
 
 
-def make_harness(monkeypatch, handler=None) -> Harness:
+def make_harness(monkeypatch, handler=None, config=CONFIG) -> Harness:
     upstream_calls: list[str] = []
     upstream = httpx.AsyncClient(
         transport=httpx.MockTransport(handler or default_upstream(upstream_calls)),
-        base_url=f"http://127.0.0.1:{CONFIG.child_port}",
+        base_url="http://127.0.0.1:18000",
     )
-    activator = ma.Activator(CONFIG, upstream)
+    activator = ma.Activator(config, upstream)
     spawned: list[FakeProcess] = []
 
     async def fake_spawn() -> FakeProcess:
@@ -227,17 +234,198 @@ async def test_sse_streams_through_before_upstream_eof(monkeypatch):
     assert harness.activator.inflight == 0
 
 
-async def test_shutdown_sigterms_child_before_exit(harness):
+async def test_shutdown_sigterms_child_and_closes_listener(harness):
     process = FakeProcess()
     async with harness.activator.lifespan(harness.activator.app):
+        assert harness.activator.listen_sock is not None
         harness.activator.process = process
     assert process.signals == ["SIGTERM"]
     assert harness.activator.process is None
+    assert harness.activator.listen_sock is None
 
 
-async def test_non_wake_path_with_child_down_returns_503(harness):
+async def test_unlisted_route_is_404_never_proxied(harness):
+    harness.activator.process = FakeProcess()  # child UP: management routes still must not proxy
     async with app_client(harness.activator) as client:
-        response = await client.post("/v1/embeddings", json={"input": "hi"})
-    assert response.status_code == 503
-    assert harness.spawned == []
+        responses = [
+            await client.post("/v1/cache/clear"),
+            await client.get("/metrics"),
+            await client.get("/docs"),
+            await client.post("/v1/embeddings", json={"input": "hi"}),
+        ]
+    assert [r.status_code for r in responses] == [404] * 4
     assert harness.upstream_calls == []
+    assert harness.spawned == []
+
+
+async def test_traversal_shaped_path_is_404_never_proxied(harness):
+    harness.activator.process = FakeProcess()
+    async with app_client(harness.activator) as client:
+        # httpx keeps %2e%2e unnormalized in raw_path, so the app sees /v1/../metrics —
+        # the same shape uvicorn would present.
+        response = await client.get("/v1/%2e%2e/metrics")
+    assert response.status_code == 404
+    assert harness.upstream_calls == []
+
+
+async def test_wake_concurrency_is_bounded(monkeypatch):
+    active = 0
+    peak = 0
+    gate = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal active, peak
+        if request.url.path == "/v1/models":
+            return stream_json(200, {"object": "list", "data": []})
+        active += 1
+        peak = max(peak, active)
+        await gate.wait()
+        active -= 1
+        return stream_json(200, CHAT_COMPLETION)
+
+    harness = make_harness(monkeypatch, handler=handler, config=replace(CONFIG, wake_concurrency=2))
+    async with app_client(harness.activator) as client:
+        posts = [
+            asyncio.create_task(client.post("/v1/chat/completions", json={"messages": []})) for _ in range(5)
+        ]
+        async with asyncio.timeout(5):
+            while active < 2:
+                await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)  # give any over-admitted request time to reach the handler
+        assert peak == 2
+        gate.set()
+        responses = await asyncio.gather(*posts)
+    assert [r.status_code for r in responses] == [200] * 5
+    assert peak == 2
+    assert harness.activator.inflight == 0
+
+
+async def test_failed_spawn_cools_down_then_readmits(monkeypatch, harness):
+    async def crashing_spawn() -> FakeProcess:
+        process = FakeProcess()
+        process.returncode = 1
+        process._exited.set()
+        harness.spawned.append(process)
+        return process
+
+    monkeypatch.setattr(harness.activator, "spawn_child", crashing_spawn)
+    async with app_client(harness.activator) as client:
+        first = await client.post("/v1/chat/completions", json={"messages": []})
+        second = await client.post("/v1/chat/completions", json={"messages": []})
+        assert first.status_code == 503
+        assert "exited rc=1" in first.json()["error"]
+        assert second.status_code == 503
+        assert "cooling down" in second.json()["error"]
+        assert len(harness.spawned) == 1  # the cooldown blocked the respawn
+        harness.activator.cooldown_until = 0.0  # cooldown expiry re-admits spawn attempts
+        third = await client.post("/v1/chat/completions", json={"messages": []})
+        assert third.status_code == 503
+        assert len(harness.spawned) == 2
+    assert harness.activator.inflight == 0
+
+
+async def test_spawn_child_hands_pre_bound_listener_fd(monkeypatch):
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(default_upstream([])), base_url="http://127.0.0.1:18000"
+    )
+    activator = ma.Activator(CONFIG, upstream)
+    activator.listen_sock = ma.bind_child_socket(0)
+    fd = activator.listen_sock.fileno()
+    captured: dict = {}
+
+    async def fake_exec(*argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(ma.asyncio, "create_subprocess_exec", fake_exec)
+    process = await activator.spawn_child()
+    assert isinstance(process, FakeProcess)
+    assert captured["argv"] == ("rapid-mlx", "serve", "test-model", "--listen-fd", str(fd))
+    assert captured["kwargs"] == {"pass_fds": (fd,)}
+    activator.listen_sock.close()
+    await upstream.aclose()
+
+
+async def test_bind_child_socket_is_listening_loopback():
+    sock = ma.bind_child_socket(0)
+    try:
+        host, port = sock.getsockname()
+        assert host == "127.0.0.1"
+        assert port > 0
+        assert sock.type == socket.SOCK_STREAM
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            pass  # connects land in the backlog even with no child accepting
+    finally:
+        sock.close()
+
+
+async def test_upstream_client_ignores_proxy_env():
+    upstream = ma.build_upstream(CONFIG)
+    try:
+        assert upstream.trust_env is False
+    finally:
+        await upstream.aclose()
+
+
+def test_strip_hop_headers_drops_standard_and_connection_nominated():
+    headers = [
+        ("Host", "activator"),
+        ("Connection", "keep-alive, X-Session-Token"),
+        ("Keep-Alive", "timeout=5"),
+        ("Proxy-Authenticate", "Basic"),
+        ("Proxy-Authorization", "Basic xxx"),
+        ("TE", "trailers"),
+        ("Trailer", "Expires"),
+        ("Transfer-Encoding", "chunked"),
+        ("Upgrade", "h2c"),
+        ("X-Session-Token", "nominated-away"),
+        ("Content-Type", "application/json"),
+    ]
+    assert ma.strip_hop_headers(headers) == [("Content-Type", "application/json")]
+
+
+async def test_proxy_strips_hop_headers_both_directions(monkeypatch):
+    seen: dict = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return stream_json(200, {"object": "list", "data": []})
+        seen["headers"] = request.headers
+
+        async def body():
+            yield json.dumps(CHAT_COMPLETION).encode()
+
+        return httpx.Response(
+            200,
+            content=body(),
+            headers=[
+                ("content-type", "application/json"),
+                ("connection", "x-upstream-hop"),
+                ("x-upstream-hop", "leak"),
+                ("keep-alive", "timeout=5"),
+                ("x-stay", "ok"),
+            ],
+        )
+
+    harness = make_harness(monkeypatch, handler=handler)
+    async with app_client(harness.activator) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={"messages": []},
+            headers={
+                "connection": "x-client-hop",
+                "x-client-hop": "leak",
+                "te": "trailers",
+                "x-forward-me": "yes",
+            },
+        )
+    assert response.status_code == 200
+    assert seen["headers"].get("x-forward-me") == "yes"
+    for name in ("x-client-hop", "te"):
+        assert name not in seen["headers"]
+    # httpx adds its own per-hop connection header; the client's value must not leak through.
+    assert seen["headers"].get("connection") != "x-client-hop"
+    assert response.headers.get("x-stay") == "ok"
+    for name in ("connection", "x-upstream-hop", "keep-alive"):
+        assert name not in response.headers

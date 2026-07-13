@@ -357,25 +357,27 @@ if [[ -e /etc/cli-proxy-api ]]; then
 fi
 
 # 5a. rapid-mlx venv (python@3.14 keg, matching metal.nix) + the activator's runtime deps. Build only
-# when absent — mirrors metal.nix's `-x .../bin/rapid-mlx` idempotency check.
+# when absent — mirrors metal.nix's `-x .../bin/rapid-mlx` idempotency check. Every package is pinned
+# to the exact version the verified venv resolved, so a rebuild reproduces the audited install.
 RAPID_VENV="$STATE_DIR/rapid-mlx/venv"
 if [[ ! -x "$RAPID_VENV/bin/rapid-mlx" ]]; then
   log "Building rapid-mlx venv at $RAPID_VENV ..."
   mkdir -p "$(dirname "$RAPID_VENV")"
   /opt/homebrew/opt/python@3.14/bin/python3.14 -m venv "$RAPID_VENV"
   "$RAPID_VENV/bin/python" -m pip install --upgrade pip
-  "$RAPID_VENV/bin/python" -m pip install 'rapid-mlx==0.10.9' 'starlette>=0.40' 'uvicorn>=0.30' 'httpx>=0.27'
+  "$RAPID_VENV/bin/python" -m pip install 'rapid-mlx==0.10.9' 'starlette==1.3.1' 'uvicorn==0.51.0' 'httpx==0.28.1'
 fi
 
 # 5b. mlx-audio venv, mirroring metal.nix's sttWrapper package set (built from /usr/bin/python3, the
-# CommandLineTools python; setuptools<81 kept for py3.14 pkg_resources compat).
+# CommandLineTools python; setuptools kept <81 for pkg_resources compat, pinned at the resolved
+# version). Every package is pinned to the exact version the verified venv resolved.
 STT_VENV="$STATE_DIR/mlx-audio/host-venv"
 if [[ ! -x "$STT_VENV/bin/python" ]]; then
   log "Building mlx-audio venv at $STT_VENV ..."
   mkdir -p "$(dirname "$STT_VENV")"
   /usr/bin/python3 -m venv "$STT_VENV"
   "$STT_VENV/bin/python" -m pip install --upgrade pip
-  "$STT_VENV/bin/python" -m pip install mlx-audio uvicorn fastapi python-multipart 'setuptools<81'
+  "$STT_VENV/bin/python" -m pip install 'mlx-audio==0.2.9' 'uvicorn==0.39.0' 'fastapi==0.128.8' 'python-multipart==0.0.20' 'setuptools==58.0.4'
 fi
 
 # 5c. Models into the shared HF hub cache. The STT model is downloaded here (idempotent — hf skips
