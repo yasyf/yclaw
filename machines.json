@@ -262,7 +262,9 @@
         "com.apple.osanalytics.osanalyticshelper",
         "com.apple.ecosystemanalyticsd",
         "com.apple.rtcreportingd",
-        "com.apple.SubmitDiagInfo"
+        "com.apple.SubmitDiagInfo",
+        "com.apple.rapportd",
+        "com.apple.bluetoothd"
       ],
       "gui": [
         "com.apple.generativeexperiencesd",
@@ -273,7 +275,8 @@
         "com.apple.mediaanalysisd",
         "com.apple.gamed",
         "com.apple.ScreenTimeAgent",
-        "com.apple.familycircled"
+        "com.apple.familycircled",
+        "com.apple.sharingd"
       ]
     }
   }
