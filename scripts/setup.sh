@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # De-Nix'd host bring-up: the runtime role that darwin/host.nix used to play, as a plain
 # idempotent shell script. The host runs NO Nix — just Homebrew `tart` + `gum`, the existing
-# Tailscale daemon, the `~/.yclaw/state` virtiofs source, and three launchd VM runners.
+# Tailscale daemon, the `~/.yclaw/state` virtiofs source, three launchd VM runners, and the host AI
+# serving stack (the rapid-mlx activator + mlx-audio STT, §5 below).
 #
 # Re-runnable: brew installs are no-ops when present, mkdir -p is idempotent, and each
 # LaunchAgent is rewritten then re-bootstrapped (bootout-before-bootstrap) so a changed plist
@@ -13,7 +14,8 @@
 #   • launchd agents mlx-qwen / parakeet-stt / cliproxyapi  — retired; live inside metal
 #   • environment.etc."cli-proxy-api/config.yaml"           — cliproxy config lives in metal
 #   • the app-firewall allowlist (socketfilterfw add/unblock for cli-proxy-api + MLX python)
-#                                                           — no host model services to unblock
+#                                                           — cliproxy stays in metal; the MLX-python
+#                                                             half RETURNS in §5 (host serving stack)
 #   • all nix-darwin scaffolding (stateVersion, primaryUser, trusted-users, pam.sudo_local,
 #     homebrew module)                                      — replaced by this script
 #   • the tart-vault runner                                 — vault VM retired; its agent-vault
@@ -24,8 +26,8 @@
 # PRESERVED (left untouched by this script):
 #   • the mise-built tailscaled 1.98.5 system daemon with `tailscale ssh` — detected, never
 #     clobbered; `brew install tailscale` runs ONLY when no tailscaled exists
-#   • the pf VNC anchor                                     — OFF by default (no host model
-#     services to gate); see ENABLE_VNC_ANCHOR below
+#   • the pf VNC anchor                                     — OFF by default (no VNC on the host; the
+#     §5 model ports get their own Phase-4 pf gate, not this anchor); see ENABLE_VNC_ANCHOR below
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,6 +45,10 @@ STATE_DIR="$HOME_DIR/.yclaw/state"
 LAUNCH_AGENTS_DIR="$HOME_DIR/Library/LaunchAgents"
 TART_BIN="/opt/homebrew/bin/tart"
 LOGS_DIR="$HOME_DIR/Library/Logs/Tart"
+# The host serving stack (§5): the activator + wrappers install under ~/.yclaw/bin, and their
+# LaunchAgents log under ~/Library/Logs/yclaw (distinct from the Tart runner logs above).
+BIN_DIR="$HOME_DIR/.yclaw/bin"
+MODEL_LOGS_DIR="$HOME_DIR/Library/Logs/yclaw"
 
 # The host's REGULAR Hugging Face hub cache (NOT the state tree). metal mounts this as the
 # `hfhub` share and serves models (rapid-mlx + STT) from it, so host and VM share ONE model cache and
@@ -88,6 +94,58 @@ $program_args  </array>
   <string>$LOGS_DIR/$node.log</string>
   <key>StandardErrorPath</key>
   <string>$LOGS_DIR/$node.error.log</string>
+</dict>
+</plist>
+PLIST
+
+  reload_launch_agent "$label" "$plist"
+  log "Loaded LaunchAgent $label."
+}
+
+# Write one host serving-stack LaunchAgent plist and (re)load it. Same bootout-before-bootstrap shape
+# as write_agent, but the program is a wrapper script (not tart) and the plist carries an
+# EnvironmentVariables dict, ProcessType=Interactive, and (rapid-mlx) an ExitTimeOut long enough for
+# the activator's graceful child stop before launchd SIGKILLs it.
+# Args: <label> <program> <log-basename> <exit-timeout|""> [KEY=VALUE ...]
+write_model_agent() {
+  local label="$1" program="$2" log_base="$3" exit_timeout="$4"; shift 4
+  local plist="$LAUNCH_AGENTS_DIR/$label.plist"
+
+  local env_xml="" kv
+  for kv in "$@"; do
+    env_xml+="      <key>${kv%%=*}</key>"$'\n'
+    env_xml+="      <string>${kv#*=}</string>"$'\n'
+  done
+
+  local exit_xml=""
+  if [[ -n "$exit_timeout" ]]; then
+    exit_xml="  <key>ExitTimeOut</key>"$'\n'"  <integer>$exit_timeout</integer>"$'\n'
+  fi
+
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$program</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+${env_xml}  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+${exit_xml}  <key>StandardOutPath</key>
+  <string>$MODEL_LOGS_DIR/$log_base.log</string>
+  <key>StandardErrorPath</key>
+  <string>$MODEL_LOGS_DIR/$log_base.error.log</string>
 </dict>
 </plist>
 PLIST
@@ -272,4 +330,99 @@ EOF
   rm -f "$vnc_rules"
 fi
 
-log "Host setup complete. VM runners loaded as com.yclaw.tart-metal / com.yclaw.tart-bluebubbles / com.yclaw.tart-hermes."
+# --- 5. Host model serving stack (rapid-mlx activator + mlx-audio STT) --------
+
+# The AI serving stack darwin/host.nix once ran, brought back to the bare host in front of the metal
+# copies (the metal->host migration; metal keeps serving until the Phase-5 relay flip). rapid-mlx runs
+# behind model-activator.py — a probe-safe idle-unload proxy that binds the tailnet IPv4:8000, answers
+# /health + /v1/models locally while the 35B is unloaded, and spawns/reaps a 127.0.0.1:18000 child on
+# demand. mlx-audio serves granite-speech STT on :8765. Both are gui LaunchAgents (RunAtLoad+KeepAlive).
+# Model ids come from nixos/models.nix (the SoT shared with metal.nix), baked into the wrappers at
+# install time; the serve flags mirror metal.nix's rapidMlxWrapper/sttWrapper verbatim.
+
+# Model ids — read from the single source of truth (nixos/models.nix), like bootstrap.sh does.
+QWEN_ID="$(sed -n 's/.*qwen = "\([^"]*\)".*/\1/p' "$REPO_ROOT/nixos/models.nix")"
+STT_ID="$(sed -n 's/.*stt = "\([^"]*\)".*/\1/p' "$REPO_ROOT/nixos/models.nix")"
+[[ -n "$QWEN_ID" && -n "$STT_ID" ]] || die "could not read qwen/stt ids from nixos/models.nix"
+
+# 5f. de-Nix cleanup: the retired host cli-proxy-api config (cliproxy lives in metal now). It is
+# root-owned under /etc, so it needs privilege setup.sh does not hold as the login user — remove it if
+# we can, else print the one-liner. Idempotent (skips when already gone).
+if [[ -e /etc/cli-proxy-api ]]; then
+  if rm -rf /etc/cli-proxy-api 2>/dev/null; then
+    log "Removed retired /etc/cli-proxy-api."
+  else
+    warn "retired /etc/cli-proxy-api present but not removable as $(id -un); run: sudo rm -rf /etc/cli-proxy-api"
+  fi
+fi
+
+# 5a. rapid-mlx venv (python@3.14 keg, matching metal.nix) + the activator's runtime deps. Build only
+# when absent — mirrors metal.nix's `-x .../bin/rapid-mlx` idempotency check.
+RAPID_VENV="$STATE_DIR/rapid-mlx/venv"
+if [[ ! -x "$RAPID_VENV/bin/rapid-mlx" ]]; then
+  log "Building rapid-mlx venv at $RAPID_VENV ..."
+  mkdir -p "$(dirname "$RAPID_VENV")"
+  /opt/homebrew/opt/python@3.14/bin/python3.14 -m venv "$RAPID_VENV"
+  "$RAPID_VENV/bin/python" -m pip install --upgrade pip
+  "$RAPID_VENV/bin/python" -m pip install 'rapid-mlx==0.10.9' 'starlette>=0.40' 'uvicorn>=0.30' 'httpx>=0.27'
+fi
+
+# 5b. mlx-audio venv, mirroring metal.nix's sttWrapper package set (built from /usr/bin/python3, the
+# CommandLineTools python; setuptools<81 kept for py3.14 pkg_resources compat).
+STT_VENV="$STATE_DIR/mlx-audio/host-venv"
+if [[ ! -x "$STT_VENV/bin/python" ]]; then
+  log "Building mlx-audio venv at $STT_VENV ..."
+  mkdir -p "$(dirname "$STT_VENV")"
+  /usr/bin/python3 -m venv "$STT_VENV"
+  "$STT_VENV/bin/python" -m pip install --upgrade pip
+  "$STT_VENV/bin/python" -m pip install mlx-audio uvicorn fastapi python-multipart 'setuptools<81'
+fi
+
+# 5c. Models into the shared HF hub cache. The STT model is downloaded here (idempotent — hf skips
+# present files); the Qwen weights are the human `hf download` gate bootstrap.sh runs, so warn (never
+# fail) if they are absent — a host-only setup.sh run then surfaces the gap without blocking.
+log "Downloading STT model $STT_ID into $HF_HUB_DIR (idempotent) ..."
+hf download "$STT_ID"
+qwen_cache_dir="$HF_HUB_DIR/models--$(printf '%s' "$QWEN_ID" | sed 's#/#--#g')"
+if [[ ! -d "$qwen_cache_dir" ]]; then
+  warn "Qwen model absent at $qwen_cache_dir — rapid-mlx cannot serve until you run: hf download $QWEN_ID"
+fi
+
+# 5d. Install the serving-stack files into ~/.yclaw/bin. model-activator.py + stt-server.py + wait.sh
+# are copied verbatim from the repo; the two wrappers are copied through sed to bake the model ids.
+log "Installing serving-stack files into $BIN_DIR ..."
+mkdir -p "$BIN_DIR" "$MODEL_LOGS_DIR"
+cp "$REPO_ROOT/scripts/host/model-activator.py" "$BIN_DIR/model-activator.py"
+cp "$REPO_ROOT/darwin/stt-server.py" "$BIN_DIR/stt-server.py"
+cp "$REPO_ROOT/scripts/lib/wait.sh" "$BIN_DIR/wait.sh"
+sed "s|@@QWEN_MODEL@@|$QWEN_ID|g" "$REPO_ROOT/scripts/host/rapid-mlx-wrapper.sh" > "$BIN_DIR/rapid-mlx-wrapper.sh"
+sed "s|@@STT_MODEL@@|$STT_ID|g" "$REPO_ROOT/scripts/host/mlx-audio-wrapper.sh" > "$BIN_DIR/mlx-audio-wrapper.sh"
+chmod +x "$BIN_DIR/rapid-mlx-wrapper.sh" "$BIN_DIR/mlx-audio-wrapper.sh"
+
+# 5g. Application-firewall allowlist for the two venv pythons — ONLY when the app firewall is on. The
+# firewall silently drops inbound to unlisted binaries, so the tailnet cannot reach the serving ports
+# until the actual listeners are unblocked. socketfilterfw resolves each venv-python symlink to its
+# framework interpreter (the real listener), the same target metal.nix allowlists. Best-effort.
+FW=/usr/libexec/ApplicationFirewall/socketfilterfw
+if "$FW" --getglobalstate 2>/dev/null | grep -qi enabled; then
+  log "App firewall is on — allowlisting the serving-stack venv pythons ..."
+  for py in "$RAPID_VENV/bin/python" "$STT_VENV/bin/python"; do
+    if [[ -e "$py" ]]; then
+      "$FW" --add "$py" >/dev/null 2>&1 || true
+      "$FW" --unblockapp "$py" >/dev/null 2>&1 || true
+    fi
+  done
+else
+  log "App firewall is off — skipping the serving-stack allowlist."
+fi
+
+# 5e. LaunchAgents. rapid-mlx gets ExitTimeOut=180 so launchd's SIGTERM->SIGKILL window covers the
+# activator's graceful child stop (SIGTERM + up to 120s wait; graceful shutdown saves the prefix cache
+# and dodges the 20GB wired-Metal teardown pathology). Both run ProcessType=Interactive (no App-Nap
+# throttling) with HF_HUB_CACHE from the plist env; rapid-mlx also carries IDLE_SECONDS.
+write_model_agent com.yclaw.rapid-mlx "$BIN_DIR/rapid-mlx-wrapper.sh" rapid-mlx 180 \
+  "IDLE_SECONDS=1800" "HF_HUB_CACHE=$HF_HUB_DIR"
+write_model_agent com.yclaw.mlx-audio "$BIN_DIR/mlx-audio-wrapper.sh" mlx-audio "" \
+  "HF_HUB_CACHE=$HF_HUB_DIR"
+
+log "Host setup complete. VM runners com.yclaw.tart-{metal,bluebubbles,hermes} + serving stack com.yclaw.{rapid-mlx,mlx-audio} loaded."
