@@ -280,6 +280,12 @@ in
   # In-guest rebuilds OOM without swap: hermes-web's `npm ci` alone out-eats the ~4 GiB guest
   # (oom-killer kills dry-activate, rc=137). Disk is plentiful; 8 GiB absorbs the build peak.
   swapDevices = [ { device = "/var/swapfile"; size = 8192; } ];
+  # The 8G dd races the stage-2 disk growth (growpart → systemd-growfs-root) and ENOSPCs on the
+  # minimized image's first boot; create the swapfile only after the root FS is full-size.
+  systemd.services.mkswap-var-swapfile = {
+    after = [ "systemd-growfs-root.service" ];
+    wants = [ "systemd-growfs-root.service" ];
+  };
 
   # NOTE: /var/lib/tailscale is deliberately NOT externalized to a host share. hermes joins as a
   # PERSISTENT node (scripts/lib/secrets.sh `_ts_mint_key`), so the node key on its own VM disk here

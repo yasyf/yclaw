@@ -239,6 +239,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pasted back — no SSH tunnel to `metal` required.
 
 ### Fixed
+- First-boot swap race on the minimized repart image: `boot.growPartition` is a stage-2 unit
+  at the 25.05 pin (`growpart.service` → `systemd-growfs-root.service`), so the 8 GiB
+  `mkswap-var-swapfile` dd ran unordered against disk growth and hit ENOSPC on the ~2 GiB-free
+  first boot — self-healing on the next reboot, but the first boot came up degraded. hermes.nix
+  now orders swapfile creation after `systemd-growfs-root.service`; scratch-VM validated (the
+  journal shows mkswap strictly after growfs, and the 8 GiB dd completes on first boot).
 - `scripts/remint-hermes-authkey.sh` crashed with `KeyError: 'CLIPROXY_API_KEY'` on every
   disk-replace (`deploy-vm.sh hermes`): hermes's `hermes/env` block gained `CLIPROXY_API_KEY`
   after the script was written, but the key's only home is metal's sops bundle — not the
