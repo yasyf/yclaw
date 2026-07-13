@@ -159,17 +159,19 @@ cmd_debloat() {
   log "Debloat: disabling non-essential macOS services (iMessage/push/iCloud stack untouched) ..."
   mdutil -i off -a >/dev/null 2>&1 || true
   tmutil disable >/dev/null 2>&1 || true
-  local uid L
-  uid="$(id -u)"
+  local L
   # shellcheck disable=SC2086  # deliberate word-split of the space-joined prelude list
   for L in $YCLAW_DEBLOAT_SYSTEM; do
     sudo launchctl bootout "system/$L" >/dev/null 2>&1 || true
     sudo launchctl disable "system/$L" >/dev/null 2>&1 || true
   done
+  # LaunchAgents live in the signed-in user's GUI domain (gui/$GUI_UID), not root's; this script runs as
+  # root, so retarget via as_gui — a bare `id -u` yields root's 0, whose gui domain holds none of them.
+  resolve_gui_user
   # shellcheck disable=SC2086  # deliberate word-split of the space-joined prelude list
   for L in $YCLAW_DEBLOAT_GUI; do
-    launchctl bootout "gui/$uid/$L" >/dev/null 2>&1 || true
-    launchctl disable "gui/$uid/$L" >/dev/null 2>&1 || true
+    as_gui launchctl bootout "gui/$GUI_UID/$L" >/dev/null 2>&1 || true
+    as_gui launchctl disable "gui/$GUI_UID/$L" >/dev/null 2>&1 || true
   done
   pmset -a powernap 0 womp 0 sleep 0 disksleep 0 >/dev/null 2>&1 || true
   log "Debloat complete (safe subset; iMessage/push/iCloud/Private-API stack left intact)."
