@@ -9,7 +9,8 @@
 # takes effect. `setup.sh host-serving` re-runs ONLY §5 (the serving stack) — the full run's §3
 # bootout-before-bootstrap restarts the LIVE tart VM runners. `setup.sh host-pf` (root-gated,
 # NOT part of the full run — the apply is deliberately operator-gated, like the hand-applied
-# tailnet ACL it backstops) installs §6: the com.yclaw.host pf anchor + its refresh daemon.
+# tailnet ACL it backstops) installs §6: the host pf anchor (com.apple/999.yclaw.host) + its
+# refresh daemon.
 #
 # ── darwin/host.nix responsibility mapping ───────────────────────────────────────────────────
 # DELETED (gone with the host services, which now run inside the `metal` VM):
@@ -261,16 +262,31 @@ setup_host_serving() {
 
 # --- 6. Host pf lockdown (optional, root, NOT in the full run) -----------------
 
-# Install the `com.yclaw.host` pf anchor + its refresh LaunchDaemon: ONLY metal may reach the
-# host's model ports (rapid-mlx :8000, mlx-audio STT :8765) and no fleet VM reaches anything else
-# on the host — the pf half of the Phase-4 lockdown (the tailnet-ACL half is hand-applied; see
+# Install the host's fleet-lockdown pf anchor + its refresh LaunchDaemon: ONLY metal may reach
+# the host's model ports (rapid-mlx :8000, mlx-audio STT :8765) and no fleet VM reaches anything
+# else on the host — over the tailnet or via the vmnet side-door (the bridge gateway
+# 192.168.64.1, where every host-bound listener is otherwise reachable past the tailnet ACL) —
+# the pf half of the Phase-4 lockdown (the tailnet-ACL half is hand-applied; see
 # tailnet/policy.hujson). Mirrors bluebubbles-setup.sh's install_bb_pf_refresh: bake the tick
 # script (scripts/host/host-pf.sh) beside verbatim wait.sh + pf.sh copies under
 # /usr/local/lib/yclaw, run it once synchronously (the anchor is in force when this returns, not
 # 300s later), then install the /Library/LaunchDaemons KeepAlive sleep-loop daemon (StartInterval
 # silently stops firing on Tahoe) that re-keys the anchor to the fleet's current IPs every 300s.
-# The tailscale CLI is a mise install in the login user's HOME, invisible to sudo's reset PATH —
-# honor wait.sh's TAILSCALE binary seam, die with the exact remedy otherwise.
+#
+# The anchor attaches at com.apple/999.yclaw.host (host-pf.sh's header has the full rationale):
+# the stock pf.conf's `anchor "com.apple/*"` wildcard evaluates it from the FIRST targeted load —
+# a root-level anchor would stay orphaned until a boot-time /etc/pf.conf reload, and a live full
+# reload is off the table because it flushes the dynamically-inserted Internet-Sharing/vmnet
+# calls. That wildcard also precedes /etc/pf.conf's `anchor "vnc"` (whose <vnc_allowed> table
+# quick-passes 192.168.0.0/16 + the tailnet to Screen Sharing 5900-5902 — Apple's file is left
+# untouched), so the fleet block wins the quick race against the VNC allow.
+#
+# The tailscale CLI is a mise install in the login user's HOME (and /usr/local/bin/tailscaled is
+# a symlink into that same user-writable tree) — a root daemon must never exec user-writable
+# bits, so copy the resolved binary to root-owned /usr/local/lib/yclaw/tailscale and bake THAT
+# path into the tick; re-running host-pf refreshes the copy. TAILSCALE stays the seam for
+# FINDING the source binary (it lives in the login user's HOME, invisible to sudo's reset PATH) —
+# die with the exact remedy otherwise.
 setup_host_pf() {
   [ "$(id -u)" -eq 0 ] || die "host-pf writes /etc/pf.anchors + /Library/LaunchDaemons — run: sudo TAILSCALE=\"\$(command -v tailscale)\" bash scripts/setup.sh host-pf"
 
@@ -284,7 +300,10 @@ setup_host_pf() {
   install -d -m 755 "$lib_dir"
   install -m 644 "$REPO_ROOT/scripts/lib/wait.sh" "$lib_dir/wait.sh"
   install -m 644 "$REPO_ROOT/scripts/lib/pf.sh" "$lib_dir/pf.sh"
-  sed -e "s|@@TAILSCALE@@|$ts_bin|g" -e "s|@@PF_PORTS@@|$ports|g" \
+  install -o root -g wheel -m 755 "$ts_bin" "$lib_dir/tailscale"
+  "$lib_dir/tailscale" version 2>/dev/null | grep -q '^[0-9]' \
+    || die "$lib_dir/tailscale (copied from $ts_bin) is not a runnable tailscale CLI (mise shim? wrong arch?) — re-run with TAILSCALE=<path to the real binary>"
+  sed -e "s|@@TAILSCALE@@|$lib_dir/tailscale|g" -e "s|@@PF_PORTS@@|$ports|g" \
     "$REPO_ROOT/scripts/host/host-pf.sh" > "$lib_dir/host-pf.sh"
   chmod 755 "$lib_dir/host-pf.sh"
 
@@ -327,7 +346,8 @@ case "${1:-}" in
     ;;
   host-pf)
     setup_host_pf
-    log "Host pf lockdown installed: anchor com.yclaw.host + LaunchDaemon com.yclaw.host-pf-refresh."
+    log "Host pf lockdown installed: anchor com.apple/999.yclaw.host + LaunchDaemon com.yclaw.host-pf-refresh."
+    log "Verify from a fleet VM: tailscale ssh metal -- curl --max-time 5 http://192.168.64.1:<host-port>/ must now FAIL."
     exit 0
     ;;
   "") ;;
