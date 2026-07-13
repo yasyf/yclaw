@@ -373,7 +373,8 @@ PLIST
   # (tailscale ssh always reports rc 0). HOST4 = the host's tailnet IPv4 (`tailscale ip -4`);
   # LAN = the host's LAN address (`ipconfig getifaddr en0`). The model ports listen ONLY on
   # HOST4, so a curl at 192.168.64.1:<model-port> fails even with pf disabled and proves nothing.
-  #   1. PASS  — model plane intact (tailnet ingress rides WAN/DERP, never the bridge):
+  #   1. PASS  — model plane intact over the tailnet (decrypted 100.x traffic on utunN, policed by
+  #      the fleet-IP rules, not the bridge; the WG carve-out only admits the encrypted transport):
   #        tailscale ssh metal -- curl -sS --max-time 5 http://HOST4:8000/v1/models  -> model list
   #   2. BLOCK — weak-host delivery of the tailnet IP via the vmnet gateway:
   #        tailscale ssh hermes -- sudo ip route replace HOST4/32 via 192.168.64.1

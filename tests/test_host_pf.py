@@ -88,6 +88,7 @@ def make_sandbox(tmp_path: Path, sr: str = STOCK_SR, status: str = "Enabled") ->
         template.replace(pinned_path, f"export PATH={bindir}:/usr/sbin:/sbin:/usr/bin:/bin")
         .replace("@@TAILSCALE@@", str(bindir / "tailscale"))
         .replace("@@PF_PORTS@@", "{ 8000, 8765 }")
+        .replace("@@WG_PORT@@", "41641")
     )
     (lib / "host-pf.sh").write_text(rendered)
     (lib / "host-pf.sh").chmod(0o755)
@@ -131,6 +132,12 @@ def test_tick_renders_the_to_self_lockdown_under_000(tmp_path: Path) -> None:
     assert "pass in quick on bridge101 proto udp from 192.168.64.0/24 to 192.168.64.1 port { 53, 67, 68 }" in loaded
     assert "pass in quick on bridge101 proto tcp from 192.168.64.0/24 to 192.168.64.1 port 53" in loaded
     assert "pass in quick proto tcp from { 100.100.0.1, fd7a:115c:a1e0::1 } to any port { 8000, 8765 }" in loaded
+
+    # The WireGuard carve-out (fleet->gateway UDP on the pinned tailscaled port) admits direct vmnet
+    # magicsock; it MUST precede the to-self block (pf quick = first-match) or the block would swallow it.
+    carveout = "pass in quick on bridge101 proto udp from 192.168.64.0/24 to 192.168.64.1 port 41641"
+    assert carveout in loaded
+    assert loaded.index(carveout) < loaded.index("block drop in quick on bridge101 from 192.168.64.0/24 to self")
     assert "block drop in quick on bridge101 from 192.168.64.0/24 to 192.168.64.1" not in loaded
 
     assert (sandbox.cap / "load-calls").read_text() == "com.apple/000.yclaw.host\n"

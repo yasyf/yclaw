@@ -7,9 +7,10 @@
 # gateway 192.168.64.1, the LAN IP, even the tailnet IP over a forced VM route — past both the
 # tailnet ACL and the tailnet-IP rules. Personal devices and non-fleet traffic never match —
 # every rule is keyed on the resolved fleet addresses or the fleet's vmnet subnet, never a
-# CGNAT-wide source. The fleet's tailnet ingress to the host rides WAN/DERP (no direct host<->
-# fleet WireGuard path exists), so no tailscaled UDP pass is needed and the bridge rules never
-# touch the model plane.
+# CGNAT-wide source. A single carve-out passes fleet->gateway UDP on the host's pinned tailscaled
+# port (WG_PORT) so host<->fleet magicsock can land the sub-ms 192.168.64.x path instead of the
+# LAN-reflexive hairpin or DERP; it admits ONLY encrypted WireGuard, so it never touches the model
+# plane (pf polices the decrypted 100.x tunnel on utunN independently — see the carve-out comment).
 #
 # The anchor attaches at com.apple/000.yclaw.host — a CHILD of the stock /etc/pf.conf's
 # `anchor "com.apple/*"` wildcard call — so the targeted load is EVALUATED immediately: on first
@@ -169,7 +170,9 @@ if [ "$NEED_KILL" -eq 1 ]; then
   # drop too; they re-establish through the pass above). The vmnet kill must be pair-scoped
   # (`-k src -k dst`, one dst per host-interface IPv4): a bare -k on the subnet would also kill
   # the guests' NAT egress states toward public destinations. Guest link-local v6 states are
-  # left to expire — pfctl -k cannot address zone-scoped fe80 sources.
+  # left to expire — pfctl -k cannot address zone-scoped fe80 sources. The pair-kill also drops
+  # any live fleet->gateway WireGuard UDP (:WG_PORT) states, which is harmless: WireGuard
+  # re-handshakes statelessly and magicsock re-establishes the vmnet path within seconds.
   for src in "$METAL4" "$METAL6" "$HERMES4" "$HERMES6" "$BB4" "$BB6"; do
     pfctl -k "$src" || { echo "host-pf: FATAL state kill failed for $src" >&2; exit 1; }
   done
