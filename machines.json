@@ -120,6 +120,7 @@
       "tart_vm": null,
       "tag": null,
       "tailnet_name": "yasyf-home",
+      "wireguard_port": 41641,
       "ssh": null,
       "admin_pass_keychain": null,
       "shares": null,

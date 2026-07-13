@@ -312,8 +312,9 @@ setup_host_pf() {
   [ -n "$ts_bin" ] || ts_bin="$(command -v tailscale || true)"
   { [ -n "$ts_bin" ] && [ -x "$ts_bin" ]; } || die "tailscale CLI not found (sudo resets PATH) — run: sudo TAILSCALE=\"\$(command -v tailscale)\" bash scripts/setup.sh host-pf"
 
-  local lib_dir="/usr/local/lib/yclaw" ports
+  local lib_dir="/usr/local/lib/yclaw" ports wg_port
   ports="{ $(manifest_get '.machines.host.services["rapid-mlx"].port'), $(manifest_get '.machines.host.services["mlx-audio"].port') }"
+  wg_port="$(manifest_get '.machines.host.wireguard_port')"
 
   install -d -m 755 "$lib_dir"
   install -m 644 "$REPO_ROOT/scripts/lib/wait.sh" "$lib_dir/wait.sh"
@@ -321,7 +322,7 @@ setup_host_pf() {
   install -o root -g wheel -m 755 "$ts_bin" "$lib_dir/tailscale"
   "$lib_dir/tailscale" version 2>/dev/null | grep -q '^[0-9]' \
     || die "$lib_dir/tailscale (copied from $ts_bin) is not a runnable tailscale CLI (mise shim? wrong arch?) — re-run with TAILSCALE=<path to the real binary>"
-  sed -e "s|@@TAILSCALE@@|$lib_dir/tailscale|g" -e "s|@@PF_PORTS@@|$ports|g" \
+  sed -e "s|@@TAILSCALE@@|$lib_dir/tailscale|g" -e "s|@@PF_PORTS@@|$ports|g" -e "s|@@WG_PORT@@|$wg_port|g" \
     "$REPO_ROOT/scripts/host/host-pf.sh" > "$lib_dir/host-pf.sh"
   chmod 755 "$lib_dir/host-pf.sh"
 
