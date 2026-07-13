@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"add_comment","body":"Resolved by the systemd-repart migration (f5d01107): image builds with unshare+fakeroot systemd-repart in the plain nix sandbox — no KVM needed, no TCG fallback, --nested dropped. CI green; live hermes cut over 2026-07-13."}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_status","status":"done"},{"kind":"link_commit","sha":"b614d565e181645a9f1be1c32d278534d4fc18de"}]}
