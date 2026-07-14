@@ -108,6 +108,13 @@ let
   mlxaudioShare = "/Volumes/My Shared Files/mlxaudio";
   repoShare = "/Volumes/My Shared Files/repo";
 
+  # The RESOLVED socat executable: bin/socat is a symlink to bin/socat1, and the app firewall keys
+  # entries on the resolved binary's identity — `--add .../bin/socat` registers NOTHING while the
+  # running process is socat1, so ALF silently swallows the relay's inbound (observed live
+  # 2026-07-14: TCP handshakes completed via the listen backlog but accept() never fired). The
+  # wrappers and both firewall loops all use this one path so exec target == allowlisted binary.
+  socatBin = "${pkgs.socat}/bin/socat1";
+
   # Decrypted sops secret paths (sops-nix installs to /run/secrets/<name>).
   masterPasswordFile = config.sops.secrets."vault/master-password".path;
   staticKeysFile = config.sops.secrets."vault/static-keys".path;
@@ -169,7 +176,7 @@ let
     # max-children it caps the forked-child pile-up when the host is in the netmap but unreachable.
     # -t 600 covers a client that half-closes after its request (socat's default post-EOF grace is
     # 0.5 s, which would kill a >0.5 s generation mid-stream) while bounding orphaned children.
-    exec ${pkgs.socat}/bin/socat -t 600 \
+    exec ${socatBin} -t 600 \
       "TCP-LISTEN:8000,bind=$TSIP,fork,max-children=64,reuseaddr,nodelay" \
       "TCP:$HOSTIP:8000,nodelay,connect-timeout=10"
   '';
@@ -186,7 +193,7 @@ let
     TSIP="$(wait_tailscale_ip)"
     HOSTIP="$(wait_tailscale_ip yasyf-home)"
     # Relay options: see the rapid-mlx wrapper.
-    exec ${pkgs.socat}/bin/socat -t 600 \
+    exec ${socatBin} -t 600 \
       "TCP-LISTEN:8765,bind=$TSIP,fork,max-children=64,reuseaddr,nodelay" \
       "TCP:$HOSTIP:8765,nodelay,connect-timeout=10"
   '';
@@ -745,7 +752,7 @@ in
       for BIN in \
         ${pkgs.cli-proxy-api}/bin/cli-proxy-api \
         ${pkgs.agent-vault}/bin/agent-vault \
-        ${pkgs.socat}/bin/socat; do
+        ${socatBin}; do
         NAME=$(/usr/bin/basename "$BIN")
         "$FW" --listapps 2>/dev/null \
           | /usr/bin/grep -oE "/nix/store/[^ ]*/bin/$NAME" \
@@ -757,7 +764,7 @@ in
         /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/*/Resources/Python.app/Contents/MacOS/Python \
         ${pkgs.cli-proxy-api}/bin/cli-proxy-api \
         ${pkgs.agent-vault}/bin/agent-vault \
-        ${pkgs.socat}/bin/socat \
+        ${socatBin} \
         /opt/homebrew/bin/tailscaled; do
         if [ -e "$BIN" ]; then
           "$FW" --add "$BIN" >/dev/null 2>&1 || true
