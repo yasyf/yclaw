@@ -147,69 +147,48 @@ let
   # Wrappers: launchd has no EnvironmentFile, so each wrapper sources the secret/env it needs
   # and exec's the absolute binary. The daemons run as `adminUser` so they read the admin-owned
   # sops secrets; MLX/Metal GPU works headless from a daemon context — no login session needed.
-  # rapid-mlx loads its single model at startup and holds it resident (no idle-unload; model
-  # load → LISTEN takes ~101 s on the 35B — size health waits accordingly). It reads the model
-  # from the shared HF hub cache (HF_HUB_CACHE → the `hfhub` share, the host's regular cache);
-  # HF_HUB_OFFLINE=1 because the weights are pre-placed by the human `hf download` gate — a
-  # missing model must fail loud, never re-download.
+  # rapid-mlx (8000) and mlx-audio (8765) now run as thin socat TCP relays to the model plane on
+  # the HOST (yasyf-home), which serves both behind its own idle-unload activator (Phase 5). Each
+  # relay binds THIS node's tailnet IP on the port hermes already calls and forwards to the host's
+  # tailnet IP, so hermes keeps calling metal:8000 / metal:8765 unchanged — the relay carries no
+  # shares, no HF cache, and no model env. The in-guest venvs + models stay on disk as the fallback
+  # until Phase 6 tears them down.
   rapidMlxWrapper = pkgs.writeShellScript "metal-rapid-mlx" ''
     set -euo pipefail
-    ${mkDaemonPreamble {
-      shares = [ hfHubCache ];
-    }}
-    export HF_HUB_CACHE=${lib.escapeShellArg hfHubCache}
-    export HF_HUB_OFFLINE=1
+    ${mkDaemonPreamble { }}
     # Bind to THIS node's tailnet (CGNAT 100.64.0.0/10) IPv4 instead of 0.0.0.0, so the port is never
     # exposed on the vmnet LAN bridge even if the pf anchor is down — the pf anchor (scoped to
     # hermes's resolved tailnet IP) stays the PRIMARY gate; this is the bind-layer backstop (M2).
-    # wait_tailscale_ip fails LOUD on exhaustion (a service bound to nothing is useless); set -e
-    # aborts and KeepAlive restarts the wrapper to retry once tailscaled is up.
+    # Both resolves fail LOUD on exhaustion (a relay bound/forwarding to nothing is useless); set -e
+    # aborts and KeepAlive restarts the wrapper to retry once tailscaled is up. yasyf-home is the
+    # host node; `tailscale ip -4 yasyf-home` answers from the netmap once tailscaled is Running.
     TSIP="$(wait_tailscale_ip)"
-    VENV=${lib.escapeShellArg "${home}/.venvs/rapid-mlx"}
-    if [ ! -x "$VENV/bin/rapid-mlx" ]; then
-      mkdir -p "$(dirname "$VENV")"
-      /opt/homebrew/opt/python@3.14/bin/python3.14 -m venv "$VENV"
-      "$VENV/bin/python" -m pip install --upgrade pip
-      "$VENV/bin/python" -m pip install 'rapid-mlx==0.10.9'
-    fi
-    # int8 KV over rapid-mlx's int4 default: tool-call fidelity on the agent lane.
-    # --pflash off: pflash lossily compresses prompts (measured 2994→2304 tokens) — breaks tool calls.
-    exec "$VENV/bin/rapid-mlx" serve "${(import ../nixos/models.nix).qwen}" \
-      --host "$TSIP" --port 8000 \
-      --max-num-seqs 1 \
-      --kv-cache-dtype int8 \
-      --pflash off \
-      --default-temperature 0.6 --default-top-p 0.95 --default-top-k 20 \
-      --default-repetition-penalty 1.05
+    HOSTIP="$(wait_tailscale_ip yasyf-home)"
+    # connect-timeout only bounds TCP connect to the host's always-resident activator — the slow
+    # cold model wake happens at the HTTP layer behind an already-accepted connection — so with
+    # max-children it caps the forked-child pile-up when the host is in the netmap but unreachable.
+    # -t 600 covers a client that half-closes after its request (socat's default post-EOF grace is
+    # 0.5 s, which would kill a >0.5 s generation mid-stream) while bounding orphaned children.
+    exec ${pkgs.socat}/bin/socat -t 600 \
+      "TCP-LISTEN:8000,bind=$TSIP,fork,max-children=64,reuseaddr,nodelay" \
+      "TCP:$HOSTIP:8000,nodelay,connect-timeout=10"
   '';
 
-  # mlx-audio's own multi-threaded `mlx_audio.server` crashes granite-speech with
-  # "There is no Stream(gpu, 1) in current thread" (MLX streams are per-thread). We run our
-  # single-worker wrapper (darwin/stt-server.py) instead, which drives the same single-threaded
-  # path the CLI uses. Idempotent venv build (skip if present); setuptools<81 kept for safety
-  # (>=81 drops pkg_resources, which some transitive imports still expect on py3.14).
+  # This daemon now relays 8765 to the host (see the rapid-mlx wrapper). The in-guest STT server
+  # stays as the fallback until Phase 6: mlx-audio's own multi-threaded `mlx_audio.server` crashes
+  # granite-speech with "There is no Stream(gpu, 1) in current thread" (MLX streams are per-thread),
+  # so the fallback runs our single-worker wrapper (darwin/stt-server.py) from a venv instead.
   sttServerPy = ./stt-server.py;
   sttWrapper = pkgs.writeShellScript "metal-mlx-audio" ''
     set -euo pipefail
-    ${mkDaemonPreamble {
-      shares = [
-        hfHubCache
-        mlxaudioShare
-      ];
-    }}
-    export HF_HUB_CACHE=${lib.escapeShellArg hfHubCache}
-    export STT_MODEL=${(import ../nixos/models.nix).stt} STT_PORT=8765
+    ${mkDaemonPreamble { }}
     # Tailnet-only bind (M2) — see the rapid-mlx wrapper.
     TSIP="$(wait_tailscale_ip)"
-    export STT_HOST="$TSIP"
-    VENV=${lib.escapeShellArg sttVenv}
-    if [ ! -x "$VENV/bin/python" ]; then
-      mkdir -p "$(dirname "$VENV")"
-      /usr/bin/python3 -m venv "$VENV"
-      "$VENV/bin/python" -m pip install --upgrade pip
-      "$VENV/bin/python" -m pip install mlx-audio uvicorn fastapi python-multipart "setuptools<81"
-    fi
-    exec "$VENV/bin/python" ${sttServerPy}
+    HOSTIP="$(wait_tailscale_ip yasyf-home)"
+    # Relay options: see the rapid-mlx wrapper.
+    exec ${pkgs.socat}/bin/socat -t 600 \
+      "TCP-LISTEN:8765,bind=$TSIP,fork,max-children=64,reuseaddr,nodelay" \
+      "TCP:$HOSTIP:8765,nodelay,connect-timeout=10"
   '';
 
   # Render the cliproxy config from the committed template, substituting the sops cliproxy/api-key
@@ -750,12 +729,13 @@ in
       "$FW" --setglobalstate on >/dev/null 2>&1 || true
       "$FW" --setstealthmode on >/dev/null 2>&1 || true
       "$FW" --setloggingmode on >/dev/null 2>&1 || true
-      # Allowlist the ACTUAL listening binaries. rapid-mlx and the STT wrapper each serve from a
-      # Python framework interpreter (the venv pythons are symlinks — the kernel, and
-      # socketfilterfw, see the interpreter), so allowlist the Homebrew python framework
-      # (rapid-mlx) and the CommandLineTools python framework (STT) by glob: version-agnostic
-      # and robust across brew/CLT upgrades. cli-proxy-api/agent-vault are the real nix-store
-      # listeners; tailscaled is allowlisted so direct (non-DERP) inbound and tailscale-ssh survive.
+      # Allowlist the ACTUAL listening binaries. As of Phase 5, socat is the listener for 8000/8765
+      # (the relays to the host) — a nix-store binary, so it takes the same stale-entry cleanup as
+      # cli-proxy-api/agent-vault below. The Homebrew + CommandLineTools python frameworks stay
+      # allowlisted by glob (version-agnostic, robust across brew/CLT upgrades) for the in-guest
+      # rapid-mlx/STT fallback, whose venv pythons are framework-interpreter symlinks the kernel and
+      # socketfilterfw see through. cli-proxy-api/agent-vault are the real nix-store listeners;
+      # tailscaled is allowlisted so direct (non-DERP) inbound and tailscale-ssh survive.
       # pf above is the real tailnet-only gate; this allowlist is per-app defense-in-depth.
       # Nix-store listeners get a NEW path on every rebuild, but their adhoc signature keeps the
       # same Identifier — socketfilterfw then dedups `--add` against the STALE entry (rc=0, no new
@@ -764,7 +744,8 @@ in
       # Remove any other /nix/store entry for the same binary basename before adding the current one.
       for BIN in \
         ${pkgs.cli-proxy-api}/bin/cli-proxy-api \
-        ${pkgs.agent-vault}/bin/agent-vault; do
+        ${pkgs.agent-vault}/bin/agent-vault \
+        ${pkgs.socat}/bin/socat; do
         NAME=$(/usr/bin/basename "$BIN")
         "$FW" --listapps 2>/dev/null \
           | /usr/bin/grep -oE "/nix/store/[^ ]*/bin/$NAME" \
@@ -776,6 +757,7 @@ in
         /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/*/Resources/Python.app/Contents/MacOS/Python \
         ${pkgs.cli-proxy-api}/bin/cli-proxy-api \
         ${pkgs.agent-vault}/bin/agent-vault \
+        ${pkgs.socat}/bin/socat \
         /opt/homebrew/bin/tailscaled; do
         if [ -e "$BIN" ]; then
           "$FW" --add "$BIN" >/dev/null 2>&1 || true
