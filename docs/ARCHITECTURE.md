@@ -6,34 +6,40 @@ test, and the agent is isolated in a Linux VM that never holds a credential.
 
 ## Topology
 
-A bare macOS host boots three `tart` guests on one tailnet. The host stays minimal: Homebrew provides `tart`, Tailscale,
-`gum`, `packer`, and `restic`, and `scripts/setup.sh` supervises the guests via
-`com.yclaw.tart-*` launchd agents. All persistent state and secrets live outside
-the repo in `~/.yclaw/state`; generated passwords live in a dedicated keychain at
-`~/Library/Keychains/yclaw.keychain-db`.
+A bare macOS host boots three `tart` guests on one tailnet and serves the model
+plane itself. The host stays lean: Homebrew provides `tart`, Tailscale, `gum`,
+`packer`, and `restic`, and `scripts/setup.sh` supervises the guests via
+`com.yclaw.tart-*` launchd agents and installs the on-host serving stack — the
+rapid-mlx activator and the mlx-audio STT server, detailed below. All persistent
+state and secrets live outside the repo in `~/.yclaw/state`; generated passwords
+live in a dedicated keychain at `~/Library/Keychains/yclaw.keychain-db`.
 
 Every node is addressed by its bare Tailscale MagicDNS name, so an image is
 generic until first boot stamps in a `node.env`. That keeps the built images free
 of host-specific identity and lets the same artifact serve any tailnet.
 
-- **metal** — the credential and inference guest: a macOS node with SIP **on** and
-  the OS maximally locked down, configured in-guest by nix-darwin
+- **metal** — the credential guest: a macOS node with SIP **on** and the OS
+  maximally locked down, configured in-guest by nix-darwin
   (`darwinConfigurations.metal` / `darwin/metal.nix`). It is the sole credential
-  custodian and runs only the credential and inference services — **no iMessage**.
-  Four OpenAI-compatible services bind tailnet-only:
-  - **rapid-mlx** (`:8000`) — local Qwen MLX inference; the single model loads at
-    startup (~101 s) and stays resident — no idle unload.
-  - **mlx-audio** (`:8765`) — `ibm-granite/granite-speech-4.1-2b` STT, lazy-loaded
-    and idle-unloaded.
+  custodian and holds no model weights — **no iMessage**. Four OpenAI-compatible
+  services bind tailnet-only:
+  - **rapid-mlx** (`:8000`) — a thin `socat` relay to the host's rapid-mlx
+    activator; no model runs on metal.
+  - **mlx-audio** (`:8765`) — a thin `socat` relay to the host's STT server.
   - **cliproxy** (`:8317`) — CLIProxyAPI: Codex/Gemini OAuth in, a static key out.
   - **agent-vault** (`:14321` broker, `:14322` MITM forward proxy) — the
     credential broker and TLS-MITM proxy.
 
-  Lockdown is enforced by a pf tailnet-only anchor plus the macOS app firewall,
-  with every sharing surface off and Remote Login disabled — the only admin path
-  is `tailscale ssh`. metal reads its secrets and runtime state over narrow
-  per-need virtiofs shares (its own age key and bundle, the agent-vault state
-  dir, the shared HF hub cache), never the whole `~/.yclaw/state` tree.
+  The model plane lives on the host, so metal only forwards `:8000`/`:8765` to
+  `yasyf-home` — hermes keeps calling `metal:8000`/`metal:8765` unchanged, and the
+  relay carries no credential, no HF cache, and no model env. With inference
+  offloaded, metal runs at 2 vCPU / 16 GB, down from 10 / 48. Lockdown is enforced
+  by a pf tailnet-only anchor plus the macOS app firewall, with every sharing
+  surface off and Remote Login disabled — the only admin path is `tailscale ssh`.
+  metal reads its secrets and runtime state over narrow per-need virtiofs shares
+  (its own age key and bundle, the agent-vault and cliproxy runtime dirs), never
+  the whole `~/.yclaw/state` tree; the HF hub and STT shares left with the model
+  plane.
 - **bluebubbles** — a separate macOS guest on its own tailnet node, SIP **off**
   because BlueBubbles' Private API requires it. It is the iMessage channel: it
   runs only the BlueBubbles server and holds **no** credentials. Keeping iMessage
@@ -49,6 +55,18 @@ of host-specific identity and lets the same artifact serve any tailnet.
   in `/var/lib/hermes` (honcho memory, sessions) is externalized to the host's
   `~/.yclaw/state/hermes` over virtiofs, so it survives a VM rebuild and is backed
   up.
+
+The MLX model plane runs on the host itself (`yasyf-home`), not in any guest,
+because the host GPU serves roughly 86 tok/s against 17.9 in the VM.
+`scripts/host/model-activator.py` binds the host's tailnet address on `:8000`
+behind the `com.yclaw.rapid-mlx` launchd agent: it answers `/health` and
+`/v1/models` locally without waking the ~20 GB Qwen model, spawns the real
+`rapid-mlx` server on `127.0.0.1:18000` on the first inference request, and
+SIGTERMs that child after 1800 s idle (a graceful stop saves the prefix cache and
+dodges a known wired-Metal teardown pathology). The `mlx-audio` STT server
+(`darwin/stt-server.py`, run from `~/.yclaw/state/mlx-audio/host-venv`) stays
+resident on `:8765`. A model call therefore flows from hermes to metal's relay to
+the host activator to the model, and back.
 
 The model ids are not guessed anywhere — `nixos/models.nix` is the single source
 for the Qwen and STT ids, and hermes' default plus fallback providers
@@ -73,13 +91,41 @@ it is a 401 — so hermes presents it on every model call via
 `key_env = "CLIPROXY_API_KEY"` (cliproxy's own API-key allowlist entry). That key and
 `BLUEBUBBLES_PASSWORD` (BlueBubbles is the other `NO_PROXY` case) are the two
 tailnet-internal credentials hermes holds — neither is an upstream API key. rapid-mlx
-(`:8000`) needs no key; the pf gate scoping `:8317` to hermes + the host is a
-second, independent layer.
+(`:8000`) needs no key, and its traffic relays through metal to the host's activator
+without touching a credential on that path; the pf gate scoping `:8317` to hermes +
+the host is a second, independent layer.
 
 Enforcement is cooperative, not a hard firewall: hermes respects `HTTPS_PROXY`,
 and a secret-needing request that bypasses the proxy has no credential, so the
 task fails. The boundary is the credential custody (only metal holds real
 secrets), not the routing.
+
+## Network lockdown
+
+Two default-deny layers sit under the credential custody: a tailnet ACL and a
+host firewall anchor.
+
+The tailnet ACL (`tailnet/policy.hujson`, the repo's mirror of the hand-applied
+live policy) grants explicit east-west flows instead of a broad
+`autogroup:member` allow. Every node owns its own tag, and the only node-to-node
+grants are hermes to metal on the credential and model ports (`8317`, `14321`,
+`14322`, `8000`, `8765`), hermes to bluebubbles on `443`, bluebubbles to hermes on
+`8645` (the new-message webhook), and metal to `yasyf-home` on `8000`/`8765` (the
+relay's one northbound flow). hermes and bluebubbles get no grant to the host at
+all, so a compromised agent VM cannot address the host directly — it reaches the
+models only through metal's relay.
+
+The host backs that with a pf anchor (`com.apple/000.yclaw.host`, installed by
+`scripts/setup.sh host-pf` and refreshed every 300 s by the
+`com.yclaw.host-pf-refresh` root LaunchDaemon). It passes only metal-to-host
+traffic on the model ports and blocks every other fleet-to-host packet, including
+the vmnet weak-host side-door: Darwin answers a bridge-ingress packet addressed to any host
+address (the `192.168.64.1` gateway, the LAN IP, even the tailnet IP over a forced
+route), so the anchor blocks the whole `192.168.64.0/24` bridge group ahead of the
+fleet rules, sparing only DHCP/DNS and a WireGuard `:41641` carve-out for
+host↔fleet magicsock's fast path. Attaching as a `com.apple/*` child gets it
+evaluated the moment the stock `pf.conf` wildcard runs, and `000` sorts it ahead
+of Apple's own children so its verdicts win.
 
 ## The manifest
 
@@ -101,8 +147,8 @@ sync by hand and the manifest comment says so.
 ## launchd on metal
 
 Every metal service is a system LaunchDaemon (`darwin/metal.nix`); the guest is
-headless, so nothing depends on a GUI session — MLX GPU inference works from a
-daemon context. The reboot-hardening design has four rules:
+headless, so nothing depends on a GUI session — the credential and relay daemons
+need no login context. The reboot-hardening design has four rules:
 
 - **`/bin/wait4path` guards the /nix race.** `/nix` is a separate APFS volume
   mounted late at boot; a `RunAtLoad` daemon that loses the race exec-fails into
@@ -152,13 +198,16 @@ All persistent state and secrets live in `~/.yclaw/state`, never in the repo:
   so each VM decrypts only what it owns. `hermes` and `metal` get bundles; `bluebubbles` owns none.
 - `agent-vault/` — the broker's credential store.
 - `cli-proxy-api/auth/` — the cliproxy OAuth tokens.
-- `hf/` — the model weights cache (~20–25 GB), regenerable on demand.
-- `mlx-audio/` — the STT venv.
+- `mlx-audio/` — the host STT venv.
 - `hermes/` — the externalized agent state (honcho memory, sessions).
+
+The model weights are not in the state tree at all: rapid-mlx and the STT server
+read the host's regular Hugging Face hub cache (`~/.cache/huggingface/hub`,
+~20–25 GB), which regenerates via `hf download`, so it never enters the backup.
 
 The irreplaceable set is everything under `hosts/` (every per-host key and bundle) plus
 `agent-vault/`: lose those and you cannot decrypt or re-broker anything. `just backup` runs a
-`restic` backup of `~/.yclaw/state`, excluding the regenerable `hf/` and
-`mlx-audio/` caches. Restore is `restic restore latest`, then `just setup` to
-rebuild the caches and re-boot the guests. Secrets decrypt at runtime; nothing
-secret is committed or written to the world-readable Nix store.
+`restic` backup of `~/.yclaw/state`, excluding the regenerable `mlx-audio/` venv.
+Restore is `restic restore latest`, then `just setup` to rebuild the caches and
+re-boot the guests. Secrets decrypt at runtime; nothing secret is committed or
+written to the world-readable Nix store.

@@ -102,6 +102,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the tailnet over the Tailscale API. The next `just bootstrap` regenerates the rest.
 
 ### Changed
+- The model plane moved from the metal guest to the host. `yasyf-home` now serves
+  rapid-mlx behind an **idle-unload activator** (`scripts/host/model-activator.py`,
+  tailnet-IP `:8000` — health and `/v1/models` answer locally without waking the
+  model; the ~20 GB child is reaped after 30 idle minutes) and the granite-speech
+  STT on `:8765` (~86 tok/s on-host vs 17.9 in-guest). metal's `rapid-mlx` and
+  `mlx-audio` daemons became thin **socat relays** binding metal's tailnet IP and
+  forwarding to the host, so hermes keeps calling `metal:8000`/`metal:8765`
+  unchanged — hermes gets no tailnet grant to the host. `setup.sh host-serving`
+  (re)installs the host stack; `just resize-metal` shrinks the live guest
+  48 → 16 GB / 10 → 2 vCPU (`packer/metal.pkr.hcl` carries the new literals for
+  fresh builds).
 - `scripts/build-hermes-image.sh`: builder-VM disk default 80 → 140 GB. A day of image
   builds fills 80 GB even after an in-guest store GC (hit twice on 2026-07-13); `tart set`
   only grows, so existing builders pick the new size up on the next run.
@@ -285,6 +296,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is absent, instead of emitting an empty string a consumer would happily interpolate.
 
 ### Removed
+- The in-guest model install on metal: the rapid-mlx and mlx-audio venvs (deleted
+  at activation, the same idiom as the omlx retirement), the `python@3.14` brew,
+  the python-framework application-firewall entries, and the `hfhub`/`mlxaudio`
+  virtiofs shares — metal keeps only `metalsecrets`, `agentvault`, `cliproxy`, and
+  `repo`.
 - The Aperture/`ai` model-routing deploy path. `nixos/ai.nix`, the `just deploy-ai`
   recipe, the `aperture-config` flake outputs, and `just smoke`'s `http://ai`
   model-plane curl are gone: hermes calls metal's cliproxy (`:8317`) and omlx
@@ -310,9 +326,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   security rationale is covered by `docs/ARCHITECTURE.md` and `docs/DEPLOY.md`.
 
 ### Security
+- The shared tailnet ACL is tightened from allow-all to `autogroup:member` plus
+  explicit fleet grants (hermes → metal service ports, the hermes ↔ bluebubbles
+  webhook legs, metal → `yasyf-home` model ports; mirrored in
+  `tailnet/policy.hujson`), and the host gained a pf anchor (`setup.sh host-pf`,
+  `com.apple/000.yclaw.host`) that passes only metal to the host model ports and
+  shuts the vmnet weak-host side-door (a fleet VM reaching any host-bound service
+  via the `192.168.64.1` bridge gateway), keeping DHCP/DNS and a WireGuard
+  `:41641` carve-out open. Applied and verified live 2026-07-13/14.
 - `metal` is hardened to SIP-on and tailnet-only. It is the sole credential
-  custodian (omlx, `granite-speech` STT, CLIProxyAPI, and agent-vault all run
-  inside it), locked down with a `pf` anchor plus the application firewall, with
+  custodian (CLIProxyAPI, agent-vault, and the model-port relays run inside it),
+  locked down with a `pf` anchor plus the application firewall, with
   Remote Login off (reachable only via Tailscale SSH). Real secrets never enter
   `hermes`; agent-vault injects static keys and OAuth bearers on the wire, and
   `cliproxy` holds the Codex/Gemini subscription OAuth.

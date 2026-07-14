@@ -6,11 +6,13 @@ the shortest correct path for an operator who already has the repo cloned.
 
 ## Prerequisites
 
-- An **Apple Silicon** Mac. `metal` is sized for the 35B MLX model (`unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit`):
-  a 48 GB-RAM guest whose ~42 GB GPU wired cap holds the model, KV cache, and the STT model
-  resident. A 32 GB guest measured out too tight for the always-resident model — rapid-mlx
-  loads it at startup and never unloads. On a smaller Mac, point `qwen` in
-  `nixos/models.nix` at a smaller model.
+- An **Apple Silicon** Mac with the RAM headroom for the 35B MLX model
+  (`unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit`). The model plane runs on the **host** now, not in a
+  guest: the host's `rapid-mlx` activator loads the model on the first request — the model
+  child holds ~20 GB while awake — and unloads it after 30 minutes idle, so the host
+  reclaims that RAM between conversations. `metal` is a small **relay/credential**
+  node (2 vCPU / 16 GB): its `rapid-mlx`/`mlx-audio` daemons relay to the host and serve nothing
+  themselves. On a smaller Mac, point `qwen` in `nixos/models.nix` at a smaller model.
 - Host tooling on `PATH`: `tart`, `tailscale`, `gum`, `packer`, `restic`, plus
   `age-keygen`, `sops`, `openssl`, `jq`, `python3`, `security`, `rsync`, `curl`,
   and `nix` (the hermes image builds inside a Linux builder VM). `just bootstrap`
@@ -166,8 +168,9 @@ are the reference for what each gate does.
    Open the printed consent URL, approve, and it finishes and verifies.
 
 The Qwen MLX model is no longer a gate — `just bootstrap` auto-downloads it into the
-host's regular Hugging Face cache (`~/.cache/huggingface/hub`), which `metal` mounts as
-the `hfhub` share and serves via `HF_HUB_CACHE`.
+host's regular Hugging Face cache (`~/.cache/huggingface/hub`), and the host's `rapid-mlx`
+activator reads it directly via `HF_HUB_CACHE`. metal no longer mounts a model-cache share; it
+relays model requests to the host instead of serving them.
 
 `metal` clones the SIP-on cirruslabs `macos-tahoe-vanilla` base and `bluebubbles` the
 SIP-off `macos-tahoe-base`, so neither guest needs a SIP recovery step.
@@ -198,8 +201,7 @@ destroying and rebuilding a VM.
 | `hosts/<host>/secrets.sops.yaml` | that host's encrypted bundle (only its own secrets, per `nixos/secrets-manifest.json`) | **No** (without that host's key) |
 | `agent-vault/` | credential-broker DB: owner account, static keys, the Google OAuth refresh token, minted agent tokens | **No** — re-provisioning re-mints tokens hermes would need re-injected |
 | `cli-proxy-api/auth/` | Codex/Gemini OAuth sessions | Yes — re-run the `--login` flows |
-| `hf/` | model weights (~20–25 GB) | Yes — re-downloaded on demand |
-| `mlx-audio/` | the STT server venv | Yes — rebuilt on first STT start |
+| `mlx-audio/` | the host STT venv (`host-venv/`) | Yes — rebuilt by `setup.sh host-serving` |
 | `hermes/` | hermes agent state (honcho memory, sessions), externalized from the VM's `/var/lib/hermes` | **No** — agent memory and sessions survive only via this share |
 
 The **irreplaceable** set is small: everything under `hosts/` (every per-host key
@@ -252,6 +254,51 @@ For day-to-day poking, the `yclaw` CLI wraps the same manifest:
 `uv run yclaw status` is the quick fleet check, and `uv run yclaw doctor`
 adds the hardening probes.
 
+## Host model serving and lockdown
+
+The model plane lives on the host: `rapid-mlx` on `:8000` behind the idle-unload activator, and
+the `mlx-audio` STT server on `:8765`. `just bootstrap` installs the whole stack as part of its
+host-config step (the full `scripts/setup.sh` run downloads the model and loads the
+`com.yclaw.{rapid-mlx,mlx-audio}` LaunchAgents), so a first deploy needs nothing here. The
+commands below maintain and lock down that plane afterward.
+
+**Refresh the serving stack in place.** Re-run only the host-serving section — rebuild the
+pinned `rapid-mlx`/`mlx-audio` venvs when absent, refresh the wrapper scripts and their
+LaunchAgents, and re-download the STT model — without bouncing the live tart VM runners:
+
+```sh
+bash scripts/setup.sh host-serving
+```
+
+**Lock down the host model ports.** Install the host pf anchor (`com.apple/000.yclaw.host`) and
+its refresh LaunchDaemon so only `metal` reaches `:8000`/`:8765` and no fleet VM reaches anything
+else on the host — over the tailnet or through the vmnet side-door. This writes to
+`/etc/pf.anchors` and `/Library/LaunchDaemons`, so it runs as root and is **not** part of the
+full `setup.sh` run: it backstops the hand-applied tailnet ACL and stays operator-gated the same
+way. `sudo` resets `PATH`, so pass the resolved `tailscale` binary in:
+
+```sh
+sudo TAILSCALE="$(command -v tailscale)" bash scripts/setup.sh host-pf
+```
+
+It runs one pf tick synchronously — the anchor is in force when the command returns — then prints
+an apply-time verification block: the model plane passes over the tailnet while the vmnet and LAN
+side-doors block.
+
+**Resize a live metal guest.** metal is provisioned at 2 vCPU / 16 GB, but a guest built before
+the model plane moved to the host still carries the old 10 vCPU / 48 GB footprint and the retired
+`hfhub`/`mlxaudio` shares — the Packer literals only affect fresh image builds, never the live
+VM. Shrink it in place from Terminal.app (gui-domain launchd; no sudo, no keychain):
+
+```sh
+just resize-metal
+```
+
+It boots out the runner, runs `tart set metal --cpu 2 --memory 16384`, rewrites the
+`com.yclaw.tart-metal` LaunchAgent with the reduced four-share set
+(`metalsecrets`, `agentvault`, `cliproxy`, `repo`), kickstarts it, and waits for metal to answer
+over `tailscale ssh`.
+
 ## Redeploy
 
 `just redeploy [node]` (`scripts/redeploy.sh <host|metal|hermes|bluebubbles|all>`,
@@ -261,8 +308,8 @@ human input. One path per node:
 
 - **host** — re-applies the host config (`scripts/setup.sh`): Homebrew tooling and the
   `com.yclaw.tart-*` launchd runners.
-- **metal** — runs `metal-redeploy` in the guest (`darwin-rebuild switch`); the MLX
-  services restart and the model-cache shares stay mounted.
+- **metal** — runs `metal-redeploy` in the guest (`darwin-rebuild switch`); the relay
+  daemons restart and node identity survives.
 - **hermes** — in-guest `nixos-rebuild switch` against `/var/lib/yclaw-repo#hermes`
   (the read-only repo share); node identity and `/var/lib/hermes` survive. Gated by a
   `nixos-rebuild dry-activate`: a code deploy leaves the `var-lib-hermes`
@@ -283,6 +330,12 @@ human input. One path per node:
 > + NVRAM/`auxiliaryStorage` + `hardwareModel`) and snapshot the whole disk on the same
 > host — is a deferred follow-up.
 
+> **A metal redeploy can silently reapply stale repo-share files.** The guest's virtiofs cache
+> pins files it read from the repo share earlier in the same boot, so `just redeploy metal` run
+> right after you edit those files applies the pre-edit tree. Reboot the guest first
+> (`yclaw ssh metal reboot`), then redeploy, and confirm the switch prints `reloading service …`
+> lines — that output is the proof it picked up the change.
+
 ### Verifying a metal change (reboot gate)
 
 metal's daemons only prove themselves across a cold boot — the /nix mount race,
@@ -295,7 +348,12 @@ the virtiofs automount, and the sops decrypt all happen at boot, not at
    the tailnet in ~25 s (`uv run yclaw wait ssh metal`).
 3. Run the daemon battery on the rebooted guest:
    - every `org.nixos.*` daemon is running: `launchctl print system/org.nixos.rapid-mlx`
-     (and the rest of the labels in `machines.json`);
+     (and the rest of the labels in `machines.json`) — on metal, `rapid-mlx` and `mlx-audio`
+     are now socat relays to the host, not model servers;
+   - the relay reaches the host end to end:
+     `tailscale ssh root@hermes -- curl -fsS http://metal:8000/v1/models` returns the model list,
+     served by the host's `rapid-mlx` activator — nothing loads in-guest, and the first request
+     after an idle unload warms the model on the host, so allow a generous timeout;
    - the provision oneshot's last exit was 0;
    - agent-vault answers: `curl -fs http://127.0.0.1:14321/health` (from the
      guest) — or `uv run yclaw status metal` from the host, which probes every

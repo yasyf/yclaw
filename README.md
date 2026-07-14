@@ -64,7 +64,7 @@ just rebuild
 
 Three nodes on your tailnet, reached by Tailscale MagicDNS names:
 
-- **metal** — the locked-down macOS guest and sole credential custodian. Runs the local Qwen inference server (`rapid-mlx`), speech-to-text, the Codex/Gemini OAuth proxy (CLIProxyAPI), and the `agent-vault` broker.
+- **metal** — the locked-down macOS guest and sole credential custodian. Runs the Codex/Gemini OAuth proxy (CLIProxyAPI) and the `agent-vault` broker, and relays the model ports to the host, which serves local Qwen inference (`rapid-mlx`) and speech-to-text behind an idle-unload activator. hermes gets no tailnet route to the host — model calls travel from hermes through metal to the host.
 - **bluebubbles** — a separate macOS guest that bridges iMessage. Holds no credentials.
 - **hermes** — the Linux gateway that runs `hermes-agent` in a Docker sandbox. Holds no API credentials and reaches the internet only through `agent-vault` on `metal`; its agent state is backed up off-VM.
 
@@ -91,7 +91,7 @@ Exit codes are scriptable: 0 clean, 1 FAIL, 2 usage, 4 Tailscale check-wall, 5 t
 
 ## Hardware
 
-Apple Silicon only. `metal` is sized for a 35B MLX model (~42 GB of wired GPU memory on a 48 GB guest) — on a smaller Mac, point it at a smaller model in `nixos/models.nix`. Budget ~20-25 GB for the model cache on top of the VM disks, and expect a long first boot while macOS installs and the models download.
+Apple Silicon only. The host serves the 35B MLX model (~20 GB resident while awake, unloaded after 30 idle minutes) — on a smaller Mac, point `nixos/models.nix` at a smaller model. The guests stay light: `metal` runs 16 GB / 2 vCPU as a relay-and-credential node. Budget ~20-25 GB for the model cache on top of the VM disks, and expect a long first boot while macOS installs and the models download.
 
 ## More on yclaw
 
