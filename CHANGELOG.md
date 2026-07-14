@@ -253,6 +253,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pasted back — no SSH tunnel to `metal` required.
 
 ### Fixed
+- Host↔fleet Tailscale never landed the sub-ms vmnet-direct path, hairpinning every packet
+  (model plane included) through the LAN router's NAT at ~7 ms instead. Root cause
+  (packet-proven, source-confirmed at v1.98.5): Darwin `tailscaled` binds its magicsock UDP
+  socket to the default interface with `IP_BOUND_IF`, so guest disco arriving on the vmnet
+  bridge never reached the socket — the host-pf `:41641` carve-out admitted packets the daemon
+  could not hear (upstream analogues: tailscale/tailscale#4270, #10318). `tailnet/policy.hujson`
+  now grants the host node `https://tailscale.com/cap/debug-disable-bind-conn-to-interface` via
+  `nodeAttrs` (applied live 2026-07-14; one `tailscale debug rebind` on the host activates it),
+  and the host-pf comments no longer claim the carve-out alone forces the direct path. Verified:
+  all host↔guest legs direct over `192.168.64.x` at 1 ms.
 - First-boot swap race on the minimized repart image: `boot.growPartition` is a stage-2 unit
   at the 25.05 pin (`growpart.service` → `systemd-growfs-root.service`), so the 8 GiB
   `mkswap-var-swapfile` dd ran unordered against disk growth and hit ENOSPC on the ~2 GiB-free

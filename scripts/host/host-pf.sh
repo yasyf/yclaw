@@ -57,11 +57,8 @@ VMNET_HOST=192.168.64.1
 VMNET_NET=192.168.64.0/24
 VMNET_BCAST=192.168.64.255
 
-# The host tailscaled is pinned to this UDP port (--port in its LaunchDaemon plist); setup.sh bakes
-# it from machines.json host.wireguard_port. Pinning lets the vmnet carve-out below be a static rule
-# instead of a per-tick lsof race across tailscaled restarts. Without the encrypted-WireGuard/disco
-# leg reaching the gateway, host<->fleet magicsock never lands the sub-ms 192.168.64.x path and
-# falls back to the LAN-reflexive hairpin (~7ms) or DERP.
+# Pinned magicsock port (machines.json host.wireguard_port). Admits disco only — receiving it
+# needs the disable-bind nodeAttrs grant in tailnet/policy.hujson (Darwin IP_BOUND_IF).
 WG_PORT=@@WG_PORT@@
 
 wait_tailscale_running "${1:-10}" \
@@ -111,12 +108,8 @@ RULES=$(mktemp) || { echo "host-pf: ERROR mktemp failed for pf rules" >&2; exit 
   echo "pass out quick on $VMNET_IF to $VMNET_NET keep state"
   echo "pass in quick on $VMNET_IF proto udp from $VMNET_NET to $VMNET_HOST port { 53, 67, 68 }"
   echo "pass in quick on $VMNET_IF proto tcp from $VMNET_NET to $VMNET_HOST port 53"
-  echo "# WireGuard/disco to the host's pinned magicsock port ($WG_PORT). This admits ONLY encrypted"
-  echo "# WireGuard ciphertext, so it does NOT reopen the side-door: pf filters the transport"
-  echo "# (this bridge, UDP $WG_PORT) and the decrypted tunnel (utunN, 100.x sources) independently —"
-  echo "# every decrypted fleet packet still hits the fleet-IP block below and the tailnet ACL. This"
-  echo "# is what lets host<->fleet magicsock land the sub-ms 192.168.64.x path; with it, the block's"
-  echo "# \`to self\` deny on the LAN hairpin below FORCES the clean vmnet endpoint to win over 192.168.1.x."
+  echo "# WG/disco to the pinned port: encrypted ciphertext only — pf polices the decrypted tunnel"
+  echo "# (utunN, 100.x) separately. Receiving needs the disable-bind grant (tailnet/policy.hujson)."
   echo "pass in quick on $VMNET_IF proto udp from $VMNET_NET to $VMNET_HOST port $WG_PORT"
   echo "# A fresh guest's DHCP DISCOVER (0.0.0.0 -> 255.255.255.255) is the one legitimate broadcast,"
   echo "# passed explicitly now that broadcast dests are blocked below. Renewals are unicast to the"

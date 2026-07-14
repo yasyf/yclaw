@@ -73,6 +73,24 @@
     },
   ],
 
+  // Applied to the live tailnet 2026-07-14 (appended into its existing nodeAttrs additively).
+  // Darwin tailscaled IP_BOUND_IF-pins its magicsock UDP socket to the default interface
+  // (net/netns/netns_darwin.go — an unspecified listen addr always resolves to the default
+  // interface, even with TS_BIND_TO_INTERFACE_BY_ROUTE), so guest->host disco arriving on the
+  // vmnet bridge never reaches the socket and host<->fleet falls back to a NAT hairpin. This
+  // capability makes ipnlocal call netns.SetDisableBindConnToInterface(true) on netmap receipt,
+  // letting the socket hear bridge101 — the pf carve-out in scripts/host/host-pf.sh admits the
+  // packets, this makes tailscaled receive them; BOTH are required for the sub-ms vmnet path.
+  // After granting (or after `tailscaled install-system-daemon` reinstalls), the flag only
+  // affects NEW sockets: run `tailscale debug rebind` on the host once. Upstream analogues:
+  // tailscale/tailscale#4270, #10318.
+  "nodeAttrs": [
+    {
+      "target": ["yasyf-home"],
+      "attr":   ["https://tailscale.com/cap/debug-disable-bind-conn-to-interface"],
+    },
+  ],
+
   // Admin SSH to every tagged node. REQUIRED: tagged nodes have no user owner, so without an
   // explicit `ssh` rule admins lose `tailscale ssh` to them — and OpenSSH is disabled on these
   // hosts (tailscale ssh is the ONLY admin path). `accept`, not `check`: the periodic check-wall
