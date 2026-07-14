@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"ops":[{"kind":"add_comment","body":"doctor.py half landed: commit 8982a75 (per-path [ -e ] stat probes in _share_diff, one ssh round-trip, forbidden-share readdir tripwire kept; 147 tests green). ALSO fixed same-class quoting bug in validate-hardening.sh §6 (86c8c53). Remaining scope: decide whether to port the validate-hardening runner onto yclaw doctor / scripts/lib."}]}
+{"v":1,"lamport":4,"ops":[{"kind":"set_status","status":"done"},{"kind":"link_commit","sha":"bd3af21716ef57cabdba6607519110029a4d8436"}]}
