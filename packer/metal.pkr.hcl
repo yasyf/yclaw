@@ -59,7 +59,7 @@ source "tart-cli" "metal" {
   # host model plane) — it serves no local model, so it needs little RAM/CPU. The host serves the
   # 35B + STT; metal only forwards 8000/8765 to it.
   cpu_count    = 2
-  memory_gb    = 16
+  memory_gb    = 8
   disk_size_gb = 200
   ssh_username = var.vm_admin_user
   # The vanilla base ships admin/admin; reset-admin-password.sh sets the real var.vm_admin_pass

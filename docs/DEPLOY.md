@@ -11,7 +11,7 @@ the shortest correct path for an operator who already has the repo cloned.
   guest: the host's `rapid-mlx` activator loads the model on the first request — the model
   child holds ~20 GB while awake — and unloads it after 30 minutes idle, so the host
   reclaims that RAM between conversations. `metal` is a small **relay/credential**
-  node (2 vCPU / 16 GB): its `rapid-mlx`/`mlx-audio` daemons relay to the host and serve nothing
+  node (2 vCPU / 8 GB): its `rapid-mlx`/`mlx-audio` daemons relay to the host and serve nothing
   themselves. On a smaller Mac, point `qwen` in `nixos/models.nix` at a smaller model.
 - Host tooling on `PATH`: `tart`, `tailscale`, `gum`, `packer`, `restic`, plus
   `age-keygen`, `sops`, `openssl`, `jq`, `python3`, `security`, `rsync`, `curl`,
@@ -285,7 +285,7 @@ It runs one pf tick synchronously — the anchor is in force when the command re
 an apply-time verification block: the model plane passes over the tailnet while the vmnet and LAN
 side-doors block.
 
-**Resize a live metal guest.** metal is provisioned at 2 vCPU / 16 GB, but a guest built before
+**Resize a live metal guest.** metal is provisioned at 2 vCPU / 8 GB, but a guest built before
 the model plane moved to the host still carries the old 10 vCPU / 48 GB footprint and the retired
 `hfhub`/`mlxaudio` shares — the Packer literals only affect fresh image builds, never the live
 VM. Shrink it in place from Terminal.app (gui-domain launchd; no sudo, no keychain):
@@ -294,7 +294,7 @@ VM. Shrink it in place from Terminal.app (gui-domain launchd; no sudo, no keycha
 just resize-metal
 ```
 
-It boots out the runner, runs `tart set metal --cpu 2 --memory 16384`, rewrites the
+It boots out the runner, runs `tart set metal --cpu 2 --memory 8192 --display 800x600`, rewrites the
 `com.yclaw.tart-metal` LaunchAgent with the reduced four-share set
 (`metalsecrets`, `agentvault`, `cliproxy`, `repo`), kickstarts it, and waits for metal to answer
 over `tailscale ssh`.

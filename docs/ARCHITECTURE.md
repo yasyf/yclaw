@@ -33,7 +33,7 @@ of host-specific identity and lets the same artifact serve any tailnet.
   The model plane lives on the host, so metal only forwards `:8000`/`:8765` to
   `yasyf-home` — hermes keeps calling `metal:8000`/`metal:8765` unchanged, and the
   relay carries no credential, no HF cache, and no model env. With inference
-  offloaded, metal runs at 2 vCPU / 16 GB, down from 10 / 48. Lockdown is enforced
+  offloaded, metal runs at 2 vCPU / 8 GB, down from 10 / 48. Lockdown is enforced
   by a pf tailnet-only anchor plus the macOS app firewall, with every sharing
   surface off and Remote Login disabled — the only admin path is `tailscale ssh`.
   metal reads its secrets and runtime state over narrow per-need virtiofs shares

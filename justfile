@@ -57,7 +57,7 @@ deploy node:
 redeploy node="all":
     ./scripts/redeploy.sh {{node}}
 
-# Shrink the metal guest to its post-Phase-6 relay/credential footprint (2 vCPU / 16 GB), dropping the
+# Shrink the metal guest to its relay/credential footprint (2 vCPU / 8 GB / 800x600), dropping the
 # retired hfhub/mlxaudio shares. USER-run in Terminal.app (gui-domain launchctl); no sudo, no keychain.
 resize-metal:
     ./scripts/resize-metal.sh

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# resize-metal.sh — shrink the metal guest to its post-Phase-6 footprint (2 vCPU / 16 GB) and
-# drop the retired hfhub/mlxaudio shares. USER-run in Terminal.app; needs no sudo, no keychain.
+# resize-metal.sh — shrink the metal guest to 2 vCPU / 8 GB / 800x600 and drop the retired
+# hfhub/mlxaudio shares. USER-run in Terminal.app; needs no sudo, no keychain.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,15 +22,16 @@ TART_BIN="/opt/homebrew/bin/tart"
 LOGS_DIR="$HOME_DIR/Library/Logs/Tart"
 
 CPUS=2
-MEM_MB=16384
+MEM_MB=8192
+DISPLAY_GEOM=800x600
 LABEL="com.yclaw.tart-metal"
 
 # Stop the runner so `tart set` can resize the stopped VM — bootout drops KeepAlive so it can't relaunch.
 log "Booting out $LABEL so metal can be resized ..."
 bootout_drain "gui/$(id -u)" "$LABEL"
 
-log "Resizing metal to ${CPUS} vCPU / ${MEM_MB} MB ..."
-"$TART_BIN" set metal --cpu "$CPUS" --memory "$MEM_MB"
+log "Resizing metal to ${CPUS} vCPU / ${MEM_MB} MB / ${DISPLAY_GEOM} ..."
+"$TART_BIN" set metal --cpu "$CPUS" --memory "$MEM_MB" --display "$DISPLAY_GEOM"
 
 # Rewrite the runner plist with the reduced --dir set (hfhub + mlxaudio dropped) and reload it. Keep
 # this --dir set in sync with scripts/setup.sh's metal write_agent call.
@@ -56,4 +57,4 @@ if [ -d "$GUEST_STT_VENV" ]; then
   rm -rf "$GUEST_STT_VENV"
 fi
 
-log "metal resized to ${CPUS} vCPU / ${MEM_MB} MB and back on the tailnet."
+log "metal resized to ${CPUS} vCPU / ${MEM_MB} MB / ${DISPLAY_GEOM} and back on the tailnet."
