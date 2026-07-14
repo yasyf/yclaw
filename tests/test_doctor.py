@@ -9,7 +9,7 @@ from yclaw.remote import RemoteResult
 pytestmark = pytest.mark.anyio
 
 # metal's manifest shares, in the sorted order `_share_diff` emits into its `for s in …` probe loop.
-METAL_SHARE_NAMES = ("agentvault", "cliproxy", "hfhub", "metalsecrets", "mlxaudio", "repo")
+METAL_SHARE_NAMES = ("agentvault", "cliproxy", "metalsecrets", "repo")
 
 
 def _share_probe_stdout(present: tuple[str, ...], listing: tuple[str, ...]) -> str:
@@ -45,7 +45,7 @@ def test_doctor_metal_runs_pf_gate_and_share_diff(monkeypatch):
     _install_common_probes(monkeypatch, {"metal"})
 
     async def fake_run(machine, command, *, timeout=30, capture=True):
-        assert command.startswith("for s in agentvault cliproxy hfhub metalsecrets mlxaudio repo;")
+        assert command.startswith("for s in agentvault cliproxy metalsecrets repo;")
         assert '[ -e "/Volumes/My Shared Files/$s" ]' in command
         return RemoteResult(0, _share_probe_stdout(METAL_SHARE_NAMES, METAL_SHARE_NAMES), "")
 
@@ -55,7 +55,7 @@ def test_doctor_metal_runs_pf_gate_and_share_diff(monkeypatch):
     assert "pf-gate host→metal:8000" in result.output
     assert "pf-gate host→metal:14322" in result.output
     assert "metal shares vs manifest" in result.output
-    assert "6 shares match the manifest" in result.output
+    assert "4 shares match the manifest" in result.output
 
 
 def test_doctor_share_diff_flags_missing(monkeypatch):
@@ -67,19 +67,19 @@ def test_doctor_share_diff_flags_missing(monkeypatch):
     monkeypatch.setattr(remote, "run", fake_run)
     result = CliRunner().invoke(main, ["doctor", "metal"])
     assert result.exit_code == 1
-    assert "missing=['agentvault', 'cliproxy', 'hfhub', 'mlxaudio']" in result.output
+    assert "missing=['agentvault', 'cliproxy']" in result.output
 
 
 @pytest.mark.parametrize(
     ("present", "listing", "expected_status", "expected_detail"),
     [
-        (METAL_SHARE_NAMES, METAL_SHARE_NAMES, Status.PASS, "6 shares match the manifest"),
-        (METAL_SHARE_NAMES, (), Status.PASS, "6 shares match the manifest"),
+        (METAL_SHARE_NAMES, METAL_SHARE_NAMES, Status.PASS, "4 shares match the manifest"),
+        (METAL_SHARE_NAMES, (), Status.PASS, "4 shares match the manifest"),
         (
             ("metalsecrets", "repo"),
             ("metalsecrets", "repo"),
             Status.FAIL,
-            "missing=['agentvault', 'cliproxy', 'hfhub', 'mlxaudio'] extra=[]",
+            "missing=['agentvault', 'cliproxy'] extra=[]",
         ),
         (
             METAL_SHARE_NAMES,
@@ -88,7 +88,7 @@ def test_doctor_share_diff_flags_missing(monkeypatch):
             "missing=[] extra=['hermes']",
         ),
     ],
-    ids=["all-mounted", "readdir-empty-stat-finds-all", "four-absent", "forbidden-share-in-readdir"],
+    ids=["all-mounted", "readdir-empty-stat-finds-all", "two-absent", "forbidden-share-in-readdir"],
 )
 async def test_share_diff_probes_each_path(manifest, monkeypatch, present, listing, expected_status, expected_detail):
     captured = {}
@@ -100,7 +100,7 @@ async def test_share_diff_probes_each_path(manifest, monkeypatch, present, listi
     monkeypatch.setattr(remote, "run", fake_run)
     result = await doctor._share_diff(manifest.machines["metal"])
     # The probe stats each share by its own path (the automount trigger), never a bare parent readdir.
-    assert "for s in agentvault cliproxy hfhub metalsecrets mlxaudio repo;" in captured["command"]
+    assert "for s in agentvault cliproxy metalsecrets repo;" in captured["command"]
     assert '[ -e "/Volumes/My Shared Files/$s" ]' in captured["command"]
     assert captured["command"] != "ls -1 '/Volumes/My Shared Files/'"
     assert result.status is expected_status

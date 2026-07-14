@@ -334,11 +334,7 @@ fi
 
 # --- 8c. download the Qwen model into the shared HF hub cache ----------------
 
-# The model the agent serves (rapid-mlx on metal) lives in the host's REGULAR HF hub cache, which metal
-# mounts as the `hfhub` virtiofs share (scripts/setup.sh) — host and VM share one cache, so the
-# download lands exactly where the VM reads. `hf download` is idempotent (skips files already
-# present). models.nix stores the real HF repo id (org/repo). Public model — no HF token needed
-# (the token never enters the VM regardless).
+# Host serves this model now (metal relays); `hf download` idempotent, model public (no token).
 QWEN_ID="$(rg -o 'qwen = "[^"]+"' nixos/models.nix | sed -E 's/qwen = "(.*)"/\1/')"
 log "Downloading model $QWEN_ID into the shared HF hub cache (${HF_HOME:-$HOME/.cache/huggingface}/hub) ..."
 hf download "$QWEN_ID"

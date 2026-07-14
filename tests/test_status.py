@@ -55,8 +55,6 @@ def test_status_metal_renders_exact_table(monkeypatch):
         ["metal", "metal-pf-refresh", "ok", DASH, "st-metal-pf-refresh"],
         ["metal", "share:metalsecrets", "ok", DASH, "sh-metalsecrets"],
         ["metal", "share:agentvault", "ok", DASH, "sh-agentvault"],
-        ["metal", "share:hfhub", "ok", DASH, "sh-hfhub"],
-        ["metal", "share:mlxaudio", "ok", DASH, "sh-mlxaudio"],
         ["metal", "share:cliproxy", "ok", DASH, "sh-cliproxy"],
         ["metal", "share:repo", "ok", DASH, "sh-repo"],
     ]

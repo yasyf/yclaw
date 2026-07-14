@@ -54,57 +54,13 @@ LOGS_DIR="$HOME_DIR/Library/Logs/Tart"
 BIN_DIR="$HOME_DIR/.yclaw/bin"
 MODEL_LOGS_DIR="$HOME_DIR/Library/Logs/yclaw"
 
-# The host's REGULAR Hugging Face hub cache (NOT the state tree). metal mounts this as the
-# `hfhub` share and serves models (rapid-mlx + STT) from it, so host and VM share ONE model cache and
-# `hf download` on the host lands where the VM reads. Only the `hub/` subdir is shared — the
-# sibling `token` file stays on the host and never enters the VM.
+# The host's REGULAR Hugging Face hub cache (NOT the state tree): the host model plane (§5's
+# rapid-mlx activator + STT) reads it, and `hf download` lands here. The `token` sibling never leaves $HOME.
 HF_HUB_DIR="${HF_HOME:-$HOME_DIR/.cache/huggingface}/hub"
 
 # pf VNC anchor: OFF by default. The host runs no VNC-exposed model services anymore, so there
 # is nothing to gate. Set ENABLE_VNC_ANCHOR=1 only if a VNC service is reintroduced on the host.
 ENABLE_VNC_ANCHOR="${ENABLE_VNC_ANCHOR:-0}"
-
-# --- helpers -----------------------------------------------------------------
-
-# Write one tart LaunchAgent plist and (re)load it. bootout-before-bootstrap so a changed plist
-# replaces the running agent instead of erroring on "service already loaded".
-write_agent() {
-  local node="$1"; shift
-  local label="com.yclaw.tart-$node"
-  local plist="$LAUNCH_AGENTS_DIR/$label.plist"
-  local args=("$@")
-
-  local program_args=""
-  local a
-  for a in "$TART_BIN" "${args[@]}"; do
-    program_args+="    <string>$a</string>"$'\n'
-  done
-
-  cat > "$plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>$label</string>
-  <key>ProgramArguments</key>
-  <array>
-$program_args  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>$LOGS_DIR/$node.log</string>
-  <key>StandardErrorPath</key>
-  <string>$LOGS_DIR/$node.error.log</string>
-</dict>
-</plist>
-PLIST
-
-  reload_launch_agent "$label" "$plist"
-  log "Loaded LaunchAgent $label."
-}
 
 # Write one host serving-stack LaunchAgent plist and (re)load it. Same bootout-before-bootstrap shape
 # as write_agent, but the program is a wrapper script (not tart) and the plist carries an
@@ -160,17 +116,7 @@ PLIST
 
 # --- 5. Host model serving stack (rapid-mlx activator + mlx-audio STT) --------
 
-# The AI serving stack darwin/host.nix once ran, brought back to the bare host in front of the metal
-# copies (the metal->host migration; metal keeps serving until the Phase-5 relay flip). rapid-mlx runs
-# behind model-activator.py — a probe-safe idle-unload proxy that binds the tailnet IPv4:8000, answers
-# /health + /v1/models locally while the 35B is unloaded, and spawns/reaps a 127.0.0.1:18000 child on
-# demand. mlx-audio serves granite-speech STT on :8765. Both are gui LaunchAgents (RunAtLoad+KeepAlive).
-# Model ids come from nixos/models.nix (the SoT shared with metal.nix), baked into the wrappers at
-# install time; the serve flags mirror metal.nix's rapidMlxWrapper/sttWrapper verbatim.
-#
-# Factored into a function: the full linear bring-up invokes it LAST (below §4), and
-# `setup.sh host-serving` (dispatch below) invokes it ALONE — §3's bootout-before-bootstrap
-# restarts the LIVE tart VM runners on every pass, so a serving-stack refresh must skip §§0-4.
+# This host stack is now the fleet's ONLY model plane — metal just relays 8000/8765 to it.
 setup_host_serving() {
   # Model ids — read from the single source of truth (nixos/models.nix), like bootstrap.sh does.
   QWEN_ID="$(sed -n 's/.*qwen = "\([^"]*\)".*/\1/p' "$REPO_ROOT/nixos/models.nix")"
@@ -489,10 +435,8 @@ write_agent metal \
   --no-graphics \
   "--dir=metalsecrets:$STATE_DIR/hosts/metal:ro" \
   "--dir=agentvault:$STATE_DIR/agent-vault" \
-  "--dir=hfhub:$HF_HUB_DIR" \
-  "--dir=mlxaudio:$STATE_DIR/mlx-audio" \
   "--dir=cliproxy:$STATE_DIR/cli-proxy-api" \
-  "--dir=repo:$HOME_DIR/Code/yclaw:ro"
+  "--dir=repo:$HOME_DIR/Code/yclaw:ro" # keep this --dir set in sync with scripts/resize-metal.sh
 
 # bluebubbles is the SIP-off iMessage node — its OWN tailnet node, holds NO credentials, so no
 # state share. Runs HEADLESS + suspendable: in-guest auto-login provides the aqua session that

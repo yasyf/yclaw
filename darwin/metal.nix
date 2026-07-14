@@ -3,15 +3,16 @@
 #
 # metal is the SIP-ON, MAX-LOCKED credential + AI services VM — one of three guests on the
 # bare-macOS host (alongside `bluebubbles` and `hermes`), with its own tailnet node. It holds
-# ALL credentials and serves four OpenAI-compatible services over the tailnet:
-#   rapid-mlx   :8000   local Qwen (replaces omlx)
-#   mlx-audio   :8765   STT, ibm-granite/granite-speech-4.1-2b (replaces parakeet)
+# ALL credentials and serves four services over the tailnet (the two model ports are thin socat
+# relays to the host model plane on yasyf-home — hermes keeps calling metal:8000/8765 unchanged):
+#   rapid-mlx   :8000   relay -> the host rapid-mlx activator (idle-unload Qwen)
+#   mlx-audio   :8765   relay -> the host STT (ibm-granite/granite-speech-4.1-2b)
 #   cliproxy    :8317   CLIProxyAPI, Codex/Gemini OAuth -> static key
 #   agent-vault :14321  credential broker API  + :14322 transparent MITM proxy
 #
 # Persistent state lives on NARROW per-need virtiofs shares (the host shares only the slices of
 # ~/.yclaw/state that metal owns): "/Volumes/My Shared Files/metalsecrets" (metal's age key + its
-# own secrets bundle), plus agentvault / hf / mlxaudio / cliproxy for the runtime dirs. metal
+# own secrets bundle), plus agentvault / cliproxy for the runtime dirs. metal
 # never sees hosts/hermes/ or state/hermes/. The repo is shared read-only at
 # "/Volumes/My Shared Files/repo". The guest admin user is `admin` (home /Users/admin).
 #
@@ -94,18 +95,8 @@ let
   vaultStateDir = "/Volumes/My Shared Files/agentvault";
   servicesYaml = ../nixos/vault-services.yaml;
 
-  # The shared HF hub cache: metal mounts the host's regular ~/.cache/huggingface/hub here (the
-  # `hfhub` share, scripts/setup.sh). rapid-mlx + STT read models from it via HF_HUB_CACHE — host and
-  # VM share ONE cache, so `hf download` on the host is what the VM serves. The host's HF token
-  # stays on the host (only the `hub/` subdir is shared, never the sibling `token` file).
-  hfHubCache = "/Volumes/My Shared Files/hfhub";
-
-  # mlx-audio runs from a python venv (system python3 is 3.14); the wrapper builds it once.
-  sttVenv = "/Volumes/My Shared Files/mlxaudio/venv";
-
   # Share mountpoints the daemon preambles block on at boot (scripts/setup.sh mounts each here).
   cliproxyShare = "/Volumes/My Shared Files/cliproxy";
-  mlxaudioShare = "/Volumes/My Shared Files/mlxaudio";
   repoShare = "/Volumes/My Shared Files/repo";
 
   # The RESOLVED socat executable: bin/socat is a symlink to bin/socat1, and the app firewall keys
@@ -158,8 +149,8 @@ let
   # the HOST (yasyf-home), which serves both behind its own idle-unload activator (Phase 5). Each
   # relay binds THIS node's tailnet IP on the port hermes already calls and forwards to the host's
   # tailnet IP, so hermes keeps calling metal:8000 / metal:8765 unchanged — the relay carries no
-  # shares, no HF cache, and no model env. The in-guest venvs + models stay on disk as the fallback
-  # until Phase 6 tears them down.
+  # shares, no HF cache, and no model env. As of Phase 6 the in-guest venvs + models are gone; the
+  # host is the sole model plane.
   rapidMlxWrapper = pkgs.writeShellScript "metal-rapid-mlx" ''
     set -euo pipefail
     ${mkDaemonPreamble { }}
@@ -181,11 +172,8 @@ let
       "TCP:$HOSTIP:8000,nodelay,connect-timeout=10"
   '';
 
-  # This daemon now relays 8765 to the host (see the rapid-mlx wrapper). The in-guest STT server
-  # stays as the fallback until Phase 6: mlx-audio's own multi-threaded `mlx_audio.server` crashes
-  # granite-speech with "There is no Stream(gpu, 1) in current thread" (MLX streams are per-thread),
-  # so the fallback runs our single-worker wrapper (darwin/stt-server.py) from a venv instead.
-  sttServerPy = ./stt-server.py;
+  # This daemon relays 8765 to the host, same shape as the rapid-mlx wrapper above (Phase 6 retired
+  # the in-guest STT fallback that darwin/stt-server.py ran; the host now serves STT).
   sttWrapper = pkgs.writeShellScript "metal-mlx-audio" ''
     set -euo pipefail
     ${mkDaemonPreamble { }}
@@ -522,10 +510,12 @@ in
     DisableConsoleAccess = true;
   };
 
-  # --- Homebrew (rapid-mlx's venv python + OSS Tailscale) ----------------------
+  # --- Homebrew (OSS Tailscale) ------------------------------------------------
   # cleanup="none" keeps untracked packages; autoUpdate=false keeps `switch` idempotent.
-  # python@3.14 is the keg the rapid-mlx wrapper builds its venv from; tailscale is the OSS CLI
-  # (the tailscaled daemon is brew-managed; `tailscale up` runs at activation, below).
+  # tailscale is the OSS CLI (the tailscaled daemon is brew-managed; `tailscale up` runs at
+  # activation, below). metal no longer serves a local model, so the python@3.14 keg the retired
+  # in-guest rapid-mlx venv built from is dropped — cleanup="none" leaves any already-installed copy
+  # on disk (harmless, unlisted) and a fresh image never installs it.
   homebrew = {
     enable = true;
     onActivation = {
@@ -533,7 +523,6 @@ in
       autoUpdate = false;
     };
     brews = [
-      "python@3.14"
       "tailscale"
     ];
   };
@@ -621,8 +610,8 @@ in
   # --- boot-time system setup (system daemon) ----------------------------------
   # postActivation (below) sets the Metal wired cap, enables pf, and scopes the anchor to hermes +
   # the host — but activation runs only on `darwin-rebuild`, NOT at boot, and all three reset on reboot:
-  #   * iogpu.wired_limit_mb is a runtime sysctl that reverts to the macOS default (~36 GB) on boot,
-  #     too small for the 35B model + KV cache, so rapid-mlx would fail/OOM on first serve.
+  #   * iogpu.wired_limit_mb is a runtime sysctl that reverts to the macOS default on boot; re-applying
+  #     it keeps the GPU wired cap tracking the guest's RAM (metal serves no local model now).
   #   * macOS's boot-time com.apple.pfctl loads /etc/pf.conf (so the `metal` anchor rules are present)
   #     but never ENABLES pf, so the gate would sit inert after a reboot (including the
   #     auto-security-update reboots this module keeps on), exposing the credential services.
@@ -678,15 +667,15 @@ in
     fi
   '';
 
-  # Metal working-set cap, one-time omlx cleanup, pf tailnet-only anchor, app-firewall allowlist
+  # Metal working-set cap, one-time omlx + retired-fallback cleanup, pf tailnet-only anchor, app-firewall allowlist
   # (normal priority — none need a decrypted secret), then the tailscale join (mkAfter, so it
   # runs after sops-nix installs the authkey, which it also appends via mkAfter to this hook).
   # Idempotent throughout.
   system.activationScripts.postActivation.text = lib.mkMerge [
     ''
-      # Raise the Metal wired-memory cap (Apple's default is 36 GB) so the 20 GB 35B model + KV
-      # cache fits. Per-boot setting, re-applied on every activation. Derived from the guest's own
-      # RAM (leave 6 GB for the OS) so it tracks the VM size instead of a hardcode.
+      # Set the Metal wired-memory cap from the guest's own RAM (leave 6 GB for the OS). metal serves
+      # no local model now, so this is just headroom bookkeeping — kept so the cap tracks the VM size
+      # on any resize instead of a hardcode. Per-boot setting, re-applied on every activation.
       wired=$(( $(/usr/sbin/sysctl -n hw.memsize)/1048576 - 6144 ))
       /usr/sbin/sysctl iogpu.wired_limit_mb=$wired || true
 
@@ -694,6 +683,20 @@ in
       # settings/state, SSD KV cache, logs, and app-firewall allowlist entry.
       rm -rf ${lib.escapeShellArg "${home}/.omlx"} ${lib.escapeShellArg "${home}/Library/Caches/omlx-kv"} ${lib.escapeShellArg "${logs}/omlx"}
       /usr/libexec/ApplicationFirewall/socketfilterfw --remove /opt/homebrew/bin/omlx >/dev/null 2>&1 || true
+
+      # One-time cleanup of the retired in-guest model fallback (Phase 6, 2026-07-14): metal no longer
+      # serves models directly — rapid-mlx/mlx-audio are thin socat relays to the host plane — so the
+      # fallback venvs and their python app-firewall entries are dead. The rapid-mlx venv is
+      # guest-local; the mlxaudio venv is reached through the still-mounted share (the resize drops
+      # that share afterward, so this re-runs every activation and no-ops once gone). Idempotent.
+      rm -rf ${lib.escapeShellArg "${home}/.venvs/rapid-mlx"} "/Volumes/My Shared Files/mlxaudio/venv"
+      for PYFW in \
+        /opt/homebrew/opt/python@*/Frameworks/Python.framework/Versions/*/Resources/Python.app/Contents/MacOS/Python \
+        /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/*/Resources/Python.app/Contents/MacOS/Python; do
+        if [ -e "$PYFW" ]; then
+          /usr/libexec/ApplicationFirewall/socketfilterfw --remove "$PYFW" >/dev/null 2>&1 || true
+        fi
+      done
 
       # The service daemons run as `admin` and log under admin's ~/Library/Logs; launchd needs each
       # StandardOutPath's parent dir to exist, so pre-create them owned by admin.
@@ -736,13 +739,12 @@ in
       "$FW" --setglobalstate on >/dev/null 2>&1 || true
       "$FW" --setstealthmode on >/dev/null 2>&1 || true
       "$FW" --setloggingmode on >/dev/null 2>&1 || true
-      # Allowlist the ACTUAL listening binaries. As of Phase 5, socat is the listener for 8000/8765
-      # (the relays to the host) — a nix-store binary, so it takes the same stale-entry cleanup as
-      # cli-proxy-api/agent-vault below. The Homebrew + CommandLineTools python frameworks stay
-      # allowlisted by glob (version-agnostic, robust across brew/CLT upgrades) for the in-guest
-      # rapid-mlx/STT fallback, whose venv pythons are framework-interpreter symlinks the kernel and
-      # socketfilterfw see through. cli-proxy-api/agent-vault are the real nix-store listeners;
-      # tailscaled is allowlisted so direct (non-DERP) inbound and tailscale-ssh survive.
+      # Allowlist the ACTUAL listening binaries. socat is the listener for 8000/8765 (the relays to
+      # the host) — a nix-store binary, so it takes the same stale-entry cleanup as cli-proxy-api/
+      # agent-vault below. cli-proxy-api/agent-vault are the real nix-store listeners; tailscaled is
+      # allowlisted so direct (non-DERP) inbound and tailscale-ssh survive. The in-guest python
+      # frameworks are NO LONGER allowlisted — the model fallback they served is retired (Phase 6),
+      # and the cleanup above removes their stale entries.
       # pf above is the real tailnet-only gate; this allowlist is per-app defense-in-depth.
       # Nix-store listeners get a NEW path on every rebuild, but their adhoc signature keeps the
       # same Identifier — socketfilterfw then dedups `--add` against the STALE entry (rc=0, no new
@@ -760,8 +762,6 @@ in
           | while IFS= read -r STALE; do "$FW" --remove "$STALE" >/dev/null 2>&1 || true; done
       done
       for BIN in \
-        /opt/homebrew/opt/python@*/Frameworks/Python.framework/Versions/*/Resources/Python.app/Contents/MacOS/Python \
-        /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/*/Resources/Python.app/Contents/MacOS/Python \
         ${pkgs.cli-proxy-api}/bin/cli-proxy-api \
         ${pkgs.agent-vault}/bin/agent-vault \
         ${socatBin} \

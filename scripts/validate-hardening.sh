@@ -9,6 +9,9 @@
 # in host memory (the host can already do that) and never writes plaintext to disk.
 set -uo pipefail
 
+# shellcheck source=scripts/lib/manifest.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/manifest.sh"
+
 PORTS=(8000 8765 8317 14321 14322)
 metal_ssh=(tailscale ssh root@metal --)
 hermes_ssh=(tailscale ssh admin@hermes --)
@@ -88,12 +91,19 @@ manual "Cross-VM negative: copy $HERMES_STATE/secrets.sops.yaml onto metal, then
 # --- 5. metal share boundary -------------------------------------------------
 
 hdr "5. metal share boundary — only the narrow per-need shares"
-shares="$("${metal_ssh[@]}" ls "/Volumes/My Shared Files/" 2>/dev/null || true)"
-for s in metalsecrets agentvault hfhub mlxaudio cliproxy repo; do
-  if "${metal_ssh[@]}" "[ -e '/Volumes/My Shared Files/$s' ]" 2>/dev/null; then ok "share present: $s"; else no "expected share missing: $s"; fi
+# tailscale ssh rc is always 0 → decide from the echoed marker, not rc. Stat each share by its own
+# path (triggers the automount; a bare parent readdir false-FAILs on a fresh boot).
+for s in $(manifest_list '.machines.metal.shares'); do
+  st="$("${metal_ssh[@]}" "[ -e '/Volumes/My Shared Files/$s' ] && echo present || echo absent" 2>/dev/null)"
+  if [[ "$st" == present ]]; then ok "share present: $s"; else no "expected share missing: $s (got: ${st:-none})"; fi
 done
-if grep -qiE '^(hosts|hermes|state)$' <<<"$shares"; then no "metal sees a forbidden share: $(tr '\n' ' ' <<<"$shares")"
-else ok "metal sees no hosts/hermes/state share"; fi
+# hfhub/mlxaudio are the Phase-6-retired model shares — a stale six-share tart plist would remount them.
+for s in hosts hermes state hfhub mlxaudio; do
+  st="$("${metal_ssh[@]}" "[ -e '/Volumes/My Shared Files/$s' ] && echo present || echo absent" 2>/dev/null)"
+  if [[ "$st" == present ]]; then no "metal sees a FORBIDDEN share: $s"
+  elif [[ "$st" == absent ]]; then ok "no forbidden share: $s"
+  else no "forbidden-share probe failed for $s (got: ${st:-none}) — cannot confirm absence"; fi
+done
 
 # --- 6. Credential plane -----------------------------------------------------
 

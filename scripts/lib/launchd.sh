@@ -20,3 +20,43 @@ reload_launch_agent() {
   bootout_drain "$domain" "$label"
   launchctl bootstrap "$domain" "$plist"
 }
+
+# Write the tart LaunchAgent plist (com.yclaw.tart-<node>) and reload it. Needs $TART_BIN,
+# $LAUNCH_AGENTS_DIR, $LOGS_DIR. Also used by resize-metal.sh — keep the metal --dir sets in sync.
+write_agent() {
+  local node="$1"; shift
+  local label="com.yclaw.tart-$node"
+  local plist="$LAUNCH_AGENTS_DIR/$label.plist"
+  local args=("$@")
+
+  local program_args=""
+  local a
+  for a in "$TART_BIN" "${args[@]}"; do
+    program_args+="    <string>$a</string>"$'\n'
+  done
+
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+$program_args  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$LOGS_DIR/$node.log</string>
+  <key>StandardErrorPath</key>
+  <string>$LOGS_DIR/$node.error.log</string>
+</dict>
+</plist>
+PLIST
+
+  reload_launch_agent "$label" "$plist"
+  log "Loaded LaunchAgent $label."
+}

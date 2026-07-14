@@ -8,7 +8,7 @@
       "tag": "tag:metal",
       "ssh": { "transport": "tailscale", "user": "root" },
       "admin_pass_keychain": "yclaw-metal-admin-pass",
-      "shares": ["metalsecrets", "agentvault", "hfhub", "mlxaudio", "cliproxy", "repo"],
+      "shares": ["metalsecrets", "agentvault", "cliproxy", "repo"],
       "services": {
         "rapid-mlx": {
           "launchd": { "domain": "system", "label": "org.nixos.rapid-mlx" },

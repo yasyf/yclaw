@@ -28,8 +28,6 @@ def test_metal_share_list(manifest):
     assert manifest.machines["metal"].shares == (
         "metalsecrets",
         "agentvault",
-        "hfhub",
-        "mlxaudio",
         "cliproxy",
         "repo",
     )

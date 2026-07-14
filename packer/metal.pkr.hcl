@@ -18,7 +18,6 @@
 # The un-scriptable steps are HUMAN gates that run AFTER this image boots:
 #   - cliproxy Codex/Gemini logins:       device-code / VNC browser flow
 #   - Google OAuth:                       scripts/connect-google-oauth.py (VAULT_ADDR=http://metal…)
-#   - place the local model:              hf download the Qwen MLX model onto the state mount
 #
 # HUMAN: After capture, the cryptographically-bound boot-blob triple — hardwareModel + ecid
 #   (config.json) + nvram.bin — must be copied verbatim (`cp -c`) on any clone and NEVER
@@ -56,14 +55,11 @@ source "tart-cli" "metal" {
   # (SIP-on), NOT the *-base image (which is csrutil-disabled).
   vm_base_name = "ghcr.io/cirruslabs/macos-tahoe-vanilla@sha256:e12d678b248f3122e276fa64632970a8e1c6dc60ff6738d21fe9bfa5ea58f426"
   vm_name      = "metal"
-  # metal runs the 35B MLX model + the STT model + the Go services, so it is the heavy node.
-  # 48 GB leaves a ~42 GB GPU wired cap (hw.memsize - 6 GB, darwin/metal.nix). Sizing is
-  # measured, not guessed (2026-07 qmlx/Rapid-MLX evaluation): on a 32 GB guest (~26 GB cap)
-  # a resident 20 GB model thrashes — 0.025 tok/s and a macOS kernel-panic warning — and the
-  # retired omlx engine only fit by idle-unloading, which rapid-mlx (model resident from startup)
-  # has no equivalent of. 48 GB holds the model, KV, and the co-resident STT model.
-  cpu_count    = 10
-  memory_gb    = 48
+  # metal is a thin relay + credential node now (cliproxy, agent-vault, and the socat relays to the
+  # host model plane) — it serves no local model, so it needs little RAM/CPU. The host serves the
+  # 35B + STT; metal only forwards 8000/8765 to it.
+  cpu_count    = 2
+  memory_gb    = 16
   disk_size_gb = 200
   ssh_username = var.vm_admin_user
   # The vanilla base ships admin/admin; reset-admin-password.sh sets the real var.vm_admin_pass
@@ -97,9 +93,8 @@ build {
     inline = [
       "set -euo pipefail",
       # The vanilla base has no Homebrew (only the cirruslabs *-base images add it on top), but
-      # metal's nix-darwin config uses the homebrew module (python@3.14 + tailscale are brew
-      # formulae) — which aborts activation if brew is absent. Install it (NONINTERACTIVE for the
-      # non-tty packer shell).
+      # metal's nix-darwin config uses the homebrew module (tailscale is a brew formula) — which
+      # aborts activation if brew is absent. Install it (NONINTERACTIVE for the non-tty packer shell).
       "NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"",
       "curl -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm",
       # The Determinate installer writes /etc/{zshenv,zshrc,zprofile,bashrc} to put Nix on the
@@ -157,5 +152,4 @@ build {
   # HUMAN: the remaining bring-up is NOT scripted here (see the gates listed in the header):
   #   1. cliproxy --codex-login/--login   — device-code / VNC browser flow.
   #   2. scripts/connect-google-oauth.py  — VAULT_ADDR=http://metal:14321.
-  #   3. place the Qwen MLX model         — hf download onto /Volumes/My Shared Files/hfhub.
 }

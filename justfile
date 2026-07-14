@@ -57,6 +57,11 @@ deploy node:
 redeploy node="all":
     ./scripts/redeploy.sh {{node}}
 
+# Shrink the metal guest to its post-Phase-6 relay/credential footprint (2 vCPU / 16 GB), dropping the
+# retired hfhub/mlxaudio shares. USER-run in Terminal.app (gui-domain launchctl); no sudo, no keychain.
+resize-metal:
+    ./scripts/resize-metal.sh
+
 # Smoke tests: nix flake check + hermes doctor + a model-plane curl (metal:8317/v1/models with the
 # Aperture static bearer). Deeper live-stack checks stay commented scaffolding in the script.
 smoke:

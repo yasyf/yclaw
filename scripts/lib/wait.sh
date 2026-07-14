@@ -17,10 +17,11 @@ _wait_log() { printf '%s\n' "$*" >&2; }
 wait_for() {
   local desc="$1" attempts="$2" interval="$3"
   shift 3
-  local i=0 status=0
+  local i=0 status=1
   while [ "$i" -lt "$attempts" ]; do
-    if "$@"; then return 0; fi
-    status=$?
+    # Capture in the else branch: after `if cmd; then …; fi` with no branch taken, $? is the IF
+    # statement's 0, so a bare post-if `status=$?` made exhaustion return 0 (fail-open).
+    if "$@"; then return 0; else status=$?; fi
     i=$((i + 1))
     if [ "$i" -lt "$attempts" ]; then sleep "$interval"; fi
   done

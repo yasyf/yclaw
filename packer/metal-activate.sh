@@ -29,12 +29,8 @@ wait_for "nix daemon socket" 60 2 test -S /nix/var/nix/daemon-socket/socket
 export HOME="${HOME:-/var/root}" USER="${USER:-root}"
 . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 
-# Activate the PRE-BUILT closure (baked store path) — NOT `darwin-rebuild switch --flake`, which
-# re-resolves the flake ref over the rate-limited GitHub API on an unauthenticated first boot.
-# `darwin-rebuild activate` does no flake/GitHub access; set the system profile first (activate does
-# not set it). All services are UserName=admin system daemons, so activation has NO `launchctl
-# asuser` user-agent step (which aborts headless with no GUI session) — it runs the Homebrew bundle
-# (python@3.14 + tailscale) and postActivation (tailscaled install-system-daemon + the tailnet join).
+# Activate the PRE-BUILT closure: `darwin-rebuild activate` avoids flake/GitHub access on the
+# unauthenticated first boot, but does not set the system profile — set it first.
 TOPLEVEL="@@METAL_TOPLEVEL@@"
 nix-env -p /nix/var/nix/profiles/system --set "$TOPLEVEL" || echo "metal-activate: nix-env --set returned non-zero"
 
