@@ -1,0 +1,1 @@
+{"v":1,"lamport":1,"ops":[{"kind":"create_log","nonce":"53bf3b4ce49f1533b45e93c35d2478b3","title":"apple-container-prototype","tags":["apple-container","hermes","spike","prototype"],"anchors":[{"kind":"path","value":"nixos/hermes.nix"},{"kind":"path","value":"pkgs/hermes-docker-proxy"}]}]}
