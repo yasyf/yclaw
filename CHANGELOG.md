@@ -111,9 +111,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   forwarding to the host, so hermes keeps calling `metal:8000`/`metal:8765`
   unchanged — hermes gets no tailnet grant to the host. `setup.sh host-serving`
   (re)installs the host stack; `just resize-metal` shrinks the live guest
-  48 → 8 GB / 10 → 2 vCPU with an 800x600 display (a smaller framebuffer trims the
-  host-side `ParavirtualizedGraphicsGPUTask` encode; `packer/metal.pkr.hcl` carries
-  the new literals for fresh builds).
+  48 → 8 GB / 10 → 2 vCPU with an 800x600 display (`packer/metal.pkr.hcl` carries
+  the new literals for fresh builds), and metal's display now sleeps after one
+  idle minute — an awake framebuffer costs the host ~20% of a core in
+  `ParavirtualizedGraphicsGPUTask` frame encodes, a sleeping one 0% (the
+  resolution shrink alone measured no reduction).
 - `scripts/build-hermes-image.sh`: builder-VM disk default 80 → 140 GB. A day of image
   builds fills 80 GB even after an in-guest store GC (hit twice on 2026-07-13); `tart set`
   only grows, so existing builders pick the new size up on the next run.

@@ -828,8 +828,9 @@ in
       # because the override db resets to the deploy-time baseline on reboot). Applied here too so a
       # redeploy takes effect immediately without waiting for a reboot.
       ${debloatDisableScript}
-      # Power: a headless always-on server must never nap or sleep (a sleeping VM drops the services).
-      /usr/bin/pmset -a powernap 0 womp 0 sleep 0 disksleep 0 >/dev/null 2>&1 || true
+      # Power: never nap or sleep (a sleeping VM drops the services) — but the DISPLAY should sleep:
+      # awake it costs the host ~20% of a core in PVG frame encodes, asleep 0% (measured 2026-07-14).
+      /usr/bin/pmset -a powernap 0 womp 0 sleep 0 disksleep 0 displaysleep 1 >/dev/null 2>&1 || true
 
       # Reduce surface / noise: Siri, analytics submission, AirDrop, Handoff, Wi-Fi power. The
       # user-domain writes go through the admin login session (auto-login is on); best-effort and
