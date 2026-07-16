@@ -401,6 +401,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   /:/host`. A new `hermes-docker-proxy` (default-deny, screens every container-create
   body) now fronts the socket; `hermes` is dropped from the docker group and reaches
   the filtered socket via `DOCKER_HOST`.
+- **Docker-proxy screens mount destinations, closing a socket-relay escape.** The
+  create-body screen previously checked only bind/mount sources; it now also rejects
+  any bind or mount whose destination basename is `docker.sock`. A Docker-API shim
+  (socktainer, on the Apple-`container` sandbox path) transparently relays such a
+  mount to its own unfiltered API — a full host escape — regardless of the source.
+  Bind specs are parsed exactly as the shim parses them (`:`-split dropping empty
+  segments) and non-ASCII bind/mount paths are rejected outright, so byte-split vs
+  grapheme-cluster parser differentials can't smuggle a `docker.sock` target past the
+  screen. Three adversarial review passes found and closed two such differentials.
 - **metal model services bound tailnet-only (M2).** omlx (`:8000`) and STT (`:8765`)
   bind the resolved tailnet IP instead of `0.0.0.0`, so they never listen on the vmnet
   LAN even if `pf` is down. STT needs no app bearer — the tailnet ACL + `pf` are the

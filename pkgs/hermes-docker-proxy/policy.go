@@ -138,8 +138,10 @@ type createBody struct {
 }
 
 type mount struct {
-	Type   string `json:"Type"`
-	Source string `json:"Source"`
+	Type        string `json:"Type"`
+	Source      string `json:"Source"`
+	Target      string `json:"Target"`
+	Destination string `json:"Destination"`
 }
 
 // screenCreate returns "" to allow, or a reason string to deny.
@@ -182,15 +184,26 @@ func (p *Policy) screenCreate(body []byte) string {
 			return "HostConfig." + field.name + " uses a host/foreign namespace: " + field.val
 		}
 	}
-	// Binds (the -v form): "src:dst[:opts]". src must be an absolute path under a
-	// bind root; named/anonymous volumes (no abs src) are rejected.
+	// Binds (the -v form): "src:dst[:opts]", parsed via splitBindSpec to match
+	// socktainer's parser. src must be an absolute path under a bind root.
 	for _, b := range hc.Binds {
-		src := b
-		if i := strings.Index(b, ":"); i >= 0 {
-			src = b[:i]
+		if !isASCII(b) {
+			return "HostConfig.Binds entry has non-ASCII bytes (bind paths must be ASCII): " + b
+		}
+		parts := splitBindSpec(b)
+		if len(parts) == 0 {
+			return "HostConfig.Binds entry is empty: " + b
+		}
+		src := parts[0]
+		dst := ""
+		if len(parts) >= 2 {
+			dst = parts[1]
 		}
 		if ok, reason := p.bindSourceAllowed(src); !ok {
 			return "HostConfig.Binds " + reason + ": " + b
+		}
+		if forbiddenDest(dst) {
+			return "HostConfig.Binds destination is a forbidden socket target (docker.sock relay): " + b
 		}
 	}
 	// Mounts (the --mount form): bind mounts get the same boundary check; tmpfs is
@@ -200,8 +213,21 @@ func (p *Policy) screenCreate(body []byte) string {
 		case "tmpfs":
 			continue
 		case "bind":
+			if !isASCII(m.Source) {
+				return "HostConfig.Mounts bind Source has non-ASCII bytes: " + m.Source
+			}
 			if ok, reason := p.bindSourceAllowed(m.Source); !ok {
 				return "HostConfig.Mounts bind " + reason + ": " + m.Source
+			}
+			dst := m.Target
+			if dst == "" {
+				dst = m.Destination
+			}
+			if !isASCII(dst) {
+				return "HostConfig.Mounts bind destination has non-ASCII bytes: " + dst
+			}
+			if forbiddenDest(dst) {
+				return "HostConfig.Mounts destination is a forbidden socket target (docker.sock relay): " + dst
 			}
 		case "":
 			return "HostConfig.Mounts entry has no Type"
@@ -210,6 +236,42 @@ func (p *Policy) screenCreate(body []byte) string {
 		}
 	}
 	return ""
+}
+
+// isASCII reports whether s is pure 7-bit ASCII. Bind/mount paths with non-ASCII
+// bytes are rejected wholesale: Go's byte split and socktainer's Swift
+// grapheme-cluster split diverge on combining marks (a docker.sock-relay escape).
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// splitBindSpec splits a -v bind spec on ':' dropping empty segments, mirroring
+// socktainer's parse (Swift split omits empty subsequences); a naive
+// first/second-colon split diverges on "src::dst" and leaks the relay target.
+func splitBindSpec(b string) []string {
+	var out []string
+	for _, s := range strings.Split(b, ":") {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// forbiddenDest rejects a bind/mount whose destination basename is docker.sock:
+// socktainer transparently relays that target to its raw unfiltered API,
+// bypassing this proxy (a host escape). The agent never mounts a docker socket.
+func forbiddenDest(dst string) bool {
+	dst = strings.TrimSpace(dst)
+	if dst == "" {
+		return false
+	}
+	return strings.ToLower(filepath.Base(filepath.Clean(dst))) == "docker.sock"
 }
 
 // isHostNamespace flags a *Mode value that escapes the container's own

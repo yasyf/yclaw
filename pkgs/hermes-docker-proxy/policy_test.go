@@ -120,6 +120,26 @@ func TestScreenCreate(t *testing.T) {
 		{"mount volume", map[string]any{"Mounts": []map[string]any{{"Type": "volume", "Source": "v"}}}, "Mounts type is forbidden"},
 		{"named volume bind", map[string]any{"Binds": []string{"myvol:/data"}}, "not an absolute path"},
 		{"symlink escape", map[string]any{"Binds": []string{escape + ":/x"}}, "outside the allowed bind roots"},
+
+		// docker.sock relay (socktainer host-escape): legit source, dst basename docker.sock → deny.
+		{"docker.sock relay via -v", map[string]any{"Binds": []string{ws + ":/var/run/docker.sock"}}, "docker.sock relay"},
+		{"docker.sock relay via -v with opts", map[string]any{"Binds": []string{ws + ":/var/run/docker.sock:ro"}}, "docker.sock relay"},
+		{"docker.sock relay via -v trailing slash", map[string]any{"Binds": []string{ws + ":/var/run/docker.sock/"}}, "docker.sock relay"},
+		{"docker.sock relay via -v dotdot", map[string]any{"Binds": []string{ws + ":/var/run/x/../docker.sock"}}, "docker.sock relay"},
+		{"docker.sock relay via --mount Target", map[string]any{"Mounts": []map[string]any{{"Type": "bind", "Source": ws, "Target": "/var/run/docker.sock"}}}, "docker.sock relay"},
+		{"docker.sock relay via --mount Destination", map[string]any{"Mounts": []map[string]any{{"Type": "bind", "Source": ws, "Destination": "/var/run/docker.sock"}}}, "docker.sock relay"},
+		{"docker.sock-like name allowed", map[string]any{"Binds": []string{ws + ":/var/run/dockerd.sock"}}, ""},
+		// Colon-split differential: socktainer drops empty segments, so "src::dst"
+		// resolves to a docker.sock target there; the proxy must agree (splitBindSpec).
+		{"docker.sock relay via -v double colon", map[string]any{"Binds": []string{ws + "::/var/run/docker.sock"}}, "docker.sock relay"},
+		{"docker.sock relay via -v triple colon opts", map[string]any{"Binds": []string{ws + "::/var/run/docker.sock::ro"}}, "docker.sock relay"},
+		{"docker.sock relay via -v leading colon", map[string]any{"Binds": []string{":" + ws + ":/var/run/docker.sock"}}, "docker.sock relay"},
+		{"docker.sock relay uppercase over-block", map[string]any{"Binds": []string{ws + ":/var/run/DOCKER.SOCK"}}, "docker.sock relay"},
+		// Grapheme-cluster differential: a combining mark after ':' merges into one
+		// Swift Character (no split) but Go splits on the raw byte — reject non-ASCII.
+		{"docker.sock relay via -v combining colon", map[string]any{"Binds": []string{ws + ":́:/var/run/docker.sock"}}, "non-ASCII"},
+		{"non-ASCII bind source rejected", map[string]any{"Binds": []string{ws + "é:/workspace"}}, "non-ASCII"},
+		{"non-ASCII mount target rejected", map[string]any{"Mounts": []map[string]any{{"Type": "bind", "Source": ws, "Target": "/var/run/docker.socḱ"}}}, "non-ASCII"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -163,5 +183,12 @@ func TestEvaluateCreateRoundTrip(t *testing.T) {
 	req2 := httptest.NewRequest("POST", "/containers/create", strings.NewReader(bad))
 	if d2 := p.Evaluate(req2); d2.Allow {
 		t.Error("expected deny for host-root bind via Evaluate")
+	}
+
+	// docker.sock relay with a legit (in-root) source must still deny end-to-end.
+	relay := createBodyJSON(t, map[string]any{"Binds": []string{root + ":/var/run/docker.sock"}})
+	req3 := httptest.NewRequest("POST", "/containers/create", strings.NewReader(relay))
+	if d3 := p.Evaluate(req3); d3.Allow {
+		t.Error("expected deny for docker.sock relay bind via Evaluate")
 	}
 }
