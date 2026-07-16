@@ -3,7 +3,7 @@ diff -ruN --exclude=.claude a/cmd/run.go b/cmd/run.go
 +++ b/cmd/run.go	2026-07-03 20:02:59
 @@ -549,7 +549,7 @@
  	}
- 
+
  	if caPath == "" {
 -		home, err := os.UserHomeDir()
 +		home, err := stateHomeDir()
@@ -15,7 +15,7 @@ diff -ruN --exclude=.claude a/cmd/server.go b/cmd/server.go
 +++ b/cmd/server.go	2026-07-03 20:02:59
 @@ -624,7 +624,7 @@
  }
- 
+
  func serverLogPath() (string, error) {
 -	home, err := os.UserHomeDir()
 +	home, err := stateHomeDir()
@@ -38,7 +38,7 @@ diff -ruN --exclude=.claude a/internal/ca/soft.go b/internal/ca/soft.go
 --- a/internal/ca/soft.go	2026-06-14 16:04:15
 +++ b/internal/ca/soft.go	2026-07-03 20:02:59
 @@ -83,7 +83,7 @@
- 
+
  	dir := opts.Dir
  	if dir == "" {
 -		home, err := os.UserHomeDir()
@@ -48,7 +48,7 @@ diff -ruN --exclude=.claude a/internal/ca/soft.go b/internal/ca/soft.go
  		}
 @@ -390,3 +390,10 @@
  }
- 
+
  var _ Provider = (*SoftCA)(nil)
 +
 +func stateHomeDir() (string, error) {
@@ -62,7 +62,7 @@ diff -ruN --exclude=.claude a/internal/isolation/cacopy.go b/internal/isolation/
 +++ b/internal/isolation/cacopy.go	2026-07-03 20:02:59
 @@ -87,9 +87,16 @@
  }
- 
+
  func hostIsolationDir() (string, error) {
 -	home, err := os.UserHomeDir()
 +	home, err := stateHomeDir()
@@ -84,17 +84,17 @@ diff -ruN --exclude=.claude a/internal/isolation/docker.go b/internal/isolation/
 @@ -72,7 +72,7 @@
  		return nil, errors.New("BuildRunArgs: CommandArgs required")
  	}
- 
+
 -	home, _ := os.UserHomeDir()
 +	home, _ := stateHomeDir()
- 
+
  	// The CWD is bind-mounted read-write at /workspace. Subject it to
  	// the same host-src validation as user --mount flags so running
 diff -ruN --exclude=.claude a/internal/pidfile/pidfile.go b/internal/pidfile/pidfile.go
 --- a/internal/pidfile/pidfile.go	2026-06-14 16:04:15
 +++ b/internal/pidfile/pidfile.go	2026-07-03 20:02:59
 @@ -14,7 +14,7 @@
- 
+
  // Path returns the path to the PID file (~/.agent-vault/agent-vault.pid).
  func Path() (string, error) {
 -	home, err := os.UserHomeDir()
@@ -119,7 +119,7 @@ diff -ruN --exclude=.claude a/internal/session/session.go b/internal/session/ses
 +++ b/internal/session/session.go	2026-07-03 20:02:59
 @@ -23,7 +23,7 @@
  }
- 
+
  func sessionPath() (string, error) {
 -	home, err := os.UserHomeDir()
 +	home, err := stateHomeDir()
@@ -128,7 +128,7 @@ diff -ruN --exclude=.claude a/internal/session/session.go b/internal/session/ses
  	}
 @@ -82,7 +82,7 @@
  }
- 
+
  func contextPath() (string, error) {
 -	home, err := os.UserHomeDir()
 +	home, err := stateHomeDir()

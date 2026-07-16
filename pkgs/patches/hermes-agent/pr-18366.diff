@@ -16,19 +16,19 @@ index e2a1b8839c3..757432fca8f 100644
                      return await self._handle_footer_command(event)
 +                if _cmd_def_inner.name == "busy":
 +                    return await self._handle_busy_command(event)
- 
+
              # Gateway-handled info/control commands with dedicated
              # running-agent handlers.
 @@ -7200,6 +7202,9 @@ async def _do_reset():
          if canonical == "yolo":
              return await self._handle_yolo_command(event)
- 
+
 +        if canonical == "busy":
 +            return await self._handle_busy_command(event)
 +
          if canonical == "model":
              return await self._handle_model_command(event)
- 
+
 diff --git a/gateway/slash_commands.py b/gateway/slash_commands.py
 index 9a463fd249d..bfc111ebeea 100644
 --- a/gateway/slash_commands.py
@@ -36,7 +36,7 @@ index 9a463fd249d..bfc111ebeea 100644
 @@ -2298,6 +2298,63 @@ async def _handle_verbose_command(self, event: MessageEvent) -> str:
              logger.warning("Failed to save tool_progress mode: %s", e)
              return f"{descriptions[new_mode]}\n" + t("gateway.verbose.save_failed", error=e)
- 
+
 +    async def _handle_busy_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
 +        """Handle /busy — control what happens when messaging while Hermes is working.
 +
@@ -96,7 +96,7 @@ index 9a463fd249d..bfc111ebeea 100644
 +
      async def _handle_footer_command(self, event: MessageEvent) -> str:
          """Handle /footer command — toggle the runtime-metadata footer.
- 
+
 diff --git a/hermes_cli/commands.py b/hermes_cli/commands.py
 index 7812eba7d5f..8fd2073de15 100644
 --- a/hermes_cli/commands.py
@@ -108,7 +108,7 @@ index 7812eba7d5f..8fd2073de15 100644
 -               cli_only=True, args_hint="[queue|steer|interrupt|status]",
 +               args_hint="[queue|steer|interrupt|status]",
                 subcommands=("queue", "steer", "interrupt", "status")),
- 
+
      # Tools & Skills
 diff --git a/tests/gateway/test_busy_command.py b/tests/gateway/test_busy_command.py
 new file mode 100644

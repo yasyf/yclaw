@@ -13,7 +13,7 @@ index a95dd47dc08..29f1d9830fa 100644
 @@ -63,8 +64,13 @@
      3003: "laugh", 3004: "emphasize", 3005: "question",
  }
- 
+
 -# Webhook event types that carry user messages
 -_MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 +# Webhook event types that carry new user messages. BlueBubbles also emits
@@ -23,7 +23,7 @@ index a95dd47dc08..29f1d9830fa 100644
 +# new-message-style events; receiver-side GUID dedup below is still kept for
 +# retry/reconnect duplicates.
 +_MESSAGE_EVENTS = {"new-message", "message"}
- 
+
  # Log redaction patterns
  _PHONE_RE = re.compile(r"\+?\d{7,15}")
 @@ -151,6 +157,8 @@ def __init__(self, config: PlatformConfig):
@@ -32,13 +32,13 @@ index a95dd47dc08..29f1d9830fa 100644
          self._guid_cache: OrderedDict[str, str] = OrderedDict()
 +        self._recent_message_guids: Dict[str, float] = {}
 +        self._dedup_ttl_seconds = 300.0
- 
+
      # ------------------------------------------------------------------
      # API helpers
 @@ -354,18 +362,40 @@ async def _register_webhook(self) -> bool:
- 
+
          webhook_url = self._webhook_register_url
- 
+
 -        # Crash resilience — reuse an existing registration if present
 +        # Crash resilience — reuse an existing registration if present, but do
 +        # not preserve stale registrations that still subscribe to update
@@ -76,17 +76,17 @@ index a95dd47dc08..29f1d9830fa 100644
 +                        exc,
 +                    )
 +                    return False
- 
+
          payload = {
              "url": webhook_url,
 -            "events": ["new-message", "updated-message"],
 +            "events": desired_events,
          }
- 
+
          try:
 @@ -900,6 +930,33 @@ async def _handle_webhook(self, request):
              return web.Response(text="ok")
- 
+
          record = self._extract_payload_record(payload) or {}
 +
 +        # BlueBubbles can emit multiple webhook events for the same iMessage
@@ -121,7 +121,7 @@ index a95dd47dc08..29f1d9830fa 100644
 @@ -995,8 +1052,13 @@ async def _handle_webhook(self, request):
          if not sender or not (chat_guid or chat_identifier) or not text:
              return web.json_response({"error": "missing message fields"}, status=400)
- 
+
 -        session_chat_id = chat_guid or chat_identifier
          is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
 +        session_chat_id = str(chat_guid or chat_identifier or "")

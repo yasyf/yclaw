@@ -30,7 +30,7 @@
  #!/usr/bin/env python3
 -"""Bridge between Hermes OAuth token and gws CLI.
 +"""Bridge between Hermes and the gws CLI.
- 
+
 -Refreshes the token if expired, then executes gws with the valid access token.
 +Sets a dummy bearer token and execs gws. The real Authorization header for
 +*.googleapis.com is rewritten on the wire by agent-vault (reached via the
@@ -43,15 +43,15 @@
  import sys
 -from datetime import datetime, timezone
 -from pathlib import Path
- 
+
 -# Ensure sibling modules (_hermes_home) are importable when run standalone.
 -_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 -if _SCRIPTS_DIR not in sys.path:
 -    sys.path.insert(0, _SCRIPTS_DIR)
 +DUMMY_TOKEN = "__google_oauth__"
- 
+
 -from _hermes_home import get_hermes_home
- 
+
 -
 -def get_token_path() -> Path:
 -    return get_hermes_home() / "google_token.json"
@@ -134,11 +134,11 @@
      if len(sys.argv) < 2:
          print("Usage: gws_bridge.py <gws args...>", file=sys.stderr)
          sys.exit(1)
- 
+
 -    access_token = get_valid_token()
      env = os.environ.copy()
 -    env["GOOGLE_WORKSPACE_CLI_TOKEN"] = access_token
 +    env["GOOGLE_WORKSPACE_CLI_TOKEN"] = DUMMY_TOKEN
- 
+
      result = subprocess.run(["gws"] + sys.argv[1:], env=env)
      sys.exit(result.returncode)
