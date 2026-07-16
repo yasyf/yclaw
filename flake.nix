@@ -159,6 +159,13 @@
         agent-vault = pkgsLinux.agent-vault;
         hermes-docker-proxy = pkgsLinux.hermes-docker-proxy;
         hermes-image = mkImage hermesModules;
+
+        # Container-native hermes-agent OCI image (Architecture B). Derives the agent,
+        # settings, and static env from the same evaluated config the VM uses (no drift).
+        hermes-container-image = import ./pkgs/hermes-agent-image/image.nix {
+          pkgs = pkgsLinux;
+          hermesConfig = self.nixosConfigurations.hermes.config.services.hermes-agent;
+        };
         # Local-only: same image with a known root password for scratch-VM boot validation.
         # Never built or published by CI — it must not reach a released asset.
         hermes-image-scratch = mkImage (hermesModules ++ [ ./nixos/scratch-login.nix ]);
