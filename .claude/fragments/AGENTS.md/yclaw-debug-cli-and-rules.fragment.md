@@ -60,5 +60,3 @@ uvx ty check yclaw     # typecheck (diagnostics are warnings, not gates)
 Tests mock the boundaries (the `tailscale ssh` subprocess seam, keychain calls, HTTP probes, the clock) and leave the function under test real — see STYLEGUIDE.md `## Testing` for the full convention.
 
 **Writing docs.** When writing or revising docs, a README, a tutorial, a how-to, or reference, use the `writing-docs` skill (Diataxis modes, voice rules, and runnable code-sample rules) and run `slop-cop check <file> --lang=markdown` before you finish.
-
-**Git.** Commits should be atomic and scoped. One logical change per commit.
