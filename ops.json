@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"verify_note","witness":[{"anchor":{"kind":"path","value":"nixos/hermes.nix"},"oid":"de54d611aa282d975659cf72d42b9d70c33ae70f"},{"anchor":{"kind":"path","value":"pkgs/hermes-docker-proxy"},"oid":"5a5783aeb3b20f21f1a20075b825f7c13d516112"}],"verified_commit":"7bef8e1464be5a5ed02364802ec18e6532845e6f"}]}
+{"v":1,"lamport":3,"ops":[{"kind":"add_superseded_by","id":"4656afbdaea1cd6f03462128b9fcde74a9d87e21"}]}
