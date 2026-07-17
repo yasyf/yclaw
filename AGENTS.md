@@ -136,7 +136,7 @@ Exit codes: 0 clean, 1 FAIL, 2 usage, 4 Tailscale check-wall (the approval URL i
 
 **No defensive coding.** No fallbacks, shims, or backwards-compat layers; no guards against impossible states. If unused, delete it. Crash on the unexpected.
 
-**Search before writing.** Before creating a helper, query the codebase via `semble.search` (intent or symbol queries both work). Sibling modules and base classes win over re-implementation.
+**Search before writing.** Before creating a helper, query the codebase via `ccx code search` (intent or symbol queries both work). Sibling modules and base classes win over re-implementation.
 
 **Code stewardship.** When you touch a file, fix nearby bugs, style violations, and broken tests; don't wave them off as pre-existing or out of scope.
 
