@@ -368,8 +368,10 @@ setup_host_container() {
   [ -x "$proxy_bin" ] || die "go build did not produce $proxy_bin"
 
   # Stage the 4 container secrets/config into $config_dir (node.env + token from bootstrap's bundle).
+  # $STATE_DIR/hermes is the agent state mount source — apple/container rejects a nonexistent bind,
+  # so a clean deploy fails at `container run` without it (the entrypoint chowns it to 1000 in-guest).
   log "Staging hermes container secrets/config into $config_dir ..."
-  install -d -m 700 "$config_dir" "$ts_state_dir"
+  install -d -m 700 "$config_dir" "$ts_state_dir" "$STATE_DIR/hermes"
   local f
   for f in key.txt secrets.sops.yaml; do
     [ -f "$config_dir/$f" ] || die "$config_dir/$f missing — run 'just bootstrap' first (per-host age key + sops bundle)"
@@ -406,6 +408,13 @@ if ! dscl . -read "/Groups/$group" >/dev/null 2>&1; then
   dscl . -create "/Groups/$group" PrimaryGroupID "$gid"
   dscl . -create "/Groups/$group" RealName "hermes agent container (uid/gid $gid)"
 fi
+# The socket's group is the access boundary, so a drifted gid or a squatter on the gid is a silent
+# security misconfig — assert exact ownership rather than trust the name-idempotent create above.
+have="$(dscl . -read "/Groups/$group" PrimaryGroupID 2>/dev/null | awk '{print $NF}')"
+[ "$have" = "$gid" ] || { echo "FATAL group '$group' has gid '$have', not $gid" >&2; exit 1; }
+for o in $(dscl . -list /Groups PrimaryGroupID | awk -v g="$gid" '$2==g {print $1}'); do
+  [ "$o" = "$group" ] || { echo "FATAL gid $gid also owned by group '$o' (not '$group')" >&2; exit 1; }
+done
 # User-owned so the per-user proxy can bind; group + setgid so the socket inherits gid $gid.
 install -d -o "$owner" -g "$group" -m 2750 "$run_dir"
 # Ticks + libs beside host-pf.sh (root-owned, world-readable). container-pf.sh has no @@tokens@@.

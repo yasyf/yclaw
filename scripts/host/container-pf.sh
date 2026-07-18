@@ -21,11 +21,17 @@ CBCAST=192.168.72.255
 # staleness is the doctor signal.
 MARKER="$YCLAW_LIB/container-pf.last-ok"
 
-# Resolve the bridge carrying the gateway each tick (the number drifts across restarts). Absent =
-# network not up yet — fail LOUD (backoff retries) rather than leave the bridge unpoliced.
-CIF="$(ifconfig | awk -v ip="$CGW" \
-  '/^[a-z0-9]+: flags=/ { sub(":", "", $1); ifc = $1 } $1 == "inet" && $2 == ip { print ifc; exit }')"
-[ -n "$CIF" ] || { echo "container-pf: FATAL no interface carries $CGW (container network not up — apiserver/container-hermes not started?) — previous ruleset left in force" >&2; exit 1; }
+# Resolve the UP bridge carrying the gateway (the number drifts across restarts); require EXACTLY
+# one — apple/container's unclean shutdowns can strand a stale bridge on the address (#1321), which
+# would take the rules while live traffic ran on a renumbered one. Absent/ambiguous = fail LOUD.
+CIFS="$(ifconfig | awk -v ip="$CGW" '
+  /^[a-z0-9]+: flags=/ { sub(":", "", $1); ifc = $1; up = ($0 ~ /[<,]UP[,>]/) }
+  $1 == "inet" && $2 == ip && up { print ifc }
+')"
+CIF="$(printf '%s\n' "$CIFS" | sed '/^$/d' | head -1)"
+n="$(printf '%s\n' "$CIFS" | sed '/^$/d' | grep -c .)"
+[ -n "$CIF" ] || { echo "container-pf: FATAL no UP interface carries $CGW (container network not up — apiserver/container-hermes not started?) — previous ruleset left in force" >&2; exit 1; }
+[ "$n" = 1 ]  || { echo "container-pf: FATAL $n UP interfaces carry $CGW (stale bridge from an unclean apiserver shutdown?) — refusing an ambiguous interface, previous ruleset left in force" >&2; exit 1; }
 
 RULES=$(mktemp) || { echo "container-pf: ERROR mktemp failed for pf rules" >&2; exit 1; }
 {
@@ -58,6 +64,14 @@ RULES=$(mktemp) || { echo "container-pf: ERROR mktemp failed for pf rules" >&2; 
   echo "block drop in quick on $CIF from any to any"
 } > "$RULES"
 
+# pf consults state before rules, so a flow admitted under a laxer/previous ruleset (or during the
+# pre-first-tick window) survives a tighter load. Kill container-sourced states on a rule change or
+# empty kernel anchor — gated so steady ticks don't reset the live tailnet transport every 300s.
+ANCHOR_FILE="$(pf_anchor_file "$ANCHOR")"
+NEED_KILL=0
+cmp -s "$RULES" "$ANCHOR_FILE" 2>/dev/null || NEED_KILL=1
+[ -n "$(pfctl -a "$ANCHOR" -sr 2>/dev/null)" ] || NEED_KILL=1
+
 # Targeted anchor load only (NEVER `pfctl -f /etc/pf.conf` — flushes the vmnet NAT the fleet needs);
 # --wire-load-only appends the boot load line idempotently, --enable re-asserts pf un-refcounted.
 install_pf_anchor "$ANCHOR" "$RULES" --wire-load-only --enable
@@ -69,6 +83,12 @@ rm -f "$RULES"
 # match — pfctl -sr renders the stock call as `anchor "com.apple/*" all`.
 pfctl -sr 2>/dev/null | grep -qxF 'anchor "com.apple/*" all' \
   || { echo "container-pf: FATAL main ruleset lacks the com.apple/* wildcard call — $ANCHOR loaded but NOT evaluated" >&2; exit 1; }
+
+if [ "$NEED_KILL" -eq 1 ]; then
+  # src-scoped: drops the container's outbound states (they re-establish; tailscale re-handshakes),
+  # leaves host-initiated `to $CNET` states (src=host) intact.
+  pfctl -k "$CNET" || { echo "container-pf: FATAL state kill for $CNET failed" >&2; exit 1; }
+fi
 
 date +%s > "$MARKER" || { echo "container-pf: FATAL cannot write enforcement marker $MARKER" >&2; exit 1; }
 echo "container-pf: $ANCHOR keyed to bridge $CIF ($CNET); container denied self+fleet+private+CGNAT; egress limited to DNS+WG+443 (tier-2 moderate)"
