@@ -80,7 +80,9 @@ sys.exit(0 if code == 403 else 3)
   # macOS bash 3.2 has no `timeout`: a hung `container exec` (wedged guest channel) would stall the
   # whole KeepAlive loop forever (body never returns), so bound it with a background kill -> WARN.
   local pid=$! killer rc
-  ( sleep 20; kill "$pid" 2>/dev/null ) & killer=$!
+  # TERM then, after a grace, KILL: a `container exec` wedged on a hung guest channel may ignore
+  # SIGTERM, so escalate to SIGKILL to guarantee `wait` unblocks.
+  ( sleep 20; kill "$pid" 2>/dev/null; sleep 2; kill -9 "$pid" 2>/dev/null ) & killer=$!
   wait "$pid"; rc=$?
   kill "$killer" 2>/dev/null
   return "$rc"
@@ -160,6 +162,10 @@ elif [ "$crc" -ne 0 ]; then
   echo "container-hermes: WARN proxy canary did not complete (rc=$crc; 2=agent could not connect [guest-side gid — sup #2?], other=exec/probe error) — see $LOG_DIR/container-canary.log" >&2
 fi
 
-date +%s > "$MARKER" || { echo "container-hermes: FATAL cannot write enforcement marker $MARKER" >&2; exit 1; }
+# last-ok = the canary definitively passed (crc==0), not merely "chain up" — a WARN tick leaves it
+# stale for a doctor staleness check (#25 wires the reader).
+if [ "$crc" -eq 0 ]; then
+  date +%s > "$MARKER" || { echo "container-hermes: FATAL cannot write enforcement marker $MARKER" >&2; exit 1; }
+fi
 
 echo "container-hermes: chain up — apiserver running, socktainer live, proxy socket $PROXY_SOCK (gid $AGENT_GID), container '$NAME' running"
