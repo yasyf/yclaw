@@ -54,13 +54,11 @@ assert_proxy_socket() {
   [ "$mode" = "660" ]       || { echo "container-hermes: FATAL proxy socket mode $mode != 660 (chmod failed — agent cannot connect)" >&2; exit 1; }
 }
 
-# In-container canary: from inside the agent AS the dropped uid:gid 1000, send a create the proxy MUST
-# reject and require its 403. Proves the mounted socket is the FILTERING proxy (raw socktainer 404s
-# the bogus image) AND that uid 1000 can connect at all (guest-side gid, sup #2). The proxy 403s any
-# forbidden create OR unlisted route pre-forward, so the bogus image never reaches a daemon. Exit:
-# 0=403 ok, 2=could not connect, 3=answered but not 403 (WRONG socket), other=exec/probe error.
+# In-container canary: exec as root, setpriv to the EXACT agent creds (uid/gid 1000 + group 0), send
+# a create the proxy MUST 403 (group 0 load-bearing — bare uid:gid 1000 EACCEs the socket per the
+# idmap, testing the ACL not the filter; cc-notes ca8ac58f). Exit: 0=403 2=no-connect 3=non-403 *=err.
 proxy_canary() {
-  "$CONTAINER" exec --user "$AGENT_UID:$AGENT_GID" "$NAME" python3 -c '
+  "$CONTAINER" exec "$NAME" setpriv --reuid="$AGENT_UID" --regid="$AGENT_GID" --groups="$AGENT_GID",0 --no-new-privs -- python3 -c '
 import http.client, socket, sys
 class U(http.client.HTTPConnection):
     def connect(self):

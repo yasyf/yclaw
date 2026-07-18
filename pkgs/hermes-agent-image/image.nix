@@ -54,8 +54,9 @@ let
     # tailscale rewrites /etc/resolv.conf at runtime over the writable overlay; empty placeholder.
     : > $out/etc/resolv.conf
 
-    # root + the unprivileged hermes user (uid/gid 1000). The agent drops to hermes; the
-    # mounted docker-proxy socket must be group-owned by gid 1000 (da1c63 alignment).
+    # root + the unprivileged hermes user (uid/gid 1000) the agent drops to. The host proxy socket
+    # is gid 1000, but the idmap presents it as guest root:root — the entrypoint drop carries group
+    # 0 so the agent can connect(). cc-notes ca8ac58f.
     printf 'root:x:0:0:root:/root:/bin/sh\nhermes:x:1000:1000:hermes agent:${stateDir}:/bin/sh\n' \
       > $out/etc/passwd
     printf 'root:x:0:\nhermes:x:1000:\n' > $out/etc/group
@@ -63,9 +64,9 @@ let
     install -Dm755 ${./entrypoint.sh} $out/entrypoint.sh
   '';
 in
-# Reference for the supervisor (Phase 2f). The proxy socket bind is the da1c63 surface —
-# its group must be gid 1000 so the dropped hermes user can connect (note 02d73219). The real
-# tun needs --cap-add NET_ADMIN (verified: TUN_CREATE_OK in apple/container).
+# Reference for the supervisor (Phase 2f). The proxy socket bind is the da1c63 surface; the idmap
+# maps its host gid 1000 to guest root:root, so the entrypoint drop carries group 0 to connect()
+# (cc-notes ca8ac58f). The real tun needs --cap-add NET_ADMIN (verified: TUN_CREATE_OK).
 #
 #   container run --name hermes --cap-add NET_ADMIN \
 #     --network <custom-non-nat-net> \

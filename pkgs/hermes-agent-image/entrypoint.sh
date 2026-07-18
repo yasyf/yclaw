@@ -157,15 +157,16 @@ main() {
   install -d -m 750 "$HERMES_HOME"
   render_config
   assemble_env
-  # Bind-mounted state may arrive host-owned; give the agent user its home tree. --no-dereference:
-  # the agent owns this tree, so a symlink it plants toward a :ro mount must not EROFS-abort us.
-  chown -R --no-dereference "$HERMES_UID:$HERMES_GID" "$HERMES_STATE_DIR"
+  # No chown of the bind-mounted state: the virtiofs idmap makes it both impossible (errors on the
+  # mount root) and unnecessary (uid 1000 already has host-enforced access). cc-notes ca8ac58f.
   start_tailscale
   # Root ran with HOME=/root (image config.Env); hand the dropped agent its own home so root's
   # pre-drop HOME is never the agent-writable state dir (refuter #4).
   export HOME="$HERMES_STATE_DIR"
   log "exec hermes gateway run (uid=$HERMES_UID)"
-  exec setpriv --reuid="$HERMES_UID" --regid="$HERMES_GID" --groups="$HERMES_GID" \
+  # Supplementary group 0: the idmap presents the host-gid-1000 proxy socket as guest root:root 660,
+  # so the dropped agent needs the guest root group to connect() it. cc-notes ca8ac58f.
+  exec setpriv --reuid="$HERMES_UID" --regid="$HERMES_GID" --groups="$HERMES_GID",0 \
     --no-new-privs -- hermes gateway run
 }
 
