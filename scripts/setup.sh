@@ -392,10 +392,14 @@ setup_host_container() {
       -e "s|@@LOG_DIR@@|$MODEL_LOGS_DIR|g" \
       "$REPO_ROOT/scripts/host/container-hermes.sh" > "$baked"
 
-  log "Creating gid-$gid group '$group', socket dir $run_dir, installing the tick (sudo) ..."
-  sudo bash -s -- "$group" "$gid" "$run_dir" "$(id -un)" "$lib_dir" "$baked" "$REPO_ROOT/scripts/lib/wait.sh" <<'SUDO'
+  local pf_label="com.yclaw.container-pf-refresh"
+  log "Creating gid-$gid group '$group', socket dir $run_dir, installing the ticks + egress pf daemon (sudo) ..."
+  sudo bash -s -- "$group" "$gid" "$run_dir" "$(id -un)" "$lib_dir" "$baked" \
+      "$REPO_ROOT/scripts/lib/wait.sh" "$REPO_ROOT/scripts/lib/pf.sh" \
+      "$REPO_ROOT/scripts/host/container-pf.sh" "$pf_label" <<'SUDO'
 set -eu
-group="$1"; gid="$2"; run_dir="$3"; owner="$4"; lib_dir="$5"; baked="$6"; wait_sh="$7"
+group="$1"; gid="$2"; run_dir="$3"; owner="$4"; lib_dir="$5"; baked="$6"
+wait_sh="$7"; pf_sh="$8"; container_pf="$9"; pf_label="${10}"
 # gid-1000 group so the proxy's 0660 socket lands group-owned gid 1000 (the dropped agent's gid).
 if ! dscl . -read "/Groups/$group" >/dev/null 2>&1; then
   dscl . -create "/Groups/$group"
@@ -404,17 +408,45 @@ if ! dscl . -read "/Groups/$group" >/dev/null 2>&1; then
 fi
 # User-owned so the per-user proxy can bind; group + setgid so the socket inherits gid $gid.
 install -d -o "$owner" -g "$group" -m 2750 "$run_dir"
-# Tick + wait.sh beside host-pf.sh (root-owned, world-readable).
+# Ticks + libs beside host-pf.sh (root-owned, world-readable). container-pf.sh has no @@tokens@@.
 install -d -m 755 "$lib_dir"
 install -m 644 "$wait_sh" "$lib_dir/wait.sh"
-install -m 755 "$baked" "$lib_dir/container-hermes.sh"
+install -m 644 "$pf_sh"   "$lib_dir/pf.sh"
+install -m 755 "$baked"   "$lib_dir/container-hermes.sh"
+install -m 755 "$container_pf" "$lib_dir/container-pf.sh"
+# Egress pf refresh LaunchDaemon (root; RunAtLoad + KeepAlive backoff sleep-loop — Tahoe kills
+# StartInterval). Installed NOT loaded: bring-up touches the firewall, so it is gated on review.
+plist="/Library/LaunchDaemons/$pf_label.plist"
+cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$pf_label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>d=5; until $lib_dir/container-pf.sh 60; do sleep \$d; d=\$((d*2)); if [ \$d -gt 30 ]; then d=30; fi; done; while true; do sleep 300; $lib_dir/container-pf.sh 60 || true; done</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/var/log/container-pf-refresh.log</string>
+  <key>StandardErrorPath</key><string>/var/log/container-pf-refresh.error.log</string>
+</dict>
+</plist>
+PLIST
+chown root:wheel "$plist"
+chmod 644 "$plist"
 SUDO
   rm -f "$baked"
 
   write_container_agent "$lib_dir/container-hermes.sh" 60
 
-  log "Supervisor authored. Bring-up is GATED — after review, load it (starts the whole chain) with:"
+  log "Supervisor + egress pf authored. Bring-up is GATED (starts the chain AND touches pf) — after"
+  log "review, load BOTH:"
   log "  launchctl bootstrap gui/\$(id -u) $LAUNCH_AGENTS_DIR/com.yclaw.container-hermes.plist"
+  log "  sudo launchctl bootstrap system /Library/LaunchDaemons/$pf_label.plist"
 }
 
 # --- arg dispatch --------------------------------------------------------------

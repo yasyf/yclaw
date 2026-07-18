@@ -45,6 +45,9 @@ fi
 # socket. The 0666 raw socket is NEVER mounted into the agent.
 if ! pgrep -qf "$SOCKTAINER"; then
   echo "container-hermes: socktainer down — relaunching"
+  # socktainer does not clear its stale socket on start (our proxy does, main.go:105); leaving it
+  # would EADDRINUSE the bind and false-positive wait_path_exists below.
+  rm -f "$SOCKTAINER_SOCK"
   nohup "$SOCKTAINER" >>"$LOG_DIR/socktainer.log" 2>&1 &
 fi
 wait_path_exists "$SOCKTAINER_SOCK" 30 \

@@ -179,6 +179,22 @@
             "/var/log/host-pf-refresh.log",
             "/var/log/host-pf-refresh.error.log"
           ]
+        },
+        "container-hermes": {
+          "launchd": { "domain": "gui", "label": "com.yclaw.container-hermes" },
+          "oneshot": false,
+          "logs": [
+            "~/Library/Logs/yclaw/container-hermes.log",
+            "~/Library/Logs/yclaw/container-hermes.error.log"
+          ]
+        },
+        "container-pf-refresh": {
+          "launchd": { "domain": "system", "label": "com.yclaw.container-pf-refresh" },
+          "oneshot": false,
+          "logs": [
+            "/var/log/container-pf-refresh.log",
+            "/var/log/container-pf-refresh.error.log"
+          ]
         }
       }
     }
