@@ -36,7 +36,9 @@ container_exists()  { "$CONTAINER" list --all --format json 2>/dev/null | grep -
 # path) with metachars escaped.
 proc_running() {
   local esc; esc="$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/\\&/g')"
-  pgrep -qf "^$esc"
+  # Trailing boundary (space or end): without it `^/path/bin` also matches `/path/bin-helper`, so a
+  # differently-named process could satisfy the check while the real binary is down. ERE (macOS pgrep).
+  pgrep -qf "^$esc( |\$)"
 }
 
 # Validate the proxy socket EVERY tick before mounting it: a symlink swap (-> raw socktainer) or a
@@ -63,6 +65,7 @@ import http.client, socket, sys
 class U(http.client.HTTPConnection):
     def connect(self):
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(5)
         s.connect("/run/hermes-docker-proxy/docker.sock"); self.sock = s
 c = U("localhost")
 try:
@@ -73,7 +76,14 @@ try:
 except Exception:
     sys.exit(2)
 sys.exit(0 if code == 403 else 3)
-' 2>>"$LOG_DIR/container-canary.log"
+' 2>>"$LOG_DIR/container-canary.log" &
+  # macOS bash 3.2 has no `timeout`: a hung `container exec` (wedged guest channel) would stall the
+  # whole KeepAlive loop forever (body never returns), so bound it with a background kill -> WARN.
+  local pid=$! killer rc
+  ( sleep 20; kill "$pid" 2>/dev/null ) & killer=$!
+  wait "$pid"; rc=$?
+  kill "$killer" 2>/dev/null
+  return "$rc"
 }
 
 # 1. apiserver. config.toml (192.168.72/24 override) is load-bearing for the first start; assert it
