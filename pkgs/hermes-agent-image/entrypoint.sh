@@ -10,7 +10,6 @@ set -euo pipefail
 : "${SOPS_BUNDLE:=/run/secrets/secrets.sops.yaml}"
 : "${NODE_ENV_FILE:=/run/config/node.env}"
 : "${AGENT_VAULT_TOKEN_FILE:=/run/secrets/agent-vault-token}"
-: "${TS_AUTHKEY_FILE:=/run/secrets/ts-authkey}"
 : "${TS_STATE_DIR:=/var/lib/tailscale}"
 : "${TS_SOCKET:=/var/run/tailscale/tailscaled.sock}"
 
@@ -34,6 +33,19 @@ decrypt_hermes_env() {
     || fatal "sops could not decrypt hermes/env from $SOPS_BUNDLE"
   [ -n "$out" ] || fatal "decrypted hermes/env is empty"
   printf '%s\n' "$out"
+}
+
+# tailscale/authkey is a scalar in the same sops bundle (nested tailscale.authkey), like hermes/env.
+decrypt_ts_authkey() {
+  [ -s "$AGE_KEY_FILE" ] || fatal "no age key at $AGE_KEY_FILE"
+  [ -s "$SOPS_BUNDLE" ]  || fatal "no sops bundle at $SOPS_BUNDLE"
+  local out
+  out="$(SOPS_AGE_KEY_FILE="$AGE_KEY_FILE" sops --decrypt --config /dev/null \
+    --input-type yaml --output-type yaml --extract '["tailscale"]["authkey"]' "$SOPS_BUNDLE")" \
+    || fatal "sops could not decrypt tailscale/authkey from $SOPS_BUNDLE"
+  out="$(printf '%s' "$out" | tr -d '[:space:]')"
+  [ -n "$out" ] || fatal "decrypted tailscale/authkey is empty"
+  printf '%s' "$out"
 }
 
 # Byte-identical to renderHermesProxyEnv; :hermes@ is a fixed vault hint, not a variable.
@@ -74,6 +86,10 @@ import yaml
 
 incoming = json.load(open(sys.argv[1]))
 dst = sys.argv[2]
+# The agent owns $HERMES_HOME; refuse to follow a config.yaml symlink it planted (which would
+# redirect our root-run open() at a :ro mount or leak a secret into the merge).
+if os.path.islink(dst):
+    os.unlink(dst)
 existing = {}
 if os.path.exists(dst):
     with open(dst) as f:
@@ -118,14 +134,22 @@ start_tailscale() {
   done
   [ -S "$TS_SOCKET" ] || fatal "tailscaled socket $TS_SOCKET never appeared"
 
-  [ -s "$TS_AUTHKEY_FILE" ] || fatal "no tailnet authkey at $TS_AUTHKEY_FILE"
-  # --authkey=file: keeps the key out of argv (/proc/<pid>/cmdline); tailscale trims whitespace.
+  # authkey lives in the sops bundle; decrypt to a private 0600 temp and feed via file: (no argv
+  # leak). --timeout fails fast under set -e instead of blocking forever on a bad key headless.
+  local akf
+  akf="$(mktemp)"
+  trap "rm -f -- '$akf'" EXIT
+  decrypt_ts_authkey > "$akf"
+  [ -s "$akf" ] || fatal "decrypted tailnet authkey is empty"
   tailscale --socket="$TS_SOCKET" up \
-    --authkey="file:$TS_AUTHKEY_FILE" \
+    --authkey="file:$akf" \
     --hostname=hermes \
     --advertise-tags=tag:hermes \
     --accept-dns=true \
+    --timeout=60s \
     --ssh
+  rm -f "$akf"
+  trap - EXIT
   log "tailscale up complete"
 }
 
@@ -133,9 +157,13 @@ main() {
   install -d -m 750 "$HERMES_HOME"
   render_config
   assemble_env
-  # Bind-mounted state may arrive host-owned; give the agent user its home tree.
-  chown -R "$HERMES_UID:$HERMES_GID" "$HERMES_STATE_DIR"
+  # Bind-mounted state may arrive host-owned; give the agent user its home tree. --no-dereference:
+  # the agent owns this tree, so a symlink it plants toward a :ro mount must not EROFS-abort us.
+  chown -R --no-dereference "$HERMES_UID:$HERMES_GID" "$HERMES_STATE_DIR"
   start_tailscale
+  # Root ran with HOME=/root (image config.Env); hand the dropped agent its own home so root's
+  # pre-drop HOME is never the agent-writable state dir (refuter #4).
+  export HOME="$HERMES_STATE_DIR"
   log "exec hermes gateway run (uid=$HERMES_UID)"
   exec setpriv --reuid="$HERMES_UID" --regid="$HERMES_GID" --groups="$HERMES_GID" \
     --no-new-privs -- hermes gateway run

@@ -45,7 +45,8 @@ let
   rootfs = pkgs.runCommand "hermes-container-rootfs" { } ''
     mkdir -p \
       $out/etc/ssl/certs $out/run $out/var/run/tailscale \
-      $out${hermesHome} $out${builtins.dirOf hermesHome}
+      $out${hermesHome} $out${builtins.dirOf hermesHome} $out/root
+    chmod 700 $out/root
 
     # The literal path every CA env var in the static env points at.
     ln -s ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-certificates.crt
@@ -74,7 +75,6 @@ in
 #     --volume ~/.yclaw/state/hosts/hermes/secrets.sops.yaml:/run/secrets/secrets.sops.yaml:ro \
 #     --volume ~/.yclaw/state/hosts/hermes/node.env:/run/config/node.env:ro \
 #     --volume ~/.yclaw/state/hosts/hermes/agent-vault-token:/run/secrets/agent-vault-token:ro \
-#     --volume ~/.yclaw/state/hosts/hermes/ts-authkey:/run/secrets/ts-authkey:ro \
 #     --volume /run/hermes-docker-proxy/docker.sock:/run/hermes-docker-proxy/docker.sock \
 #     hermes-agent:latest
 pkgs.dockerTools.streamLayeredImage {
@@ -94,7 +94,7 @@ pkgs.dockerTools.streamLayeredImage {
     ];
     Env = [
       "PATH=${runtimeEnv}/bin"
-      "HOME=${stateDir}"
+      "HOME=/root"
       "HERMES_STATE_DIR=${stateDir}"
       "HERMES_HOME=${hermesHome}"
       "HERMES_STATIC_ENV=${staticEnv}"
