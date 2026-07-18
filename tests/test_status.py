@@ -1,3 +1,4 @@
+import pytest
 from click.testing import CliRunner
 
 from yclaw import output, probes, status
@@ -174,6 +175,39 @@ def test_status_host_service_probes_run_despite_node_fail(monkeypatch):
     assert "down" in node_row
     assert any(line.startswith("host") and "tart-metal" in line for line in lines)
     assert result.exit_code == 1  # the node itself is down
+
+
+@pytest.mark.anyio
+async def test_collect_container_machine_probes_proc_and_marker_not_ssh(monkeypatch, container_machine):
+    # A managed_by=container node is probed locally (container exec + a host marker read): its state
+    # comes from container_proc_state, plus one supervisor-tick marker row — never systemd/launchd/ssh.
+    seen = {}
+
+    async def fake_tailnet(name, *, timeout=10):
+        return ProbeResult(name, Status.PASS, "online, ping ok")
+
+    async def fake_proc(machine, service, *, timeout=30):
+        seen["proc"] = (machine.name, service.name)
+        return ProbeResult(service.name, Status.PASS, "process alive")
+
+    async def fake_marker(machine, *, path, max_age_s, timeout=30):
+        seen["marker"] = (machine.name, max_age_s)
+        return ProbeResult(f"{machine.name} supervisor", Status.PASS, "fresh (5s old)")
+
+    async def boom_systemd(machine, service, *, timeout=30):
+        raise AssertionError("systemd_state must not run for a container node")
+
+    monkeypatch.setattr(probes, "tailnet_node", fake_tailnet)
+    monkeypatch.setattr(probes, "container_proc_state", fake_proc)
+    monkeypatch.setattr(probes, "container_marker_fresh", fake_marker)
+    monkeypatch.setattr(probes, "systemd_state", boom_systemd)
+
+    rows, results, tailnet = await status.collect([container_machine])
+    assert ["hermes", "hermes-agent", "ok", DASH, "process alive"] in rows
+    assert ["hermes", "supervisor", "ok", DASH, "fresh (5s old)"] in rows
+    assert not any("share:" in r[1] for r in rows)
+    assert seen["proc"] == ("hermes", "hermes-agent")
+    assert seen["marker"] == ("hermes", 180)
 
 
 def test_status_unknown_machine_is_usage_error():

@@ -11,7 +11,7 @@ from functools import partial
 import anyio
 import click
 
-from . import output, probes
+from . import container, output, probes
 from .dispatch import resolve_machine, run
 from .manifest import Machine, Service, load_manifest
 from .output import exit_code_for, status_label
@@ -45,7 +45,7 @@ async def _gather[K](labeled: list[tuple[K, Probe]]) -> dict[K, ProbeResult]:
             async def worker(key: K = key, probe: Probe = probe) -> None:
                 try:
                     out[key] = await probe()
-                except RemoteTimeout as exc:
+                except (RemoteTimeout, container.ContainerTimeout) as exc:
                     out[key] = ProbeResult(_key_name(key), Status.FAIL, f"timed out after {exc.timeout}s")
 
             tg.start_soon(worker)
@@ -57,6 +57,8 @@ def _state_probe(machine: Machine, service: Service) -> Probe | None:
         return partial(probes.launchd_state, machine, service, timeout=PROBE_TIMEOUT)
     if service.systemd is not None:
         return partial(probes.systemd_state, machine, service, timeout=PROBE_TIMEOUT)
+    if service.container_proc is not None:
+        return partial(probes.container_proc_state, machine, service, timeout=PROBE_TIMEOUT)
     return None
 
 
@@ -86,6 +88,15 @@ async def collect(machines: list[Machine]) -> tuple[list[list[str]], list[ProbeR
                         partial(probes.service_health, machine, service, timeout=PROBE_TIMEOUT),
                     )
                 )
+        if machine.managed_by == "container":
+            marker = partial(
+                probes.container_marker_fresh,
+                machine,
+                path=probes.container_marker_path(machine),
+                max_age_s=probes.CONTAINER_MARKER_MAX_AGE_S,
+                timeout=PROBE_TIMEOUT,
+            )
+            tasks.append((("marker", machine.name), _limited(limiter, marker)))
         if machine.os == "macos":
             for share in machine.shares or ():
                 probe = partial(probes.share_mounted, machine, share, timeout=PROBE_TIMEOUT)
@@ -119,6 +130,11 @@ async def collect(machines: list[Machine]) -> tuple[list[list[str]], list[ProbeR
                 health_cell = status_label(result.status)
                 details.append(result.detail)
             rows.append([machine.name, service.name, state_cell, health_cell, "; ".join(details)])
+        marker_key = ("marker", machine.name)
+        if marker_key in probed:
+            result = probed[marker_key]
+            results.append(result)
+            rows.append([machine.name, "supervisor", status_label(result.status), "—", result.detail])
         if machine.os == "macos":
             for share in machine.shares or ():
                 result = probed[("share", machine.name, share)]

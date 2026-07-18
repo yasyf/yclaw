@@ -55,6 +55,25 @@ def test_hermes_systemd_service_has_no_launchd(manifest):
     assert svc.health is None
 
 
+def test_container_node_parses_transport_fields(container_machine):
+    assert container_machine.os == "linux"
+    assert container_machine.managed_by == "container"
+    assert container_machine.container == "hermes"
+    assert container_machine.tart_vm is None
+    assert container_machine.ssh is None
+    assert container_machine.shares is None
+    svc = container_machine.services["hermes-agent"]
+    assert svc.container_proc == "hermes gateway run"
+    assert svc.systemd is None
+    assert svc.launchd is None
+    assert svc.health is None
+
+
+def test_vm_nodes_have_null_container_fields(manifest):
+    assert manifest.machines["metal"].container is None
+    assert manifest.machines["metal"].services["rapid-mlx"].container_proc is None
+
+
 def test_host_has_null_ssh_and_shares(manifest):
     host = manifest.machines["host"]
     assert host.ssh is None

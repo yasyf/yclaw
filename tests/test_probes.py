@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from yclaw import keychain, probes
+from yclaw.container import ContainerResult
 from yclaw.probes import ProbeResult, Status
 from yclaw.remote import RemoteResult
 
@@ -319,3 +320,58 @@ async def test_service_health_bluebubbles_dispatches(manifest, monkeypatch):
     bb = manifest.machines["bluebubbles"]
     result = await probes.service_health(bb, bb.services["bluebubbles"])
     assert result == ProbeResult("bluebubbles", Status.PASS, "ping ok, helper_connected=True")
+
+
+@pytest.mark.parametrize(
+    ("rc", "expected_status", "expected_detail"),
+    [(0, Status.PASS, "process alive"), (1, Status.FAIL, "no process matching 'hermes gateway run'")],
+    ids=["alive", "dead"],
+)
+async def test_container_proc_state(monkeypatch, container_machine, rc, expected_status, expected_detail):
+    seen = {}
+
+    async def fake_exec(name, command, *, timeout=30, uid=None):
+        seen["name"] = name
+        seen["command"] = command
+        return ContainerResult(rc, "", "")
+
+    monkeypatch.setattr(probes.container, "exec_run", fake_exec)
+    result = await probes.container_proc_state(container_machine, container_machine.services["hermes-agent"])
+    assert seen["name"] == "hermes"
+    # A pure-sh /proc scan that skips its own shell — grep/pgrep are absent from the image, and an
+    # un-skipped scan matches its own cmdline (which carries the needle) and never sees a dead agent.
+    assert 'case "$f" in "/proc/$$/cmdline") continue;;' in seen["command"]
+    assert '*"hermes gateway run"*' in seen["command"]
+    assert "grep" not in seen["command"]
+    assert "pgrep" not in seen["command"]
+    assert result == ProbeResult("hermes-agent", expected_status, expected_detail)
+
+
+@pytest.mark.parametrize(
+    ("age_s", "expected_status", "expected_detail"),
+    [(30, Status.PASS, "fresh (30s old)"), (600, Status.FAIL, "stale (600s old)")],
+    ids=["fresh", "stale"],
+)
+async def test_container_marker_fresh(
+    tmp_path, monkeypatch, container_machine, age_s, expected_status, expected_detail
+):
+    now = 1_000_000.0
+    marker = tmp_path / "container-hermes.last-ok"
+    marker.write_text(f"{now - age_s}\n")
+    monkeypatch.setattr(probes, "_now", lambda: now)
+    result = await probes.container_marker_fresh(container_machine, path=marker, max_age_s=180)
+    assert result == ProbeResult("hermes supervisor", expected_status, expected_detail)
+
+
+async def test_container_marker_fresh_absent_is_fail(tmp_path, monkeypatch, container_machine):
+    marker = tmp_path / "container-hermes.last-ok"  # never written
+    monkeypatch.setattr(probes, "_now", lambda: 1_000_000.0)
+    result = await probes.container_marker_fresh(container_machine, path=marker, max_age_s=180)
+    assert result.name == "hermes supervisor"
+    assert result.status is Status.FAIL
+    assert result.detail == f"absent: {marker}"
+
+
+def test_container_marker_path_matches_supervisor_convention(container_machine):
+    path = probes.container_marker_path(container_machine)
+    assert str(path).endswith("Library/Logs/yclaw/container-hermes.last-ok")

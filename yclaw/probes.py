@@ -10,17 +10,22 @@ are never logged.
 
 import json
 import shlex
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 import anyio
 import httpx
 
-from . import keychain, remote
+from . import container, keychain, remote
 from .manifest import HttpHealth, Machine, Service
+
+# Three supervisor tick cycles (the host container supervisor writes the marker each healthy ~60s tick).
+CONTAINER_MARKER_MAX_AGE_S = 180
 
 
 class Status(Enum):
@@ -150,6 +155,47 @@ async def systemd_state(machine: Machine, service: Service, *, timeout: float = 
         f"active={active} sub={fields.get('SubState')} pid={fields.get('MainPID')} exit={fields.get('ExecMainStatus')}"
     )
     return ProbeResult(service.name, Status.PASS if active == "active" else Status.FAIL, detail)
+
+
+def _now() -> float:
+    """Wall-clock epoch seconds — a seam tests patch. (anyio's clock is monotonic, unusable for epoch math.)"""
+    return time.time()
+
+
+def container_marker_path(machine: Machine) -> Path:
+    """The host-side last-ok marker the container supervisor stamps each healthy tick."""
+    return Path.home() / "Library/Logs/yclaw" / f"container-{machine.name}.last-ok"
+
+
+async def container_proc_state(machine: Machine, service: Service, *, timeout: float = 30) -> ProbeResult:
+    # Pure-sh /proc scan (no grep/pgrep in the image); skip /proc/$$ or the scan matches its own
+    # cmdline (it carries the needle) and reports alive even when the agent is dead.
+    needle = service.container_proc
+    command = (
+        "for f in /proc/[0-9]*/cmdline; do "
+        'case "$f" in "/proc/$$/cmdline") continue;; esac; '
+        'c=$(tr "\\0" " " <"$f" 2>/dev/null); '
+        f'case "$c" in *"{needle}"*) exit 0;; esac; '
+        "done; exit 1"
+    )
+    result = await container.exec_run(machine.container, command, timeout=timeout)
+    alive = result.returncode == 0
+    detail = "process alive" if alive else f"no process matching {needle!r}"
+    return ProbeResult(service.name, Status.PASS if alive else Status.FAIL, detail)
+
+
+async def container_marker_fresh(
+    machine: Machine, *, path: Path, max_age_s: float, timeout: float = 30
+) -> ProbeResult:
+    name = f"{machine.name} supervisor"
+    try:
+        with anyio.fail_after(timeout):
+            raw = await anyio.Path(path).read_text()
+    except FileNotFoundError:
+        return ProbeResult(name, Status.FAIL, f"absent: {path}")
+    age = _now() - float(raw.strip())
+    fresh = age <= max_age_s
+    return ProbeResult(name, Status.PASS if fresh else Status.FAIL, f"{'fresh' if fresh else 'stale'} ({age:.0f}s old)")
 
 
 async def share_mounted(machine: Machine, share: str, *, timeout: float = 30) -> ProbeResult:

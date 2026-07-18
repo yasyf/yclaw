@@ -75,6 +75,7 @@ class Service:
     name: str
     launchd: LaunchdRef | None
     systemd: str | None
+    container_proc: str | None
     port: int | None
     serve_port: int | None
     mitm_port: int | None
@@ -91,6 +92,7 @@ class Machine:
     os: str
     managed_by: str
     tart_vm: str | None
+    container: str | None
     tag: str | None
     tailnet_name: str | None
     ssh: Ssh | None
@@ -144,6 +146,7 @@ def _parse_service(name: str, d: dict[str, Any]) -> Service:
         name=name,
         launchd=LaunchdRef(domain=d["launchd"]["domain"], label=d["launchd"]["label"]) if "launchd" in d else None,
         systemd=d.get("systemd"),
+        container_proc=d.get("container_proc"),
         port=d.get("port"),
         serve_port=d.get("serve_port"),
         mitm_port=d.get("mitm_port"),
@@ -163,6 +166,7 @@ def _parse_machine(name: str, d: dict[str, Any]) -> Machine:
         os=d["os"],
         managed_by=d["managed_by"],
         tart_vm=d["tart_vm"],
+        container=d.get("container"),
         tag=d["tag"],
         tailnet_name=d.get("tailnet_name"),
         ssh=Ssh(transport=ssh["transport"], user=ssh["user"]) if ssh is not None else None,
