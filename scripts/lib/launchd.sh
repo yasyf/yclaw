@@ -60,3 +60,39 @@ PLIST
   reload_launch_agent "$label" "$plist"
   log "Loaded LaunchAgent $label."
 }
+
+# Write the com.yclaw.container-hermes supervisor LaunchAgent: a KeepAlive loop re-running <tick>
+# (backoff, then <period>s ticks). Plist ONLY; bring-up is gated.
+write_container_agent() {
+  local tick="$1" period="${2:-60}"
+  local label="com.yclaw.container-hermes"
+  local plist="$LAUNCH_AGENTS_DIR/$label.plist"
+
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>d=5; until $tick; do sleep \$d; d=\$((d*2)); if [ \$d -gt 30 ]; then d=30; fi; done; while true; do sleep $period; $tick || true; done</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardOutPath</key>
+  <string>$MODEL_LOGS_DIR/container-hermes.log</string>
+  <key>StandardErrorPath</key>
+  <string>$MODEL_LOGS_DIR/container-hermes.error.log</string>
+</dict>
+</plist>
+PLIST
+  log "Wrote LaunchAgent plist $plist (not loaded — bring-up gated)."
+}

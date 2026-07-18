@@ -338,6 +338,85 @@ PLIST
   #        sudo lsof -nP -iUDP:41641   -> the owning command must be tailscaled
 }
 
+# --- 7. Container-native hermes supervisor (optional, root-assisted, NOT in the full run) ---
+
+# Author the container-native hermes launch chain. Login user + sudo for privileged bits; gated.
+setup_host_container() {
+  need go
+  local container_bin="/opt/homebrew/bin/container"
+  local socktainer_bin="/opt/homebrew/opt/socktainer/bin/socktainer"
+  local socktainer_sock="$HOME_DIR/.socktainer/container.sock"
+  local config_toml="$HOME_DIR/.config/container/config.toml"
+  local run_dir="$HOME_DIR/.yclaw/run/hermes-docker-proxy"
+  local config_dir="$STATE_DIR/hosts/hermes"
+  local ts_state_dir="$STATE_DIR/hermes-ts-state"
+  local proxy_bin="$BIN_DIR/hermes-docker-proxy"
+  local lib_dir="/usr/local/lib/yclaw"
+  local group="hermes-agent" gid=1000
+  local node_config_dir
+  node_config_dir="$HOME_DIR/$(manifest_get '.host_paths.node_config_dir_rel')"
+
+  [ -x "$container_bin" ]  || die "apple/container CLI not at $container_bin (brew install container)"
+  [ -x "$socktainer_bin" ] || die "socktainer not at $socktainer_bin (brew install socktainer)"
+  [ -f "$config_toml" ]    || die "$config_toml missing — its 192.168.72/24 subnet override must exist before the first 'container system start'"
+  [ -d "$REPO_ROOT/pkgs/hermes-docker-proxy" ] || die "proxy source pkgs/hermes-docker-proxy absent"
+
+  # Proxy binary: pure-stdlib CGO-free Go, built on the host (no nix).
+  log "Building hermes-docker-proxy -> $proxy_bin ..."
+  mkdir -p "$BIN_DIR" "$MODEL_LOGS_DIR"
+  ( cd "$REPO_ROOT/pkgs/hermes-docker-proxy" && CGO_ENABLED=0 go build -o "$proxy_bin" . )
+  [ -x "$proxy_bin" ] || die "go build did not produce $proxy_bin"
+
+  # Stage the 4 container secrets/config into $config_dir (node.env + token from bootstrap's bundle).
+  log "Staging hermes container secrets/config into $config_dir ..."
+  install -d -m 700 "$config_dir" "$ts_state_dir"
+  local f
+  for f in key.txt secrets.sops.yaml; do
+    [ -f "$config_dir/$f" ] || die "$config_dir/$f missing — run 'just bootstrap' first (per-host age key + sops bundle)"
+  done
+  [ -f "$node_config_dir/node.env" ]          || die "$node_config_dir/node.env missing — run 'just bootstrap' first"
+  [ -f "$node_config_dir/agent-vault-token" ] || die "$node_config_dir/agent-vault-token missing — run 'just bootstrap' first"
+  install -m 644 "$node_config_dir/node.env"          "$config_dir/node.env"
+  install -m 600 "$node_config_dir/agent-vault-token" "$config_dir/agent-vault-token"
+
+  # Bake the tick's @@TOKENS@@ (login user); privileged steps (group, lib dir, socket dir) via sudo.
+  local baked; baked="$(mktemp)"
+  sed -e "s|@@CONTAINER@@|$container_bin|g" \
+      -e "s|@@SOCKTAINER@@|$socktainer_bin|g" \
+      -e "s|@@SOCKTAINER_SOCK@@|$socktainer_sock|g" \
+      -e "s|@@PROXY_BIN@@|$proxy_bin|g" \
+      -e "s|@@STATE_DIR@@|$STATE_DIR|g" \
+      -e "s|@@RUN_DIR@@|$run_dir|g" \
+      -e "s|@@CONFIG_DIR@@|$config_dir|g" \
+      -e "s|@@CONFIG_TOML@@|$config_toml|g" \
+      -e "s|@@LOG_DIR@@|$MODEL_LOGS_DIR|g" \
+      "$REPO_ROOT/scripts/host/container-hermes.sh" > "$baked"
+
+  log "Creating gid-$gid group '$group', socket dir $run_dir, installing the tick (sudo) ..."
+  sudo bash -s -- "$group" "$gid" "$run_dir" "$(id -un)" "$lib_dir" "$baked" "$REPO_ROOT/scripts/lib/wait.sh" <<'SUDO'
+set -eu
+group="$1"; gid="$2"; run_dir="$3"; owner="$4"; lib_dir="$5"; baked="$6"; wait_sh="$7"
+# gid-1000 group so the proxy's 0660 socket lands group-owned gid 1000 (the dropped agent's gid).
+if ! dscl . -read "/Groups/$group" >/dev/null 2>&1; then
+  dscl . -create "/Groups/$group"
+  dscl . -create "/Groups/$group" PrimaryGroupID "$gid"
+  dscl . -create "/Groups/$group" RealName "hermes agent container (uid/gid $gid)"
+fi
+# User-owned so the per-user proxy can bind; group + setgid so the socket inherits gid $gid.
+install -d -o "$owner" -g "$group" -m 2750 "$run_dir"
+# Tick + wait.sh beside host-pf.sh (root-owned, world-readable).
+install -d -m 755 "$lib_dir"
+install -m 644 "$wait_sh" "$lib_dir/wait.sh"
+install -m 755 "$baked" "$lib_dir/container-hermes.sh"
+SUDO
+  rm -f "$baked"
+
+  write_container_agent "$lib_dir/container-hermes.sh" 60
+
+  log "Supervisor authored. Bring-up is GATED — after review, load it (starts the whole chain) with:"
+  log "  launchctl bootstrap gui/\$(id -u) $LAUNCH_AGENTS_DIR/com.yclaw.container-hermes.plist"
+}
+
 # --- arg dispatch --------------------------------------------------------------
 
 case "${1:-}" in
@@ -352,8 +431,13 @@ case "${1:-}" in
     log "Run the APPLY-TIME VERIFICATION block at the end of setup_host_pf (model plane PASS; vmnet + LAN side-doors BLOCKED)."
     exit 0
     ;;
+  host-container)
+    setup_host_container
+    log "Container-native hermes supervisor authored (tick + com.yclaw.container-hermes plist; NOT loaded — bring-up gated)."
+    exit 0
+    ;;
   "") ;;
-  *) die "usage: setup.sh [host-serving|host-pf]" ;;
+  *) die "usage: setup.sh [host-serving|host-pf|host-container]" ;;
 esac
 
 # --- 0. Homebrew + tart + gum ------------------------------------------------
