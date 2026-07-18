@@ -150,7 +150,11 @@ fi
 # mechanics are validated live at bring-up) so a mechanics detail does not brick the chain.
 proxy_canary; crc=$?
 if [ "$crc" -eq 3 ]; then
-  echo "container-hermes: FATAL proxy canary got a non-403 answer — the mounted socket is NOT the filtering proxy (raw socktainer?)" >&2
+  # Definitive wrong-socket answer = the agent has raw (non-filtering) docker access. DETECT alone
+  # leaves it running (next tick sees it "running" and skips step 4), so REVOKE by force-removing —
+  # next tick recreates clean, or assert_proxy_socket refuses on a bad host socket first.
+  echo "container-hermes: FATAL proxy canary got a non-403 answer — mounted socket is NOT the filtering proxy; force-removing '$NAME' to revoke raw docker access" >&2
+  "$CONTAINER" rm -f "$NAME" >/dev/null 2>&1 || echo "container-hermes: FATAL could not force-remove compromised container '$NAME'" >&2
   exit 1
 elif [ "$crc" -ne 0 ]; then
   echo "container-hermes: WARN proxy canary did not complete (rc=$crc; 2=agent could not connect [guest-side gid — sup #2?], other=exec/probe error) — see $LOG_DIR/container-canary.log" >&2
