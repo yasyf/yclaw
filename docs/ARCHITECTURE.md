@@ -11,7 +11,7 @@ and serves the model plane itself. The host stays lean: Homebrew provides `tart`
 Tailscale, `gum`, `packer`, and `restic`, and `scripts/setup.sh` supervises the two
 macOS guests via `com.yclaw.tart-*` launchd agents and the hermes container via a
 resident `com.yclaw.container-hermes` LaunchAgent, and installs the on-host serving
-stack — the rapid-mlx activator and the mlx-audio STT server, detailed below. All persistent
+stack — the rapid-mlx and stt activators, detailed below. All persistent
 state and secrets live outside the repo in `~/.yclaw/state`; generated passwords
 live in a dedicated keychain at `~/Library/Keychains/yclaw.keychain-db`.
 
@@ -26,7 +26,7 @@ of host-specific identity and lets the same artifact serve any tailnet.
   services bind tailnet-only:
   - **rapid-mlx** (`:8000`) — a thin `socat` relay to the host's rapid-mlx
     activator; no model runs on metal.
-  - **mlx-audio** (`:8765`) — a thin `socat` relay to the host's STT server.
+  - **mlx-audio** (`:8765`) — a thin `socat` relay to the host's stt activator.
   - **cliproxy** (`:8317`) — CLIProxyAPI: Codex/Gemini OAuth in, a static key out.
   - **agent-vault** (`:14321` broker, `:14322` MITM forward proxy) — the
     credential broker and TLS-MITM proxy.
@@ -72,10 +72,12 @@ behind the `com.yclaw.rapid-mlx` launchd agent: it answers `/health` and
 `/v1/models` locally without waking the ~20 GB Qwen model, spawns the real
 `rapid-mlx` server on `127.0.0.1:18000` on the first inference request, and
 SIGTERMs that child after 1800 s idle (a graceful stop saves the prefix cache and
-dodges a known wired-Metal teardown pathology). The `mlx-audio` STT server
-(`darwin/stt-server.py`, run from `~/.yclaw/state/mlx-audio/host-venv`) stays
-resident on `:8765`. A model call therefore flows from hermes to metal's relay to
-the host activator to the model, and back.
+dodges a known wired-Metal teardown pathology). The `stt` transcription service
+(`com.yclaw.stt`, venv at `~/.yclaw/state/stt/venv`) answers `:8765` the same way:
+probes are served locally, the first transcription wakes `athome serve stt` — a
+transcribe.cpp Parakeet (`parakeet-tdt-0.6b-v2`, English-only) on `127.0.0.1:18765`
+— and the child unloads after 1800 s idle. A model call therefore flows from hermes
+to metal's relay to the host activator to the model, and back.
 
 The model ids are not guessed anywhere — `nixos/models.nix` is the single source
 for the Qwen and STT ids, and hermes' default plus fallback providers
@@ -207,7 +209,7 @@ All persistent state and secrets live in `~/.yclaw/state`, never in the repo:
   so each VM decrypts only what it owns. `hermes` and `metal` get bundles; `bluebubbles` owns none.
 - `agent-vault/` — the broker's credential store.
 - `cli-proxy-api/auth/` — the cliproxy OAuth tokens.
-- `mlx-audio/` — the host STT venv.
+- `stt/` — the host STT venv.
 - `hermes/` — the externalized agent state (honcho memory, sessions), bind-mounted
   into the container at `/var/lib/hermes`.
 - `hermes-ts-state/` — the hermes container's tailnet identity, bind-mounted at
@@ -219,7 +221,7 @@ read the host's regular Hugging Face hub cache (`~/.cache/huggingface/hub`,
 
 The irreplaceable set is everything under `hosts/` (every per-host key and bundle) plus
 `agent-vault/`: lose those and you cannot decrypt or re-broker anything. `just backup` runs a
-`restic` backup of `~/.yclaw/state`, excluding the regenerable `mlx-audio/` venv.
+`restic` backup of `~/.yclaw/state`, excluding the regenerable `stt/` venv.
 Restore is `restic restore latest`, then `just setup` to rebuild the caches and
 re-boot the guests. Secrets decrypt at runtime; nothing secret is committed or
 written to the world-readable Nix store.

@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Host STT runs on the athome activator now; the bespoke server is gone.** The
+  `com.yclaw.mlx-audio` LaunchAgent — a resident FastAPI shim (`darwin/stt-server.py`)
+  around mlx-audio's `granite-speech-4.1-2b` — is replaced by `com.yclaw.stt`:
+  `athome serve activator` on the same tailnet `:8765`, waking
+  `athome serve stt` (experiment-at-home 0.10.0, transcribe.cpp
+  `parakeet-tdt-0.6b-v2` Q8_0) on `127.0.0.1:18765` at the first transcription and
+  unloading it after 1800 s idle — the exact pattern the Qwen plane already uses, so
+  the host now idles with no STT process resident. State moves from
+  `~/.yclaw/state/mlx-audio/` to `state/stt/`; `setup.sh` retires the old agent before
+  loading the new one (both bind `:8765`); weights pre-fetch via `athome stt download`.
+  The metal relay keeps its `org.nixos.mlx-audio` label and hermes is untouched
+  (`whisper-1` stays a cosmetic model name). Parakeet is English-only — an accepted
+  tradeoff against granite's multilingual reach, for a faster, lazier, shared engine.
+  `just stt-check` (not in the default smoke) exercises the whole path — relay,
+  activator wake, decode, and model — with a spoken clip.
+
 ### Added
 - The hermes container supervisor and its egress firewall. `apple/container` has no
   boot-autostart or restart verb, so a resident `com.yclaw.container-hermes` LaunchAgent

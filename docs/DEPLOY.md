@@ -234,7 +234,7 @@ container.
 | `hosts/<host>/secrets.sops.yaml` | that host's encrypted bundle (only its own secrets, per `nixos/secrets-manifest.json`) | **No** (without that host's key) |
 | `agent-vault/` | credential-broker DB: owner account, static keys, the Google OAuth refresh token, minted agent tokens | **No** — re-provisioning re-mints tokens hermes would need re-injected |
 | `cli-proxy-api/auth/` | Codex/Gemini OAuth sessions | Yes — re-run the `--login` flows |
-| `mlx-audio/` | the host STT venv (`host-venv/`) | Yes — rebuilt by `setup.sh host-serving` |
+| `stt/` | the host STT venv | Yes — rebuilt by `setup.sh host-serving` |
 | `hermes/` | hermes agent state (honcho memory, sessions), bind-mounted into the container at `/var/lib/hermes` | **No** — agent memory and sessions survive only via this bind mount |
 | `hermes-ts-state/` | the hermes container's tailnet identity, bind-mounted at `/var/lib/tailscale` | **No** — losing it forces a re-mint and re-auth of the `hermes` node |
 
@@ -244,7 +244,7 @@ and bundle) and `agent-vault/`.
 ## Back up and restore
 
 `just backup` wraps restic, skipping the large regenerable caches (`hf/`,
-`mlx-audio/`). Set the repo and password first — `YCLAW_RESTIC_REPO` is a B2/S3
+`stt/`). Set the repo and password first — `YCLAW_RESTIC_REPO` is a B2/S3
 URL or a local/NAS path:
 
 ```sh
@@ -290,14 +290,16 @@ adds the hardening probes.
 
 ## Host model serving and lockdown
 
-The model plane lives on the host: `rapid-mlx` on `:8000` behind the idle-unload activator, and
-the `mlx-audio` STT server on `:8765`. `just bootstrap` installs the whole stack as part of its
-host-config step (the full `scripts/setup.sh` run downloads the model and loads the
-`com.yclaw.{rapid-mlx,mlx-audio}` LaunchAgents), so a first deploy needs nothing here. The
+The model plane lives on the host: `rapid-mlx` on `:8000` and the `stt` transcription
+service on `:8765`, each behind its own idle-unload activator (`stt` wakes
+`athome serve stt` — a transcribe.cpp Parakeet — on the first request). `just bootstrap`
+installs the whole stack as part of its host-config step (the full `scripts/setup.sh` run
+downloads the models and loads the `com.yclaw.{rapid-mlx,stt}` LaunchAgents), so a first
+deploy needs nothing here. The
 commands below maintain and lock down that plane afterward.
 
 **Refresh the serving stack in place.** Re-run only the host-serving section — rebuild the
-pinned `rapid-mlx`/`mlx-audio` venvs when absent, refresh the wrapper scripts and their
+pinned `rapid-mlx`/`stt` venvs when absent, refresh the wrapper scripts and their
 LaunchAgents, and re-download the STT model — without bouncing the live tart VM runners:
 
 ```sh
