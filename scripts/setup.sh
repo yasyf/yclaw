@@ -149,12 +149,12 @@ setup_host_serving() {
   # when absent — mirrors metal.nix's `-x .../bin/rapid-mlx` idempotency check. Every package is pinned
   # to the exact version the verified venv resolved, so a rebuild reproduces the audited install.
   RAPID_VENV="$STATE_DIR/rapid-mlx/venv"
-  if [[ ! -x "$RAPID_VENV/bin/rapid-mlx" ]]; then
+  if [[ ! -x "$RAPID_VENV/bin/rapid-mlx" || ! -x "$RAPID_VENV/bin/athome" ]]; then
     log "Building rapid-mlx venv at $RAPID_VENV ..."
     mkdir -p "$(dirname "$RAPID_VENV")"
     /opt/homebrew/opt/python@3.14/bin/python3.14 -m venv "$RAPID_VENV"
     "$RAPID_VENV/bin/python" -m pip install --upgrade pip
-    "$RAPID_VENV/bin/python" -m pip install 'rapid-mlx==0.10.9' 'starlette==1.3.1' 'uvicorn==0.51.0' 'httpx==0.28.1'
+    "$RAPID_VENV/bin/python" -m pip install 'rapid-mlx==0.10.9' 'experiment-at-home[activator]==0.9.2' 'starlette==1.3.1' 'uvicorn==0.51.0' 'httpx==0.28.1' 'aiosqlite==0.22.1' 'loguru==0.7.3' 'pydantic==2.13.4' 'pydantic-core==2.46.4' 'pydantic-settings==2.14.2' 'annotated-types==0.7.0' 'typing-inspection==0.4.2' 'typing-extensions==4.16.0' 'python-dotenv==1.2.2' 'anyio==4.14.2' 'click==8.4.2' 'sniffio==1.3.1' 'idna==3.18' 'certifi==2026.6.17' 'httpcore==1.0.9' 'h11==0.16.0'
   fi
 
   # 5b. mlx-audio venv, mirroring metal.nix's sttWrapper package set (built from /usr/bin/python3, the
@@ -179,11 +179,11 @@ setup_host_serving() {
     warn "Qwen model absent at $qwen_cache_dir — rapid-mlx cannot serve until you run: hf download $QWEN_ID"
   fi
 
-  # 5d. Install the serving-stack files into ~/.yclaw/bin. model-activator.py + stt-server.py + wait.sh
-  # are copied verbatim from the repo; the two wrappers are copied through sed to bake the model ids.
+  # 5d. Install the serving-stack files into ~/.yclaw/bin. stt-server.py + wait.sh copied verbatim;
+  # the two wrappers go through sed to bake the model ids.
   log "Installing serving-stack files into $BIN_DIR ..."
   mkdir -p "$BIN_DIR" "$MODEL_LOGS_DIR"
-  cp "$REPO_ROOT/scripts/host/model-activator.py" "$BIN_DIR/model-activator.py"
+  rm -f "$BIN_DIR/model-activator.py"  # clear any stale copy a prior install left here
   cp "$REPO_ROOT/darwin/stt-server.py" "$BIN_DIR/stt-server.py"
   cp "$REPO_ROOT/scripts/lib/wait.sh" "$BIN_DIR/wait.sh"
   sed "s|@@QWEN_MODEL@@|$QWEN_ID|g" "$REPO_ROOT/scripts/host/rapid-mlx-wrapper.sh" > "$BIN_DIR/rapid-mlx-wrapper.sh"
@@ -210,9 +210,9 @@ setup_host_serving() {
   # 5e. LaunchAgents. rapid-mlx gets ExitTimeOut=180 so launchd's SIGTERM->SIGKILL window covers the
   # activator's graceful child stop (SIGTERM + up to 120s wait; graceful shutdown saves the prefix cache
   # and dodges the 20GB wired-Metal teardown pathology). Both run ProcessType=Interactive (no App-Nap
-  # throttling) with HF_HUB_CACHE from the plist env; rapid-mlx also carries IDLE_SECONDS.
+  # throttling) with HF_HUB_CACHE from the plist env; rapid-mlx also carries ATHOME_SERVE_ACTIVATOR_IDLE_S.
   write_model_agent com.yclaw.rapid-mlx "$BIN_DIR/rapid-mlx-wrapper.sh" rapid-mlx 180 \
-    "IDLE_SECONDS=1800" "HF_HUB_CACHE=$HF_HUB_DIR"
+    "ATHOME_SERVE_ACTIVATOR_IDLE_S=1800" "HF_HUB_CACHE=$HF_HUB_DIR"
   write_model_agent com.yclaw.mlx-audio "$BIN_DIR/mlx-audio-wrapper.sh" mlx-audio "" \
     "HF_HUB_CACHE=$HF_HUB_DIR"
 }

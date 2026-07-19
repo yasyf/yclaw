@@ -5,7 +5,7 @@
 # bare-macOS host (alongside `bluebubbles` and `hermes`), with its own tailnet node. It holds
 # ALL credentials and serves four services over the tailnet (the two model ports are thin socat
 # relays to the host model plane on yasyf-home — hermes keeps calling metal:8000/8765 unchanged):
-#   rapid-mlx   :8000   relay -> the host rapid-mlx activator (idle-unload Qwen)
+#   rapid-mlx   :8000   relay -> the host athome activator (idle-unload Qwen)
 #   mlx-audio   :8765   relay -> the host STT (ibm-granite/granite-speech-4.1-2b)
 #   cliproxy    :8317   CLIProxyAPI, Codex/Gemini OAuth -> static key
 #   agent-vault :14321  credential broker API  + :14322 transparent MITM proxy
