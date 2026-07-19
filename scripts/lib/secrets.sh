@@ -43,6 +43,8 @@ KC_SERVICE_BLUEBUBBLES_ADMIN="$(manifest_get '.machines.bluebubbles.admin_pass_k
 KC_SERVICE_BLUEBUBBLES_SERVER="$(manifest_get '.machines.bluebubbles.services.bluebubbles.password_keychain')"
 KC_SERVICE_TS_OAUTH_ID="$(manifest_get '.host_paths.keychain.ts_oauth_client_id')"
 KC_SERVICE_TS_OAUTH_SECRET="$(manifest_get '.host_paths.keychain.ts_oauth_client_secret')"
+# TODO: fold into machines.json host_paths.keychain once the corten collect-secrets wiring lands.
+KC_SERVICE_CORTEN_HARDWARE_KEY="yclaw-corten-hardware-key"
 
 _secrets_ask()  { gum input --password --prompt "  $1 ❯ "; }
 _secrets_note() { gum style --foreground 244 "  $*"; }
