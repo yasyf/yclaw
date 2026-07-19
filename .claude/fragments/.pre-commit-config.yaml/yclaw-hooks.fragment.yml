@@ -19,7 +19,7 @@
   # pre-commit hook repo that resolves offline, so type checking stays a manual `uvx ty check
   # yclaw` step (also run in CI) rather than a pre-commit hook.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.20
+    rev: v0.8.6
     hooks:
       - id: ruff
         args: [--fix]
