@@ -49,12 +49,12 @@ launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null || true
 log "Waiting for metal to come back over tailscale ssh ..."
 wait_for "metal reachable over tailscale ssh" 60 5 tailscale ssh root@metal -- true
 
-# Drop ONLY the retired guest mlx-audio venv (the host's live host-venv/ stays). Its backing share is
-# gone after the resize, so this is host-side cleanup; [ -d ]-guarded and idempotent.
-GUEST_STT_VENV="$STATE_DIR/mlx-audio/venv"
-if [ -d "$GUEST_STT_VENV" ]; then
-  log "Removing the retired guest mlx-audio venv ($GUEST_STT_VENV) ..."
-  rm -rf "$GUEST_STT_VENV"
+# Drop the retired mlx-audio STT state (guest venv + old host-venv); the live host STT venv is at
+# state/stt now, outside this tree. [ -d ]-guarded and idempotent (share is gone post-resize).
+RETIRED_STT_STATE="$STATE_DIR/mlx-audio"
+if [ -d "$RETIRED_STT_STATE" ]; then
+  log "Removing the retired mlx-audio STT state ($RETIRED_STT_STATE) ..."
+  rm -rf "$RETIRED_STT_STATE"
 fi
 
 log "metal resized to ${CPUS} vCPU / ${MEM_MB} MB / ${DISPLAY_GEOM} and back on the tailnet."

@@ -45,7 +45,7 @@
   //   * bluebubbles -> hermes: the BlueBubbles webhook POSTs new-message events to hermes-agent's
   //     webhook server on :8645 (BLUEBUBBLES_WEBHOOK_PORT in nixos/hermes.nix). Without this the
   //     agent never receives incoming iMessages.
-  //   * metal -> yasyf-home: rapid-mlx :8000 + mlx-audio STT :8765, served on the bare host —
+  //   * metal -> yasyf-home: rapid-mlx :8000 + stt :8765, served on the bare host —
   //     metal's ONE northbound flow. hermes and bluebubbles deliberately get NO grant to the
   //     host: hermes consumes the models via metal's relay, so a compromised agent VM cannot
   //     address the host at all. The host-side backstop is the `com.yclaw.host` pf anchor
