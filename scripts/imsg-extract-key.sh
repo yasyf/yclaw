@@ -6,10 +6,14 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/common.sh
 source "$REPO_ROOT/scripts/lib/common.sh"
-# shellcheck source=scripts/lib/secrets.sh
-source "$REPO_ROOT/scripts/lib/secrets.sh"
+# shellcheck source=scripts/lib/manifest.sh
+source "$REPO_ROOT/scripts/lib/manifest.sh"
+cd "$REPO_ROOT"
 
 need curl shasum unzip xattr gum security
+
+YCLAW_KEYCHAIN="$HOME/Library/Keychains/yclaw.keychain-db"
+CORTEN_SERVICE="yclaw-corten-hardware-key"
 
 # The extractor lives in corten-matrix's repo tree, not on a release; pinned to the
 # immutable commit its README links (byte-identical to HEAD as of 2026-07-18).
@@ -27,17 +31,17 @@ gum style --border rounded --padding "1 2" --margin "1 0" --border-foreground 21
 [ "$(sysctl -n kern.hv_vmm_present 2>/dev/null)" != "1" ] \
   || die "running inside a VM — extract on the physical host only."
 
-# Guard BEFORE any keychain access: _yclaw_keychain_unlock's create branch would MINT a
-# fresh keychain if absent (mirrors onboard.sh / redeploy.sh).
+# Guard BEFORE any keychain access: onboard must never mint a fresh keychain (mirrors onboard.sh).
 [ -f "$YCLAW_KEYCHAIN" ] || die "no yclaw keychain at $YCLAW_KEYCHAIN — run \`just bootstrap\` first."
 
 # Fail fast in a session that can't read the login keychain — before extraction, not after.
-security find-generic-password -a "$USER" -s "$KC_SERVICE_KEYCHAIN_PASS" -w >/dev/null 2>&1 \
-  || die "cannot read $KC_SERVICE_KEYCHAIN_PASS from the login keychain — run this in Terminal.app on the host (Aqua session); if it IS Terminal.app, unlock first: security unlock-keychain ~/Library/Keychains/login.keychain-db"
+LOGIN_UNLOCK_SERVICE="$(manifest_get '.host_paths.keychain.login_unlock')"
+security find-generic-password -a "$USER" -s "$LOGIN_UNLOCK_SERVICE" -w >/dev/null 2>&1 \
+  || die "cannot read $LOGIN_UNLOCK_SERVICE from the login keychain — run this in Terminal.app on the host (Aqua session); if it IS Terminal.app, unlock first: security unlock-keychain ~/Library/Keychains/login.keychain-db"
 
-if kc_has "$KC_SERVICE_CORTEN_HARDWARE_KEY"; then
-  log "hardware key already in the yclaw keychain ($KC_SERVICE_CORTEN_HARDWARE_KEY) — nothing to do."
-  log "re-extract: security delete-generic-password -s '$KC_SERVICE_CORTEN_HARDWARE_KEY' '$YCLAW_KEYCHAIN', then re-run."
+if uv run yclaw secret has corten-hardware-key; then
+  log "hardware key already in the yclaw keychain ($CORTEN_SERVICE) — nothing to do."
+  log "re-extract: security delete-generic-password -s '$CORTEN_SERVICE' '$YCLAW_KEYCHAIN', then re-run."
   exit 0
 fi
 
@@ -70,14 +74,11 @@ gum style --foreground 212 "  parsed key ❯ $key"
 gum confirm "Store this key in the yclaw keychain? (it must match the key the extractor printed above)" \
   || die "not confirmed — nothing stored."
 
-_yclaw_keychain_unlock
-security add-generic-password -U -a "$USER" -s "$KC_SERVICE_CORTEN_HARDWARE_KEY" \
-  -l 'yclaw corten iMessage hardware key' -w "$key" "$YCLAW_KEYCHAIN"
-_yclaw_keychain_lock
+printf '%s' "$key" | uv run yclaw secret set corten-hardware-key --value -
 
 gum style --border rounded --padding "1 2" --margin "1 0" --border-foreground 84 \
-  "✓ hardware key → yclaw keychain ($KC_SERVICE_CORTEN_HARDWARE_KEY)" \
+  "✓ hardware key → yclaw keychain ($CORTEN_SERVICE)" \
   '✓ no plaintext file was written; the extractor temp dir is removed on exit' \
   '' \
-  'Read back (unlocks + re-locks the keychain):' \
-  "  source scripts/lib/secrets.sh && kc_read $KC_SERVICE_CORTEN_HARDWARE_KEY"
+  'Read back:' \
+  '  uv run yclaw secret read corten-hardware-key'

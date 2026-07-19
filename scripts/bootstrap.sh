@@ -96,14 +96,8 @@ prompt_var AUTHORIZED_HANDLES "iMessage allowlist (comma-separated handles; firs
 
 # --- 2. age key + sops-encrypted secrets (single secrets module) -------------
 
-# scripts/lib/secrets.sh is the ONE path that prompts for secrets, mints/reuses a per-host age
-# keypair, mints the Aperture static key, the per-VM admin passwords, and the BlueBubbles server
-# password into the dedicated yclaw keychain, renders ~/.yclaw/state/sops.yaml, and writes one
-# encrypted per-host bundle at ~/.yclaw/state/hosts/<host>/secrets.sops.yaml (each scoped to only
-# that host's manifest secrets). Real secrets never touch the repo. Sourcing it also exposes
-# YCLAW_KEYCHAIN + the KC_SERVICE_* names used by the packer builds below.
-source "$REPO_ROOT/scripts/lib/secrets.sh"
-collect_secrets
+# `yclaw secret reconcile` mints/reuses per-host age keys + keychain secrets and writes bundles.
+uv run yclaw secret reconcile
 
 # Record the resolved non-secret values so `just deploy <node>` re-runs reproduce them.
 ( umask 077; : > "$VALUES_FILE" )
@@ -177,18 +171,16 @@ done
 # primaryUser. metal applies github:$GITHUB_OWNER/yclaw#metal.
 
 build_macos_image() {
-  local node="$1" admin_service="$2" admin_pass
+  local node="$1" admin_alias="$2" admin_pass
   # Idempotent: skip the (expensive) build if the VM already exists, so a re-run resumes past it.
   # `just destroy` / `just nuke` removes the VMs to force a clean rebuild.
   if tart list --format json 2>/dev/null | jq -re --arg n "$node" '.[]? | select(.Name==$n)' >/dev/null; then
     log "$node VM already exists — skipping build (run 'just destroy' to force a rebuild)."
     return 0
   fi
-  # kc_read unlocks the yclaw keychain, reads, and re-locks per call — exactly the per-read re-unlock
-  # this needs: the keychain auto-locks after 300s, and a build ahead of this one (metal takes ~6 min)
-  # trips that, so a single up-front unlock would have re-locked by the second build (a locked read
-  # then pops a GUI prompt / fails exit 152 non-interactively). kc_read dies loud if the item is absent.
-  admin_pass="$(kc_read "$admin_service")"
+  # `yclaw secret read` unlocks, reads, and re-locks per call — needed since the keychain
+  # auto-locks after 300s and builds run back-to-back (metal takes ~6 min). Dies loud if absent.
+  admin_pass="$(uv run yclaw secret read "$admin_alias")"
   log "Building $node image via packer (-only=tart-cli.$node) ..."
   # Packer loads every packer/*.pkr.hcl together (shared common.pkr.hcl); -only picks this node.
   # Both nodes clone a digest-pinned base in their .pkr.hcl, so no IPSW var is passed here.
@@ -206,8 +198,8 @@ build_macos_image() {
     packer build -only="tart-cli.$node" "$REPO_ROOT/packer/"
 }
 
-build_macos_image metal       "$KC_SERVICE_METAL_ADMIN"
-build_macos_image bluebubbles "$KC_SERVICE_BLUEBUBBLES_ADMIN"
+build_macos_image metal       metal-admin-pass
+build_macos_image bluebubbles bluebubbles-admin-pass
 
 # Boot the freshly-built macOS guests now that their disks exist: re-load each runner (booted out
 # before the build) so RunAtLoad + KeepAlive starts and supervises it. The CA fetch below needs

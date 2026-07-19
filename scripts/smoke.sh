@@ -10,10 +10,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 # shellcheck source=scripts/lib/common.sh
 source "$REPO_ROOT/scripts/lib/common.sh"
-# secrets.sh (via manifest.sh) gives us YCLAW_STATE, where the per-host age keys + sops bundles live.
-# collect_secrets is NEVER called, so nothing is minted (mirrors redeploy.sh / onboard.sh).
-# shellcheck source=scripts/lib/secrets.sh
-source "$REPO_ROOT/scripts/lib/secrets.sh"
 
 # config integrity
 nix flake check --extra-experimental-features 'nix-command flakes'
@@ -25,8 +21,8 @@ for vm in hermes; do
 done
 
 # --- model-plane check --------------------------------------------------------
-# The cliproxy key's only home is metal's sops bundle; the shared helper decrypts it back.
-cliproxy_key="$(cliproxy_key_from_metal_bundle)"
+# Populated by `yclaw secret reconcile` (scripts/bootstrap.sh) — fails loud if it hasn't run yet.
+cliproxy_key="$(uv run yclaw secret read cliproxy-api-key)"
 
 # This model-plane probe doubles as the allowlist-enforcement check: a 2xx means cliproxy ACCEPTED
 # the bearer; a 401/403 would mean the allowlist REJECTED it. The bearer path is settled — hermes

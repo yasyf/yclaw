@@ -29,16 +29,17 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
-# Sourced ONLY for _yclaw_keychain_unlock/_lock, the KC_SERVICE_* names, and $YCLAW_KEYCHAIN /
-# $YCLAW_STATE — collect_secrets is never called, so nothing is minted (mirrors redeploy.sh).
-# shellcheck source=scripts/lib/secrets.sh
-source "$REPO_ROOT/scripts/lib/secrets.sh"   # also transitively sources manifest.sh (manifest_get)
-# common.sh gives ts_run its `die`; sourced BEFORE onboard's own gum helpers below so their later
-# definitions (warn in particular) win. ssh.sh provides ts_run (requires common.sh + manifest.sh).
+# common.sh sourced first so onboard's later warn/etc. win over its definitions.
 # shellcheck source=scripts/lib/common.sh
 source "$REPO_ROOT/scripts/lib/common.sh"
+# shellcheck source=scripts/lib/manifest.sh
+source "$REPO_ROOT/scripts/lib/manifest.sh"
 # shellcheck source=scripts/lib/ssh.sh
 source "$REPO_ROOT/scripts/lib/ssh.sh"
+
+# onboard never mints (bootstrap.sh's `yclaw secret reconcile` owns that) — read-only existence.
+YCLAW_KEYCHAIN="$HOME/Library/Keychains/yclaw.keychain-db"
+YCLAW_STATE="${YCLAW_STATE:-$HOME/$(manifest_get '.host_paths.state_dir_rel')}"
 
 SELF="$REPO_ROOT/scripts/onboard.sh"
 SESSION="yclaw-onboard"
@@ -265,12 +266,15 @@ gate_gemini_login() {
 # ==============================================================================================
 
 gate_d_google_oauth() {
-  # Guard BEFORE unlock: _yclaw_keychain_unlock's create branch would MINT a fresh keychain if absent,
-  # which onboard must never do (mirrors redeploy.sh's guard-before-unlock).
+  # Guard BEFORE unlock: onboard must never mint a fresh keychain (mirrors redeploy.sh).
   [ -f "$YCLAW_KEYCHAIN" ] || { err "no yclaw keychain — run \`just bootstrap\` first."; return 1; }
-  _yclaw_keychain_unlock
+  # connect-google-oauth.py reads the vault-master password with a raw `security` lookup and
+  # assumes the keychain is already unlocked — hold it open across both calls below, then re-lock.
+  local kc_pass
+  kc_pass="$(security find-generic-password -a "$USER" -s "$(manifest_get '.host_paths.keychain.login_unlock')" -w)"
+  security unlock-keychain -p "$kc_pass" "$YCLAW_KEYCHAIN"
   if "$GOOGLE_OAUTH" check 2>/dev/null | grep -q CONNECTED; then
-    _yclaw_keychain_lock
+    security lock-keychain "$YCLAW_KEYCHAIN"
     ok "Google Workspace OAuth already connected to the hermes vault."
     return 0
   fi
@@ -288,12 +292,12 @@ gate_d_google_oauth() {
         note "Waiting for you to approve (the loopback on :${GOOGLE_OAUTH_PORT} captures the result, 10-min ceiling) …"
         ;;
       "OAUTH_STATUS: "*) printf '%s\n' "$line" | grep -q '"connected":[[:space:]]*true' \
-          && { _yclaw_keychain_lock; ok "Google Workspace OAuth connected."; return 0; } ;;
+          && { security lock-keychain "$YCLAW_KEYCHAIN"; ok "Google Workspace OAuth connected."; return 0; } ;;
       "UPLOAD_RESULT: "*) note "uploaded to vault." ;;
       TIMEOUT*|ERROR*) err "$line" ;;
     esac
   done < <("$GOOGLE_OAUTH")
-  _yclaw_keychain_lock
+  security lock-keychain "$YCLAW_KEYCHAIN"
   err "Google OAuth did not report connected:true — re-run Gate D."
   return 1
 }
@@ -317,10 +321,9 @@ bluebubbles_health() {
 
 gate_e_bluebubbles() {
   local bb_pw allowlist
-  # Guard BEFORE kc_read (mirrors redeploy.sh): kc_read's _yclaw_keychain_unlock create branch would
-  # mint a fresh keychain if absent, which onboard must never do. kc_read unlocks, reads, and re-locks.
+  # Guard BEFORE the read (mirrors redeploy.sh): onboard must never mint a fresh keychain.
   [ -f "$YCLAW_KEYCHAIN" ] || { err "no yclaw keychain — run \`just bootstrap\` first."; return 1; }
-  bb_pw="$(kc_read "$KC_SERVICE_BLUEBUBBLES_SERVER")"
+  bb_pw="$(uv run yclaw secret read bluebubbles-server-pass)"
 
   if [ "$(bluebubbles_health "$bb_pw")" = HEALTHY ]; then
     ok "BlueBubbles already healthy (server + Private API helper connected)."
@@ -445,7 +448,7 @@ preflight() {
   for t in gum tailscale ssh curl python3 jq; do command -v "$t" >/dev/null || missing+=("$t"); done
   [ "${#missing[@]}" -eq 0 ] || { err "missing required tools: ${missing[*]}"; exit 1; }
   [ -f "$YCLAW_KEYCHAIN" ] || { err "no yclaw keychain at $YCLAW_KEYCHAIN — run \`just bootstrap\` first."; exit 1; }
-  kc_has "$KC_SERVICE_TS_OAUTH_ID" \
+  uv run yclaw secret has ts-oauth-client-id \
     || warn "Tailscale OAuth client not in the keychain — bootstrap may be incomplete."
   local p
   for p in "$GOOGLE_OAUTH_PORT" "$GEMINI_CALLBACK_PORT"; do

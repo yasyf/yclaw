@@ -64,17 +64,12 @@ redeploy_hermes() {
 }
 
 redeploy_bluebubbles() {
-  local bb_password
+  local bb_password kc="$HOME/Library/Keychains/yclaw.keychain-db"
   log "Redeploying bluebubbles (config reconfigure over ssh) ..."
-  # Server password: READ (never mint) from the dedicated yclaw keychain — the same unlock-then-read
-  # path bootstrap.sh's build_macos_image uses. Sourcing secrets.sh only pulls in _yclaw_keychain_unlock
-  # + the KC_SERVICE_* / YCLAW_KEYCHAIN names; collect_secrets is NEVER called, so nothing is minted.
-  source "$REPO_ROOT/scripts/lib/secrets.sh"
-  # The keychain must already exist (bootstrap owns its creation) — fail loud BEFORE kc_read (whose
-  # _yclaw_keychain_unlock create branch would otherwise mint a fresh keychain + unlock password,
-  # which redeploy must not do). kc_read unlocks, reads, and re-locks the yclaw keychain itself.
-  [ -f "$YCLAW_KEYCHAIN" ] || die "no yclaw keychain at $YCLAW_KEYCHAIN — run \`just bootstrap\` first (redeploy never mints secrets)."
-  bb_password="$(kc_read "$KC_SERVICE_BLUEBUBBLES_SERVER")"
+  # Server password: READ (never mint) from the dedicated yclaw keychain. It must already exist
+  # (bootstrap owns its creation) — fail loud BEFORE the read, which redeploy must never mint.
+  [ -f "$kc" ] || die "no yclaw keychain at $kc — run \`just bootstrap\` first (redeploy never mints secrets)."
+  bb_password="$(uv run yclaw secret read bluebubbles-server-pass)"
   # Allowlist (NON-secret): source the host node.env bootstrap.sh assembled — it defines
   # BLUEBUBBLES_ALLOWED_USERS verbatim (the documented `source a node.env` path in bluebubbles-setup.sh's
   # header). set -u makes a missing value fail loud; a missing file makes `.` fail loud.
