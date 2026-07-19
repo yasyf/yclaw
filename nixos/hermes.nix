@@ -71,27 +71,6 @@ let
     BLUEBUBBLES_ALLOW_ALL_USERS=false
   '';
 
-  # --- BlueBubbles readiness gate (race-fix) -----------------------------------
-  # The hermes-agent module has NO built-in readiness poll. BlueBubbles runs on a
-  # separate macOS VM reached via `tailscale serve https`; if hermes starts first
-  # the gateway crash-loops on connect. ExecStartPre blocks until BB answers.
-  waitForBlueBubbles = pkgs.writeShellScript "wait-for-bluebubbles" ''
-    set -uo pipefail
-    # /api/v1/server/info needs the password and returns 401 without it — but a 401 still
-    # means the server is UP. So check reachability (any HTTP response), NOT -f (which would
-    # treat 401 as failure and wait forever). curl exits 0 on any response, non-zero only if
-    # it can't connect at all.
-    # The cert is FQDN-only, so resolve the node's tailnet domain at runtime (no tailnet-domain
-    # placeholder baked into the generic image) and probe the FQDN — bare `bluebubbles` fails the TLS handshake.
-    domain="$(${pkgs.tailscale}/bin/tailscale status --json | ${pkgs.jq}/bin/jq -r .MagicDNSSuffix)"
-    url="https://bluebubbles.$domain/api/v1/server/info"
-    until ${pkgs.curl}/bin/curl -sS -o /dev/null --max-time 5 "$url" 2>/dev/null; do
-      echo "waiting for BlueBubbles at $url ..."
-      sleep 5
-    done
-    echo "BlueBubbles is reachable."
-  '';
-
   # --- Honcho global config (~/.honcho/config.json) — REMOTE cloud -------------
   # Honcho is the memory provider (memory.provider = "honcho" in settings below).
   # The plugin's config chain is $HERMES_HOME/honcho.json → ~/.honcho/config.json →
@@ -252,30 +231,6 @@ in
   }) manifest.hosts.hermes.secrets;
 
   networking.hostName = "hermes";
-
-  # --- Persistent agent state externalized to the host -------------------------
-  # /var/lib/hermes (the hermes-agent stateDir: honcho memory, sessions, ~/.hermes config) is
-  # mounted from the host's ~/.yclaw/state/hermes over virtiofs (tag `hermesstate`, shared rw by
-  # the tart-hermes runner in scripts/setup.sh). The state survives destroying/rebuilding the VM
-  # and is covered by `just backup`. `nofail` so a host that boots hermes without the share (e.g.
-  # an image smoke-build) degrades to ephemeral in-VM state instead of failing the boot.
-  fileSystems."/var/lib/hermes" = {
-    device = "hermesstate";
-    fsType = "virtiofs";
-    options = [ "nofail" ];
-  };
-
-  # --- Repo checkout (read-only) for in-VM rebuilds ----------------------------
-  # The host's ~/Code/yclaw checkout, shared read-only over virtiofs (tag `repo`, by the
-  # tart-hermes runner in scripts/setup.sh). The in-VM rebuild reads its flake from here
-  # (`nixos-rebuild switch --flake /var/lib/yclaw-repo#hermes`), so the guest rebuilds
-  # itself from the same source the host deploys. `nofail` so an image smoke-build that boots
-  # hermes without the share still comes up (the rebuild just isn't available until it's mounted).
-  fileSystems."/var/lib/yclaw-repo" = {
-    device = "repo";
-    fsType = "virtiofs";
-    options = [ "ro" "nofail" ];
-  };
 
   # In-guest rebuilds OOM without swap: hermes-web's `npm ci` alone out-eats the ~4 GiB guest
   # (oom-killer kills dry-activate, rc=137). Disk is plentiful; 8 GiB absorbs the build peak.
@@ -715,16 +670,4 @@ in
     "d ${cfg.stateDir}/.honcho 0750 ${cfg.user} ${cfg.group} - -"
     "C ${cfg.stateDir}/.honcho/config.json 0600 ${cfg.user} ${cfg.group} - ${honchoConfig}"
   ];
-
-  # --- BlueBubbles readiness gate ----------------------------------------------
-  # List-wrapped so a future second ExecStartPre appends cleanly (a bare scalar
-  # would merge awkwardly with a later list def).
-  systemd.services.hermes-agent.serviceConfig.ExecStartPre = [ waitForBlueBubbles ];
-
-  # --- Graceful-drain headroom on stop -----------------------------------------
-  # The agent drains in-flight work on shutdown (drain_timeout ~180s). The module's
-  # default TimeoutStopSec (90s) SIGKILLs it mid-drain → dropped/replayed messages and
-  # BlueBubbles reconnect storms (effectively infinite latency while it flaps). Give stop
-  # enough headroom to finish the drain.
-  systemd.services.hermes-agent.serviceConfig.TimeoutStopSec = "210s";
 }
