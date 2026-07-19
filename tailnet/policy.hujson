@@ -1,6 +1,6 @@
 // tailnet/policy.hujson — the SOURCE OF TRUTH for the yclaw tailnet ACL.
 //
-// This file defines the `tag:hermes`, `tag:metal`, and `tag:bluebubbles` tags that the rest of
+// This file defines the `tag:hermes`, `tag:metal`, `tag:vault`, and `tag:bluebubbles` tags that the rest of
 // the repo RELIES ON: scripts/lib/secrets.sh mints per-node keys tagged `tag:<host>`, the nodes
 // advertise those tags at join (nixos/common.nix extraUpFlags, darwin/metal.nix `tailscale up`,
 // the manual bluebubbles `tailscale up`), and this policy is what makes those tags exist and
@@ -23,6 +23,7 @@
   "tagOwners": {
     "tag:hermes":      ["autogroup:admin", "tag:hermes"],
     "tag:metal":       ["autogroup:admin", "tag:metal"],
+    "tag:vault":       ["autogroup:admin", "tag:vault"],
     "tag:bluebubbles": ["autogroup:admin", "tag:bluebubbles"],
   },
 
@@ -49,6 +50,9 @@
   //     host: hermes consumes the models via metal's relay, so a compromised agent VM cannot
   //     address the host at all. The host-side backstop is the `com.yclaw.host` pf anchor
   //     (scripts/host/host-pf.sh), which re-keys this policy to the fleet's resolved IPs.
+  //   * hermes -> vault: the same credential/AI port set as hermes -> metal — vault is metal's
+  //     Linux container successor (parallel-run until the flip; the metal grants leave with it).
+  //   * vault -> yasyf-home: the relay ports vault forwards northbound, exactly like metal's.
   // These ports are MIRRORED in machines.json (machines.*.services.*.port) — keep the two in sync.
   "grants": [
     {
@@ -70,6 +74,24 @@
       "src": ["tag:metal"],
       "dst": ["yasyf-home"],
       "ip":  ["tcp:8000", "tcp:8765"],
+    },
+    {
+      "src": ["tag:hermes"],
+      "dst": ["tag:vault"],
+      "ip":  ["tcp:8317", "tcp:14321", "tcp:14322", "tcp:8000", "tcp:8765"],
+    },
+    {
+      "src": ["tag:vault"],
+      "dst": ["yasyf-home"],
+      "ip":  ["tcp:8000", "tcp:8765"],
+    },
+    {
+      // The operator host runs `yclaw status/doctor`, which probes vault's health
+      // endpoints over the tailnet — this grant is what makes those probes pass under
+      // default-deny (on the live shared tailnet they pass via autogroup:member).
+      "src": ["yasyf-home"],
+      "dst": ["tag:vault"],
+      "ip":  ["tcp:14321", "tcp:8317", "tcp:8000", "tcp:8765"],
     },
   ],
 
@@ -100,7 +122,7 @@
     {
       "action": "accept",
       "src":    ["autogroup:admin"],
-      "dst":    ["tag:hermes", "tag:metal", "tag:bluebubbles"],
+      "dst":    ["tag:hermes", "tag:metal", "tag:vault", "tag:bluebubbles"],
       "users":  ["autogroup:nonroot", "root"],
     },
   ],

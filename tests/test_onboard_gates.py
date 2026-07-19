@@ -50,7 +50,7 @@ def test_tailscale_all_reachable_is_done(manifest, monkeypatch):
     monkeypatch.setattr(remote, "run", fake_run)
     result = _gate(manifest, "tailscale").body()
     assert result.status is GateStatus.DONE
-    # hermes is a container node (no ssh) — the Tailscale-SSH gate only covers the ssh-reached fleet.
+    # hermes and vault are container nodes (no ssh) — this gate only covers the ssh-reached fleet.
     assert probed == ["metal", "bluebubbles"]
 
 

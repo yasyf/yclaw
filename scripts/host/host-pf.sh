@@ -81,8 +81,12 @@ HERMES4="$(resolve_ip hermes 4)" || exit 1
 HERMES6="$(resolve_ip hermes 6)" || exit 1
 BB4="$(resolve_ip bluebubbles 4)" || exit 1
 BB6="$(resolve_ip bluebubbles 6)" || exit 1
+# vault's socat relays dial yasyf-home:8000/8765, so it needs the model-port pass; joined-node
+# resolution is fail-closed like metal (an absent vault freezes the previous ruleset).
+VAULT4="$(resolve_ip vault 4)" || exit 1
+VAULT6="$(resolve_ip vault 6)" || exit 1
 
-FLEET="{ $METAL4, $METAL6, $HERMES4, $HERMES6, $BB4, $BB6 }"
+FLEET="{ $METAL4, $METAL6, $HERMES4, $HERMES6, $BB4, $BB6, $VAULT4, $VAULT6 }"
 
 # Same die-loud discipline as the tailnet resolution: no interface carrying the gateway IP means
 # the fleet bridge is down or renumbered, and rendering onto a stale interface name would
@@ -141,7 +145,7 @@ RULES=$(mktemp) || { echo "host-pf: ERROR mktemp failed for pf rules" >&2; exit 
   echo "# get state entries, and pf consults state BEFORE rules, so fleet replies to those flows"
   echo "# never reach the block."
   echo "pass out quick to $FLEET keep state"
-  echo "pass in quick proto tcp from { $METAL4, $METAL6 } to any port $PORTS"
+  echo "pass in quick proto tcp from { $METAL4, $METAL6, $VAULT4, $VAULT6 } to any port $PORTS"
   echo "block drop in quick from $FLEET to any"
 } > "$RULES"
 
@@ -186,7 +190,7 @@ if [ "$NEED_KILL" -eq 1 ]; then
   # left to expire — pfctl -k cannot address zone-scoped fe80 sources. The pair-kill also drops
   # any live fleet->gateway WireGuard UDP (:WG_PORT) states, which is harmless: WireGuard
   # re-handshakes statelessly and magicsock re-establishes the vmnet path within seconds.
-  for src in "$METAL4" "$METAL6" "$HERMES4" "$HERMES6" "$BB4" "$BB6"; do
+  for src in "$METAL4" "$METAL6" "$HERMES4" "$HERMES6" "$BB4" "$BB6" "$VAULT4" "$VAULT6"; do
     pfctl -k "$src" || { echo "host-pf: FATAL state kill failed for $src" >&2; exit 1; }
   done
   for dst in $(ifconfig | awk '$1 == "inet" { print $2 }'); do
@@ -196,4 +200,4 @@ fi
 
 date +%s > "$MARKER" || { echo "host-pf: FATAL cannot write enforcement marker $MARKER" >&2; exit 1; }
 
-echo "host-pf: $ANCHOR keyed to metal={$METAL4, $METAL6} hermes=$HERMES4 bluebubbles=$BB4; metal -> host $PORTS allowed; $VMNET_IF ingress from any source blocked to self+multicast+broadcast (dhcp+dns+wg open)"
+echo "host-pf: $ANCHOR keyed to metal={$METAL4, $METAL6} hermes=$HERMES4 bluebubbles=$BB4 vault=$VAULT4; metal + vault -> host $PORTS allowed; $VMNET_IF ingress from any source blocked to self+multicast+broadcast (dhcp+dns+wg open)"

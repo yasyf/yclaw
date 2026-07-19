@@ -17,6 +17,10 @@ CNET=192.168.72.0/24
 CGW=192.168.72.1
 CBCAST=192.168.72.255
 
+# Pinned fleet magicsock port (machines.json machines.host.wireguard_port), baked by setup.sh
+# exactly like host-pf.sh's @@WG_PORT@@ — never a literal.
+WG_PORT=@@WG_PORT@@
+
 # Epoch of the last verified tick — launchd reports the loop healthy even when ticks fail, so marker
 # staleness is the doctor signal.
 MARKER="$YCLAW_LIB/container-pf.last-ok"
@@ -44,6 +48,11 @@ RULES=$(mktemp) || { echo "container-pf: ERROR mktemp failed for pf rules" >&2; 
   echo "pass in quick on $CIF proto udp from $CNET to $CGW port { 53, 67, 68 }"
   echo "pass in quick on $CIF proto tcp from $CNET to $CGW port 53"
   echo "pass in quick on $CIF proto udp from 0.0.0.0 to 255.255.255.255 port 67"
+  echo "# WG/disco carve-out BEFORE tier-1: the private-space denies below would DERP-relay the"
+  echo "# fleet's WireGuard underlay (host LAN/gateway endpoints, sibling containers). Admits only"
+  echo "# authenticated WG ciphertext; dest-port-keyed, so every guest tailscaled pins --port."
+  echo "# Deliberately anchor-wide: this TOTAL anchor governs hermes and vault alike."
+  echo "pass in quick on $CIF proto udp from $CNET to any port $WG_PORT"
   echo "# tier-1 lateral-movement deny (\`from any\` = forged source too); \`self\` closes the"
   echo "# rapid-mlx/mlx-audio leak, CGNAT 100.64/10 = every tailnet IP as cleartext. MUST precede"
   echo "# tier-2's \`to any\` passes, which would otherwise readmit self/private on the open ports."
@@ -61,6 +70,8 @@ RULES=$(mktemp) || { echo "container-pf: ERROR mktemp failed for pf rules" >&2; 
   echo "pass in quick on $CIF proto tcp from $CNET to any port 53"
   echo "pass in quick on $CIF proto udp from $CNET to any"
   echo "pass in quick on $CIF proto tcp from $CNET to any port 443"
+  echo "# APNs (corten on vault): scoped to Apple's 17.0.0.0/8, never to-any."
+  echo "pass in quick on $CIF proto tcp from $CNET to 17.0.0.0/8 port 5223"
   echo "block drop in quick on $CIF from any to any"
 } > "$RULES"
 
@@ -91,4 +102,4 @@ if [ "$NEED_KILL" -eq 1 ]; then
 fi
 
 date +%s > "$MARKER" || { echo "container-pf: FATAL cannot write enforcement marker $MARKER" >&2; exit 1; }
-echo "container-pf: $ANCHOR keyed to bridge $CIF ($CNET); container denied self+fleet+private+CGNAT; egress limited to DNS+WG+443 (tier-2 moderate)"
+echo "container-pf: $ANCHOR keyed to bridge $CIF ($CNET); container denied self+fleet+private+CGNAT; egress limited to DNS+WG+443+APNs (tier-2 moderate)"

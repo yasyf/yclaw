@@ -61,11 +61,16 @@ PLIST
   log "Loaded LaunchAgent $label."
 }
 
-# Write the com.yclaw.container-hermes supervisor LaunchAgent: a KeepAlive loop re-running <tick>
-# (backoff, then <period>s ticks). Plist ONLY; bring-up is gated.
+# Write a container supervisor LaunchAgent: a KeepAlive loop re-running <tick> (backoff, then
+# <period>s ticks). Plist ONLY; bring-up is gated.
 write_container_agent() {
-  local tick="$1" period="${2:-60}"
-  local label="com.yclaw.container-hermes"
+  local node="$1" tick="$2" period="${3:-60}"
+  local service="container-$node" label stdout stderr
+  label="$(manifest_get ".machines.host.services[\"$service\"].launchd.label")"
+  stdout="$(manifest_get ".machines.host.services[\"$service\"].logs[0]")"
+  stderr="$(manifest_get ".machines.host.services[\"$service\"].logs[1]")"
+  stdout="${stdout/#\~/$HOME_DIR}"
+  stderr="${stderr/#\~/$HOME_DIR}"
   local plist="$LAUNCH_AGENTS_DIR/$label.plist"
 
   cat > "$plist" <<PLIST
@@ -88,9 +93,9 @@ write_container_agent() {
   <key>ProcessType</key>
   <string>Interactive</string>
   <key>StandardOutPath</key>
-  <string>$MODEL_LOGS_DIR/container-hermes.log</string>
+  <string>$stdout</string>
   <key>StandardErrorPath</key>
-  <string>$MODEL_LOGS_DIR/container-hermes.error.log</string>
+  <string>$stderr</string>
 </dict>
 </plist>
 PLIST

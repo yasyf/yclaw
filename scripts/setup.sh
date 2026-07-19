@@ -338,7 +338,56 @@ PLIST
   #        sudo lsof -nP -iUDP:41641   -> the owning command must be tailscaled
 }
 
-# --- 7. Container-native hermes supervisor (optional, root-assisted, NOT in the full run) ---
+# --- 7. Container supervisors (optional, root-assisted, NOT in the full run) ---------------
+
+install_container_supervisor_files() {
+  local node="$1" baked="$2"
+  local lib_dir="/usr/local/lib/yclaw" pf_label wg_port pf_stdout pf_stderr
+  pf_label="$(manifest_get '.machines.host.services["container-pf-refresh"].launchd.label')"
+  wg_port="$(manifest_get '.machines.host.wireguard_port')"
+  pf_stdout="$(manifest_get '.machines.host.services["container-pf-refresh"].logs[0]')"
+  pf_stderr="$(manifest_get '.machines.host.services["container-pf-refresh"].logs[1]')"
+
+  sudo bash -s -- "$node" "$lib_dir" "$baked" "$REPO_ROOT/scripts/lib/wait.sh" \
+      "$REPO_ROOT/scripts/lib/pf.sh" "$REPO_ROOT/scripts/host/container-pf.sh" \
+      "$pf_label" "$wg_port" "$pf_stdout" "$pf_stderr" <<'SUDO'
+set -eu
+node="$1"; lib_dir="$2"; baked="$3"; wait_sh="$4"; pf_sh="$5"; container_pf="$6"
+pf_label="$7"; wg_port="$8"; pf_stdout="$9"; pf_stderr="${10}"
+install -d -m 755 "$lib_dir"
+install -m 644 "$wait_sh" "$lib_dir/wait.sh"
+install -m 644 "$pf_sh" "$lib_dir/pf.sh"
+install -m 755 "$baked" "$lib_dir/container-$node.sh"
+pf_baked="$(mktemp)"
+sed -e "s|@@WG_PORT@@|$wg_port|g" "$container_pf" > "$pf_baked"
+install -m 755 "$pf_baked" "$lib_dir/container-pf.sh"
+rm -f "$pf_baked"
+# Egress pf refresh LaunchDaemon (root; RunAtLoad + KeepAlive backoff sleep-loop — Tahoe kills
+# StartInterval). Installed NOT loaded: bring-up touches the firewall, so it is gated on review.
+plist="/Library/LaunchDaemons/$pf_label.plist"
+cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$pf_label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>d=5; until $lib_dir/container-pf.sh 60; do sleep \$d; d=\$((d*2)); if [ \$d -gt 30 ]; then d=30; fi; done; while true; do sleep 300; $lib_dir/container-pf.sh 60 || true; done</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$pf_stdout</string>
+  <key>StandardErrorPath</key><string>$pf_stderr</string>
+</dict>
+</plist>
+PLIST
+chown root:wheel "$plist"
+chmod 644 "$plist"
+SUDO
+}
 
 # Author the container-native hermes launch chain. Login user + sudo for privileged bits; gated.
 setup_host_container() {
@@ -394,14 +443,10 @@ setup_host_container() {
       -e "s|@@LOG_DIR@@|$MODEL_LOGS_DIR|g" \
       "$REPO_ROOT/scripts/host/container-hermes.sh" > "$baked"
 
-  local pf_label="com.yclaw.container-pf-refresh"
-  log "Creating gid-$gid group '$group', socket dir $run_dir, installing the ticks + egress pf daemon (sudo) ..."
-  sudo bash -s -- "$group" "$gid" "$run_dir" "$(id -un)" "$lib_dir" "$baked" \
-      "$REPO_ROOT/scripts/lib/wait.sh" "$REPO_ROOT/scripts/lib/pf.sh" \
-      "$REPO_ROOT/scripts/host/container-pf.sh" "$pf_label" <<'SUDO'
+  log "Creating gid-$gid group '$group' and socket dir $run_dir (sudo) ..."
+  sudo bash -s -- "$group" "$gid" "$run_dir" "$(id -un)" <<'SUDO'
 set -eu
-group="$1"; gid="$2"; run_dir="$3"; owner="$4"; lib_dir="$5"; baked="$6"
-wait_sh="$7"; pf_sh="$8"; container_pf="$9"; pf_label="${10}"
+group="$1"; gid="$2"; run_dir="$3"; owner="$4"
 # gid-1000 group so the proxy's 0660 socket lands group-owned gid 1000 (the dropped agent's gid).
 if ! dscl . -read "/Groups/$group" >/dev/null 2>&1; then
   dscl . -create "/Groups/$group"
@@ -417,45 +462,62 @@ for o in $(dscl . -list /Groups PrimaryGroupID | awk -v g="$gid" '$2==g {print $
 done
 # User-owned so the per-user proxy can bind; group + setgid so the socket inherits gid $gid.
 install -d -o "$owner" -g "$group" -m 2750 "$run_dir"
-# Ticks + libs beside host-pf.sh (root-owned, world-readable). container-pf.sh has no @@tokens@@.
-install -d -m 755 "$lib_dir"
-install -m 644 "$wait_sh" "$lib_dir/wait.sh"
-install -m 644 "$pf_sh"   "$lib_dir/pf.sh"
-install -m 755 "$baked"   "$lib_dir/container-hermes.sh"
-install -m 755 "$container_pf" "$lib_dir/container-pf.sh"
-# Egress pf refresh LaunchDaemon (root; RunAtLoad + KeepAlive backoff sleep-loop — Tahoe kills
-# StartInterval). Installed NOT loaded: bring-up touches the firewall, so it is gated on review.
-plist="/Library/LaunchDaemons/$pf_label.plist"
-cat > "$plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>$pf_label</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/sh</string>
-    <string>-c</string>
-    <string>d=5; until $lib_dir/container-pf.sh 60; do sleep \$d; d=\$((d*2)); if [ \$d -gt 30 ]; then d=30; fi; done; while true; do sleep 300; $lib_dir/container-pf.sh 60 || true; done</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/var/log/container-pf-refresh.log</string>
-  <key>StandardErrorPath</key><string>/var/log/container-pf-refresh.error.log</string>
-</dict>
-</plist>
-PLIST
-chown root:wheel "$plist"
-chmod 644 "$plist"
 SUDO
+
+  log "Installing the hermes tick + shared egress pf daemon (sudo) ..."
+  install_container_supervisor_files hermes "$baked"
   rm -f "$baked"
 
-  write_container_agent "$lib_dir/container-hermes.sh" 60
+  write_container_agent hermes "$lib_dir/container-hermes.sh" 60
 
+  local label pf_label
+  label="$(manifest_get '.machines.host.services["container-hermes"].launchd.label')"
+  pf_label="$(manifest_get '.machines.host.services["container-pf-refresh"].launchd.label')"
   log "Supervisor + egress pf authored. Bring-up is GATED (starts the chain AND touches pf) — after"
   log "review, load BOTH:"
-  log "  launchctl bootstrap gui/\$(id -u) $LAUNCH_AGENTS_DIR/com.yclaw.container-hermes.plist"
+  log "  launchctl bootstrap gui/\$(id -u) $LAUNCH_AGENTS_DIR/$label.plist"
   log "  sudo launchctl bootstrap system /Library/LaunchDaemons/$pf_label.plist"
+}
+
+setup_host_vault() {
+  local container_bin="/opt/homebrew/bin/container"
+  local config_toml="$HOME_DIR/.config/container/config.toml"
+  local config_dir="$STATE_DIR/hosts/vault"
+  local ts_state_dir="$STATE_DIR/vault-ts-state"
+  local lib_dir="/usr/local/lib/yclaw"
+
+  [ -x "$container_bin" ] || die "apple/container CLI not at $container_bin (brew install container)"
+  [ -f "$config_toml" ] || die "$config_toml missing — its 192.168.72/24 subnet override must exist before the first 'container system start'"
+
+  log "Staging vault container state and canonical per-host bundle in $config_dir ..."
+  mkdir -p "$MODEL_LOGS_DIR" "$LAUNCH_AGENTS_DIR"
+  install -d -m 700 "$config_dir" "$ts_state_dir" "$STATE_DIR/vault"
+  local f
+  for f in key.txt secrets.sops.yaml; do
+    [ -f "$config_dir/$f" ] || die "$config_dir/$f missing — run 'just bootstrap' first (per-host age key + sops bundle)"
+  done
+
+  local baked; baked="$(mktemp)"
+  sed -e "s|@@CONTAINER@@|$container_bin|g" \
+      -e "s|@@STATE_DIR@@|$STATE_DIR|g" \
+      -e "s|@@CONFIG_DIR@@|$config_dir|g" \
+      -e "s|@@CONFIG_TOML@@|$config_toml|g" \
+      -e "s|@@LOG_DIR@@|$MODEL_LOGS_DIR|g" \
+      "$REPO_ROOT/scripts/host/container-vault.sh" > "$baked"
+
+  log "Installing the vault tick + shared egress pf daemon (sudo) ..."
+  install_container_supervisor_files vault "$baked"
+  rm -f "$baked"
+
+  write_container_agent vault "$lib_dir/container-vault.sh" 60
+
+  local label pf_label
+  label="$(manifest_get '.machines.host.services["container-vault"].launchd.label')"
+  pf_label="$(manifest_get '.machines.host.services["container-pf-refresh"].launchd.label')"
+  log "Vault supervisor + egress pf authored. Bring-up is GATED — after review, load BOTH:"
+  log "  launchctl bootstrap gui/\$(id -u) $LAUNCH_AGENTS_DIR/$label.plist"
+  log "  sudo launchctl bootstrap system /Library/LaunchDaemons/$pf_label.plist"
+  log "Mint a hermes token with: $lib_dir/container-vault.sh mint-hermes-token"
 }
 
 # --- arg dispatch --------------------------------------------------------------
@@ -477,8 +539,13 @@ case "${1:-}" in
     log "Container-native hermes supervisor authored (tick + com.yclaw.container-hermes plist; NOT loaded — bring-up gated)."
     exit 0
     ;;
+  host-vault)
+    setup_host_vault
+    log "Container-native vault supervisor authored (tick + container-vault plist; NOT loaded — bring-up gated)."
+    exit 0
+    ;;
   "") ;;
-  *) die "usage: setup.sh [host-serving|host-pf|host-container]" ;;
+  *) die "usage: setup.sh [host-serving|host-pf|host-container|host-vault]" ;;
 esac
 
 # --- 0. Homebrew + tart + gum ------------------------------------------------

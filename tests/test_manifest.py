@@ -14,15 +14,17 @@ from yclaw.manifest import (
 )
 
 
-def test_hermes_is_container_node(manifest):
-    hermes = manifest.machines["hermes"]
-    assert hermes.os == "linux"
-    assert hermes.managed_by == "container"
-    assert hermes.container == "hermes"
-    assert hermes.ssh is None
-    assert hermes.tart_vm is None
-    assert hermes.shares is None
-    assert hermes.admin_pass_keychain is None
+@pytest.mark.parametrize("name", ["hermes", "vault"], ids=["hermes", "vault"])
+def test_container_node_shape(manifest, name):
+    machine = manifest.machines[name]
+    assert machine.os == "linux"
+    assert machine.managed_by == "container"
+    assert machine.container == name
+    assert machine.tag == f"tag:{name}"
+    assert machine.ssh is None
+    assert machine.tart_vm is None
+    assert machine.shares is None
+    assert machine.admin_pass_keychain is None
 
 
 def test_rapid_mlx_launchd_label(manifest):
@@ -60,6 +62,60 @@ def test_hermes_agent_is_container_proc(manifest):
     assert svc.systemd is None
     assert svc.launchd is None
     assert svc.health is None
+
+
+@pytest.mark.parametrize(
+    ("name", "port", "health"),
+    [
+        ("agent-vault", 14321, HttpHealth(url="http://vault:14321/v1/mitm/ca.pem")),
+        ("cliproxy", 8317, TcpHealth(host="vault", port=8317)),
+        ("relay-8000", 8000, TcpHealth(host="vault", port=8000)),
+        ("relay-8765", 8765, TcpHealth(host="vault", port=8765)),
+    ],
+    ids=["agent-vault", "cliproxy", "relay-8000", "relay-8765"],
+)
+def test_vault_service_health(manifest, name, port, health):
+    svc = manifest.machines["vault"].services[name]
+    assert svc.port == port
+    assert svc.health == health
+    assert svc.launchd is None
+    assert svc.systemd is None
+    assert svc.container_proc is None
+    assert svc.logs == ()
+
+
+def test_vault_service_order(manifest):
+    assert tuple(manifest.machines["vault"].services) == (
+        "agent-vault",
+        "cliproxy",
+        "relay-8000",
+        "relay-8765",
+    )
+
+
+def test_host_container_vault_service(manifest):
+    svc = manifest.machines["host"].services["container-vault"]
+    assert svc.launchd == LaunchdRef(domain="gui", label="com.yclaw.container-vault")
+    assert svc.oneshot is False
+    assert svc.logs == (
+        "~/Library/Logs/yclaw/container-vault.log",
+        "~/Library/Logs/yclaw/container-vault.error.log",
+    )
+
+
+def test_nuke_wipes_vault_state(manifest):
+    assert manifest.host_paths.state_subdirs_wipe == (
+        "age",
+        "vm-secrets",
+        "hosts",
+        "agent-vault",
+        "cli-proxy-api",
+        "hermes",
+        "vault",
+        "vault-ts-state",
+        "bluebubbles",
+        "mlx-audio",
+    )
 
 
 def test_container_node_parses_transport_fields(container_machine):

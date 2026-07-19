@@ -157,6 +157,9 @@
       # --- Buildable artifacts ---------------------------------------------------
       packages.${linuxSystem} = {
         agent-vault = pkgsLinux.agent-vault;
+        # CGO_ENABLED=1, so this is a NATIVE aarch64-linux build (the builder VM), not a
+        # cross-compile; the vault image consumes the same pkgsLinux derivation.
+        cli-proxy-api = pkgsLinux.cli-proxy-api;
         hermes-docker-proxy = pkgsLinux.hermes-docker-proxy;
         hermes-image = mkImage hermesModules;
 
@@ -166,6 +169,9 @@
           pkgs = pkgsLinux;
           hermesConfig = self.nixosConfigurations.hermes.config.services.hermes-agent;
         };
+        # Container-native vault node (metal's creds role): agent-vault + cliproxy + the two
+        # model relays under one entrypoint supervisor. Self-contained — no NixOS config.
+        vault-container-image = import ./pkgs/vault-image/image.nix { pkgs = pkgsLinux; };
         # Local-only: same image with a known root password for scratch-VM boot validation.
         # Never built or published by CI — it must not reach a released asset.
         hermes-image-scratch = mkImage (hermesModules ++ [ ./nixos/scratch-login.nix ]);

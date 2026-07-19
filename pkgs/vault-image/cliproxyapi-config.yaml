@@ -1,0 +1,18 @@
+# CLIProxyAPI config template for vault (schema: cliproxyapi.md §1); the entrypoint renders
+# @@CLIPROXY_API_KEY@@ from sops at launch. Tailnet-facing :8317; ACL + container-pf gate.
+host: "0.0.0.0"
+port: 8317
+
+# Rotating single-use refresh tokens persist on the bind-mounted state dir (cliproxyapi.md §2).
+auth-dir: "/var/lib/vault/cliproxy/auth"
+
+# Enforced bearer allowlist (an empty list unregisters the key-gate); hermes presents this key.
+api-keys:
+  - "@@CLIPROXY_API_KEY@@"
+
+# Management API disabled entirely (empty secret-key -> no /v0/management routes).
+remote-management:
+  allow-remote: false
+  secret-key: ""
+
+# Model routing is automatic by registry ownership; resolve upstream ids via GET /v1/models.

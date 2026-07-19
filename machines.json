@@ -86,6 +86,35 @@
         "hermes-agent": { "container_proc": "hermes gateway run" }
       }
     },
+    "vault": {
+      "os": "linux",
+      "managed_by": "container",
+      "tart_vm": null,
+      "container": "vault",
+      "tag": "tag:vault",
+      "ssh": null,
+      "admin_pass_keychain": null,
+      "shares": null,
+      "services": {
+        "agent-vault": {
+          "port": 14321,
+          "mitm_port": 14322,
+          "health": { "kind": "http", "url": "http://vault:14321/v1/mitm/ca.pem" }
+        },
+        "cliproxy": {
+          "port": 8317,
+          "health": { "kind": "tcp", "host": "vault", "port": 8317 }
+        },
+        "relay-8000": {
+          "port": 8000,
+          "health": { "kind": "tcp", "host": "vault", "port": 8000 }
+        },
+        "relay-8765": {
+          "port": 8765,
+          "health": { "kind": "tcp", "host": "vault", "port": 8765 }
+        }
+      }
+    },
     "bluebubbles": {
       "os": "macos",
       "managed_by": "bluebubbles-setup.sh",
@@ -179,6 +208,14 @@
             "~/Library/Logs/yclaw/container-hermes.error.log"
           ]
         },
+        "container-vault": {
+          "launchd": { "domain": "gui", "label": "com.yclaw.container-vault" },
+          "oneshot": false,
+          "logs": [
+            "~/Library/Logs/yclaw/container-vault.log",
+            "~/Library/Logs/yclaw/container-vault.error.log"
+          ]
+        },
         "container-pf-refresh": {
           "launchd": { "domain": "system", "label": "com.yclaw.container-pf-refresh" },
           "oneshot": false,
@@ -208,6 +245,8 @@
       "agent-vault",
       "cli-proxy-api",
       "hermes",
+      "vault",
+      "vault-ts-state",
       "bluebubbles",
       "mlx-audio"
     ],

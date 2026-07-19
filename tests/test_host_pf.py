@@ -18,10 +18,7 @@ STOCK_SR = (
     'anchor "vnc" all'
 )
 SCRUB_ONLY_SR = 'scrub-anchor "com.apple/*" all fragment reassemble'
-CONDITIONAL_SR = (
-    'scrub-anchor "com.apple/*" all fragment reassemble\n'
-    'anchor "com.apple/*" inet all'
-)
+CONDITIONAL_SR = 'scrub-anchor "com.apple/*" all fragment reassemble\nanchor "com.apple/*" inet all'
 
 TAILSCALE_STUB = """#!/bin/bash
 case "$1" in
@@ -31,6 +28,7 @@ case "$1" in
       metal)       if [ "$2" = -4 ]; then echo 100.100.0.1; else echo fd7a:115c:a1e0::1; fi ;;
       hermes)      if [ "$2" = -4 ]; then echo 100.100.0.2; else echo fd7a:115c:a1e0::2; fi ;;
       bluebubbles) if [ "$2" = -4 ]; then echo 100.100.0.3; else echo fd7a:115c:a1e0::3; fi ;;
+      vault)       if [ "$2" = -4 ]; then echo 100.100.0.4; else echo fd7a:115c:a1e0::4; fi ;;
     esac ;;
 esac
 """
@@ -139,7 +137,11 @@ def test_tick_renders_the_bridge_ingress_lockdown_under_000(tmp_path: Path) -> N
     assert "pass out quick on bridge101 to 192.168.64.0/24 keep state" in loaded
     assert "pass in quick on bridge101 proto udp from 192.168.64.0/24 to 192.168.64.1 port { 53, 67, 68 }" in loaded
     assert "pass in quick on bridge101 proto tcp from 192.168.64.0/24 to 192.168.64.1 port 53" in loaded
-    metal_pass = "pass in quick proto tcp from { 100.100.0.1, fd7a:115c:a1e0::1 } to any port { 8000, 8765 }"
+    # vault's relays dial the host model ports too, so the pass now covers metal + vault (both families).
+    metal_pass = (
+        "pass in quick proto tcp from { 100.100.0.1, fd7a:115c:a1e0::1, 100.100.0.4, fd7a:115c:a1e0::4 }"
+        " to any port { 8000, 8765 }"
+    )
     assert metal_pass in loaded
 
     # The WireGuard carve-out (fleet->gateway UDP on the pinned tailscaled port) admits direct vmnet
@@ -160,7 +162,7 @@ def test_tick_renders_the_bridge_ingress_lockdown_under_000(tmp_path: Path) -> N
     assert loaded.index(self_block) < loaded.index(metal_pass)
     fleet_block = (
         "block drop in quick from { 100.100.0.1, fd7a:115c:a1e0::1, 100.100.0.2, fd7a:115c:a1e0::2,"
-        " 100.100.0.3, fd7a:115c:a1e0::3 } to any"
+        " 100.100.0.3, fd7a:115c:a1e0::3, 100.100.0.4, fd7a:115c:a1e0::4 } to any"
     )
     assert loaded.index(metal_pass) < loaded.index(fleet_block)
 
@@ -199,6 +201,8 @@ def test_state_kill_runs_once_per_ruleset_change(tmp_path: Path) -> None:
         "fd7a:115c:a1e0::2",
         "100.100.0.3",
         "fd7a:115c:a1e0::3",
+        "100.100.0.4",
+        "fd7a:115c:a1e0::4",
         "192.168.64.0/24 -k 127.0.0.1",
         "192.168.64.0/24 -k 192.0.2.24",
         "192.168.64.0/24 -k 100.100.0.99",

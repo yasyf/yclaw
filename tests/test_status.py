@@ -8,10 +8,12 @@ from yclaw.probes import ProbeResult, Status
 DASH = "—"
 
 
-def _install_metal_probes(monkeypatch, *, hermes_up=False, bluebubbles_up=False):
+def _install_metal_probes(monkeypatch, *, hermes_up=False, vault_up=False, bluebubbles_up=False):
     up_names = {"metal"}
     if hermes_up:
         up_names.add("hermes")
+    if vault_up:
+        up_names.add("vault")
     if bluebubbles_up:
         up_names.add("bluebubbles")
 
@@ -117,6 +119,7 @@ def test_status_all_machines_down_nodes_render_as_down(monkeypatch):
     lines = result.output.splitlines()
 
     hermes_rows = [line for line in lines if line.split()[:1] == ["hermes"]]
+    vault_rows = [line for line in lines if line.split()[:1] == ["vault"]]
     bluebubbles_rows = [line for line in lines if line.split()[:1] == ["bluebubbles"]]
     # bluebubbles is ssh-reached: its per-service probes are skipped when the node is down (1 row).
     assert len(bluebubbles_rows) == 1
@@ -128,8 +131,30 @@ def test_status_all_machines_down_nodes_render_as_down(monkeypatch):
     assert "registered but offline" in node_row
     assert any("hermes-agent" in r for r in hermes_rows)
     assert any("supervisor" in r for r in hermes_rows)
+    # vault is also host-local: four health rows plus its node and supervisor rows still render.
+    assert len(vault_rows) == 6
+    assert "down" in next(r for r in vault_rows if "(node)" in r)
+    vault_services = ("agent-vault", "cliproxy", "relay-8000", "relay-8765")
+    assert all(any(service in row for row in vault_rows) for service in vault_services)
+    assert any("supervisor" in r for r in vault_rows)
     assert any(line.startswith("metal") and "(node)" in line and "up" in line for line in lines)
-    assert result.exit_code == 1  # hermes + bluebubbles down
+    assert result.exit_code == 1  # hermes + vault + bluebubbles down
+
+
+def test_status_vault_renders_exact_table(monkeypatch):
+    _install_metal_probes(monkeypatch, vault_up=True)
+    result = CliRunner().invoke(main, ["status", "vault"])
+
+    expected_rows = [
+        ["vault", "(node)", "up", DASH, "online, ping ok"],
+        ["vault", "agent-vault", DASH, "ok", "hp-agent-vault"],
+        ["vault", "cliproxy", DASH, "ok", "hp-cliproxy"],
+        ["vault", "relay-8000", DASH, "ok", "hp-relay-8000"],
+        ["vault", "relay-8765", DASH, "ok", "hp-relay-8765"],
+        ["vault", "supervisor", "ok", DASH, "mk-vault"],
+    ]
+    assert result.output.rstrip("\n") == output.render_table(status.HEADERS, expected_rows)
+    assert result.exit_code == 0
 
 
 def test_status_share_probes_skip_non_macos_machines(monkeypatch):
@@ -145,9 +170,11 @@ def test_status_share_probes_skip_non_macos_machines(monkeypatch):
     result = CliRunner().invoke(main, ["status"])
     lines = result.output.splitlines()
 
-    assert "hermes" not in probed_machines  # NixOS shares are virtiofs tags, not /Volumes/My Shared Files
+    assert "hermes" not in probed_machines  # Linux container nodes have no macOS share probes.
+    assert "vault" not in probed_machines
     assert "metal" in probed_machines  # macOS guest still probed
     assert not any(line.startswith("hermes") and "share:" in line for line in lines)
+    assert not any(line.startswith("vault") and "share:" in line for line in lines)
     assert any(line.startswith("metal") and "share:metalsecrets" in line for line in lines)
 
 

@@ -126,7 +126,7 @@ def test_doctor_live_hermes_down_marks_manual(monkeypatch):
 
     monkeypatch.setattr(remote, "run", fake_run)
     result = CliRunner().invoke(main, ["doctor", "--live"])
-    assert result.exit_code == 1  # hermes + bluebubbles down
+    assert result.exit_code == 1  # hermes + vault + bluebubbles down
     assert "hermes down" in result.output
     assert "agent-vault injection round-trip" in result.output
     assert "gmail proxy round-trip" in result.output

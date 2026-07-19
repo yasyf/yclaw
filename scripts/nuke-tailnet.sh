@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Delete yclaw device registrations from the tailnet via the Tailscale API. With an argument
-# (metal|hermes|bluebubbles) it deletes ONLY that node; with no argument (or `all`) it deletes every
-# yclaw node — metal, hermes, bluebubbles, and the retired `vault`. Needs TAILSCALE_API_KEY (from .env);
+# (metal|hermes|vault|bluebubbles) it deletes ONLY that node; with no argument (or `all`) it deletes
+# every yclaw node — metal, hermes, vault, and bluebubbles. Needs TAILSCALE_API_KEY (from .env);
 # no-op with a message if it's unset.
 #
 # WHY targeted deletes exist: yclaw nodes are PERSISTENT (non-ephemeral) tailnet nodes, so they no
@@ -14,11 +14,16 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
+# shellcheck source=scripts/lib/manifest.sh
+. "$REPO/scripts/lib/manifest.sh"
+
+# Tailnet nodes = manifest machines with a non-null tag (the control host has none).
+NODES="$(manifest_get '[.machines | to_entries[] | select(.value.tag != null) | .key] | join(" ")')"
 
 filter="${1:-all}"
-case "$filter" in
-  all|metal|hermes|bluebubbles) ;;
-  *) echo "usage: nuke-tailnet.sh [all|metal|hermes|bluebubbles]" >&2; exit 1 ;;
+case " all $NODES " in
+  *" $filter "*) ;;
+  *) echo "usage: nuke-tailnet.sh [all|$(printf '%s' "$NODES" | tr ' ' '|')]" >&2; exit 1 ;;
 esac
 
 # shellcheck disable=SC1091
@@ -29,11 +34,11 @@ if [ -z "${TAILSCALE_API_KEY:-}" ]; then
 fi
 
 if [ "$filter" = all ]; then
-  names='["hermes","metal","bluebubbles","vault"]'
-  tags='["tag:hermes","tag:metal","tag:bluebubbles"]'
+  names="$(manifest_get '[.machines | to_entries[] | select(.value.tag != null) | .key]')"
+  tags="$(manifest_get '[.machines | to_entries[] | select(.value.tag != null) | .value.tag]')"
 else
   names="[\"$filter\"]"
-  tags="[\"tag:$filter\"]"
+  tags="$(manifest_get "[.machines[\"$filter\"].tag]")"
 fi
 
 api="https://api.tailscale.com/api/v2"
