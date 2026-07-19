@@ -10,6 +10,8 @@ set -euo pipefail
 : "${SOPS_BUNDLE:=/run/secrets/secrets.sops.yaml}"
 : "${NODE_ENV_FILE:=/run/config/node.env}"
 : "${AGENT_VAULT_TOKEN_FILE:=/run/secrets/agent-vault-token}"
+: "${AGENT_VAULT_CA_FILE:=/run/config/agent-vault-ca.pem}"
+: "${CA_BUNDLE_FILE:=/etc/ssl/certs/ca-certificates.crt}"
 : "${TS_STATE_DIR:=/var/lib/tailscale}"
 : "${TS_SOCKET:=/var/run/tailscale/tailscaled.sock}"
 
@@ -111,6 +113,26 @@ PY
   log "rendered $dst"
 }
 
+# HTTPS_PROXY's MITM certs are signed by the agent-vault Root CA, absent from cacert. Replace the
+# baked $CA_BUNDLE_FILE symlink (the *_CA_BUNDLE target) with cacert + the mounted CA.
+install_ca() {
+  [ -s "$AGENT_VAULT_CA_FILE" ] || fatal "no agent-vault CA at $AGENT_VAULT_CA_FILE"
+  case "$(cat "$AGENT_VAULT_CA_FILE")" in
+    *"BEGIN CERTIFICATE"*) : ;;
+    *) fatal "$AGENT_VAULT_CA_FILE carries no PEM certificate (placeholder still mounted?)" ;;
+  esac
+  local tmp
+  tmp="$(mktemp)"
+  trap "rm -f -- '$tmp'" EXIT
+  # cat follows the symlink to the baked cacert bundle; append the MITM CA, then replace the symlink.
+  cat "$CA_BUNDLE_FILE" "$AGENT_VAULT_CA_FILE" > "$tmp"
+  rm -f "$CA_BUNDLE_FILE"
+  install -m 644 "$tmp" "$CA_BUNDLE_FILE"
+  rm -f "$tmp"
+  trap - EXIT
+  log "installed agent-vault CA into $CA_BUNDLE_FILE"
+}
+
 # tailscaled restart loop on a real tun (run adds --cap-add NET_ADMIN); the container needs its
 # OWN peer identity so the inbound BlueBubbles->hermes webhook (hermes.<tailnet>:8645) resolves.
 start_tailscale() {
@@ -157,6 +179,7 @@ main() {
   install -d -m 750 "$HERMES_HOME"
   render_config
   assemble_env
+  install_ca
   # No chown of the bind-mounted state: the virtiofs idmap makes it both impossible (errors on the
   # mount root) and unnecessary (uid 1000 already has host-enforced access). cc-notes ca8ac58f.
   start_tailscale

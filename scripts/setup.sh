@@ -425,10 +425,12 @@ setup_host_container() {
   for f in key.txt secrets.sops.yaml; do
     [ -f "$config_dir/$f" ] || die "$config_dir/$f missing — run 'just bootstrap' first (per-host age key + sops bundle)"
   done
-  [ -f "$node_config_dir/node.env" ]          || die "$node_config_dir/node.env missing — run 'just bootstrap' first"
-  [ -f "$node_config_dir/agent-vault-token" ] || die "$node_config_dir/agent-vault-token missing — run 'just bootstrap' first"
-  install -m 644 "$node_config_dir/node.env"          "$config_dir/node.env"
-  install -m 600 "$node_config_dir/agent-vault-token" "$config_dir/agent-vault-token"
+  [ -f "$node_config_dir/node.env" ]           || die "$node_config_dir/node.env missing — run 'just bootstrap' first"
+  [ -f "$node_config_dir/agent-vault-token" ]  || die "$node_config_dir/agent-vault-token missing — run 'just bootstrap' first"
+  [ -f "$node_config_dir/agent-vault-ca.pem" ] || die "$node_config_dir/agent-vault-ca.pem missing — run 'just bootstrap' first (agent-vault MITM CA for external egress)"
+  install -m 644 "$node_config_dir/node.env"           "$config_dir/node.env"
+  install -m 600 "$node_config_dir/agent-vault-token"  "$config_dir/agent-vault-token"
+  install -m 644 "$node_config_dir/agent-vault-ca.pem" "$config_dir/agent-vault-ca.pem"
 
   # Bake the tick's @@TOKENS@@ (login user); privileged steps (group, lib dir, socket dir) via sudo.
   local baked; baked="$(mktemp)"

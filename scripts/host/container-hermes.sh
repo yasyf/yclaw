@@ -137,6 +137,7 @@ if ! container_running "$NAME"; then
     -v "$CONFIG_DIR/key.txt:/run/secrets/age-key:ro" \
     -v "$CONFIG_DIR/secrets.sops.yaml:/run/secrets/secrets.sops.yaml:ro" \
     -v "$CONFIG_DIR/node.env:/run/config/node.env:ro" \
+    -v "$CONFIG_DIR/agent-vault-ca.pem:/run/config/agent-vault-ca.pem:ro" \
     -v "$CONFIG_DIR/agent-vault-token:/run/secrets/agent-vault-token:ro" \
     -v "$PROXY_SOCK:/run/hermes-docker-proxy/docker.sock" \
     "$IMAGE" >>"$LOG_DIR/container-run.log" 2>&1 \
