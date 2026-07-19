@@ -6,11 +6,12 @@ test, and the agent is isolated in a Linux VM that never holds a credential.
 
 ## Topology
 
-A bare macOS host boots three `tart` guests on one tailnet and serves the model
-plane itself. The host stays lean: Homebrew provides `tart`, Tailscale, `gum`,
-`packer`, and `restic`, and `scripts/setup.sh` supervises the guests via
-`com.yclaw.tart-*` launchd agents and installs the on-host serving stack — the
-rapid-mlx activator and the mlx-audio STT server, detailed below. All persistent
+A bare macOS host boots two `tart` guests and one Apple `container` on one tailnet
+and serves the model plane itself. The host stays lean: Homebrew provides `tart`,
+Tailscale, `gum`, `packer`, and `restic`, and `scripts/setup.sh` supervises the two
+macOS guests via `com.yclaw.tart-*` launchd agents and the hermes container via a
+resident `com.yclaw.container-hermes` LaunchAgent, and installs the on-host serving
+stack — the rapid-mlx activator and the mlx-audio STT server, detailed below. All persistent
 state and secrets live outside the repo in `~/.yclaw/state`; generated passwords
 live in a dedicated keychain at `~/Library/Keychains/yclaw.keychain-db`.
 
@@ -45,20 +46,28 @@ of host-specific identity and lets the same artifact serve any tailnet.
   runs only the BlueBubbles server and holds **no** credentials. Keeping iMessage
   on its own SIP-off node is what lets metal stay SIP-on and maximally locked
   down. Built by `packer/bluebubbles.pkr.hcl`.
-- **hermes** — a NixOS Linux gateway running `hermes-agent` in a Docker sandbox.
-  It holds **no** API credentials and reaches the internet only through
-  agent-vault's MITM proxy on metal (`HTTPS_PROXY=http://metal:14322`), trusting
-  its CA. It carries two tailnet-internal credentials by design —
-  `BLUEBUBBLES_PASSWORD` (BlueBubbles sits in `NO_PROXY` and cannot be
-  wire-injected) and `CLIPROXY_API_KEY` (cliproxy's own inbound API key — hermes
-  calls cliproxy directly and presents the bearer itself). Agent state
-  in `/var/lib/hermes` (honcho memory, sessions) is externalized to the host's
-  `~/.yclaw/state/hermes` over virtiofs, so it survives a VM rebuild and is backed
-  up.
+- **hermes** — the agent gateway: a Linux OCI image running `hermes-agent`, hosted as
+  an Apple `container` named `hermes` on the macOS host rather than a `tart` VM. The
+  agent runs **unprivileged** — the entrypoint `setpriv`-drops from root to uid 1000
+  with supplementary group 0, and group 0 is load-bearing: the virtiofs idmap maps the
+  host-gid-1000 proxy socket to guest gid 0, so carrying group 0 through the drop is what
+  keeps that socket reachable. `apple/container` has no boot-autostart or restart verb, so
+  the resident `com.yclaw.container-hermes` LaunchAgent ticks every 60 s and recreates the
+  container whenever it is absent — the lifecycle supervisor that keeps the agent
+  always-on. hermes holds **no** API credentials and reaches the internet only through
+  agent-vault's MITM proxy on metal (`HTTPS_PROXY=http://metal:14322`), trusting its CA.
+  It carries two tailnet-internal credentials by design — `BLUEBUBBLES_PASSWORD`
+  (BlueBubbles sits in `NO_PROXY` and cannot be wire-injected) and `CLIPROXY_API_KEY`
+  (cliproxy's own inbound API key — hermes calls cliproxy directly and presents the bearer
+  itself). Its code-exec sandbox mounts only the `hermes-docker-proxy` socket. Agent state
+  is **bind-mounted** from the host, not virtiofs: `~/.yclaw/state/hermes` mounts at
+  `/var/lib/hermes` (honcho memory, sessions) and `~/.yclaw/state/hermes-ts-state` at
+  `/var/lib/tailscale` (tailnet identity), so both survive a container rebuild and are
+  captured by `just backup`.
 
 The MLX model plane runs on the host itself (`yasyf-home`), not in any guest,
 because the host GPU serves roughly 86 tok/s against 17.9 in the VM.
-`scripts/host/model-activator.py` binds the host's tailnet address on `:8000`
+`athome serve activator` binds the host's tailnet address on `:8000`
 behind the `com.yclaw.rapid-mlx` launchd agent: it answers `/health` and
 `/v1/models` locally without waking the ~20 GB Qwen model, spawns the real
 `rapid-mlx` server on `127.0.0.1:18000` on the first inference request, and
@@ -73,8 +82,8 @@ for the Qwen and STT ids, and hermes' default plus fallback providers
 (`gpt-5.5`, then `gemini-3-pro-preview`, then local Qwen) live in `nixos/hermes.nix`.
 
 macOS's Virtualization.framework caps a host at two concurrent macOS guests;
-metal and bluebubbles spend exactly that budget, and hermes is Linux so it does
-not count against it.
+metal and bluebubbles spend exactly that budget, and hermes runs as an Apple
+`container` (a Linux micro-VM), not a macOS guest, so it does not count against it.
 
 ## Credential custody
 
@@ -199,7 +208,10 @@ All persistent state and secrets live in `~/.yclaw/state`, never in the repo:
 - `agent-vault/` — the broker's credential store.
 - `cli-proxy-api/auth/` — the cliproxy OAuth tokens.
 - `mlx-audio/` — the host STT venv.
-- `hermes/` — the externalized agent state (honcho memory, sessions).
+- `hermes/` — the externalized agent state (honcho memory, sessions), bind-mounted
+  into the container at `/var/lib/hermes`.
+- `hermes-ts-state/` — the hermes container's tailnet identity, bind-mounted at
+  `/var/lib/tailscale` so the node keeps its registration across a container rebuild.
 
 The model weights are not in the state tree at all: rapid-mlx and the STT server
 read the host's regular Hugging Face hub cache (`~/.cache/huggingface/hub`,

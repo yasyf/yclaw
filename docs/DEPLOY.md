@@ -17,8 +17,9 @@ the shortest correct path for an operator who already has the repo cloned.
   `age-keygen`, `sops`, `openssl`, `jq`, `python3`, `security`, `rsync`, `curl`,
   and `nix` (the hermes image builds inside a Linux builder VM). `just bootstrap`
   preflights all of them and stops if one is missing.
-- Disk headroom: the model cache is ~20–25 GB, and the VM disks are `metal` 200 GB,
-  `bluebubbles` ~68 GB, and `hermes` 64 GB.
+- Disk headroom: the model cache is ~20–25 GB, and the guest VM disks are `metal`
+  200 GB and `bluebubbles` ~68 GB. hermes now ships as an Apple `container` OCI image
+  built by `nix`, not a VM disk.
 - A dedicated Apple ID for iMessage and a Tailscale tailnet the host already belongs to.
   (Both macOS guests clone digest-pinned cirruslabs Tahoe base images — `metal` the SIP-on
   `macos-tahoe-vanilla`, `bluebubbles` the SIP-off `macos-tahoe-base` — so no operator-supplied
@@ -48,7 +49,7 @@ the shortest correct path for an operator who already has the repo cloned.
   keep their registration across a reboot, sleep, or network blip and reconnect from on-disk
   tailscaled state with no re-auth. That is what stops the always-on stack from being stranded
   off the tailnet. Because a persistent node no longer self-reaps, teardown (`just destroy` /
-  `nuke`) and the hermes disk-replace delete the old device explicitly (`scripts/nuke-tailnet.sh`).
+  `nuke`) deletes the old device registrations explicitly (`scripts/nuke-tailnet.sh`).
 
 First boot is **long** — hours. It pulls the cirruslabs base images, builds the
 guests, and pulls the model weights.
@@ -80,37 +81,67 @@ The wizard runs these stages autonomously:
    decrypts only what it owns. It also exchanges the Tailscale OAuth client for a
    short-lived access token and mints one persistent, single-use, tagged auth key per
    node, so each guest joins the tailnet under its own `tag:<node>`.
-4. **Assemble the hermes node-config share** at `~/.config/yclaw/vm-secrets`:
+4. **Assemble the hermes container config** at `~/.config/yclaw/vm-secrets`:
    hermes's `hosts/hermes/{key.txt,secrets.sops.yaml}` staged in as `key.txt` and
    `secrets.sops.yaml`, plus a `node.env` carrying the non-secret BlueBubbles
-   allowlist and home channel. `seedNodeConfig` installs these into the guest on
-   first boot. metal reads its own `hosts/metal/` over a narrow read-only share.
+   allowlist and home channel. The hermes container bind-mounts these read-only at
+   runtime and the entrypoint decrypts the bundle in-container. metal reads its own
+   `hosts/metal/` over a narrow read-only share.
 5. **Apply the host config** by running `scripts/setup.sh` — Homebrew tooling,
    `~/.yclaw/state`, and the `com.yclaw.tart-*` launchd runners.
 6. **Build the macOS guests** (`metal`, then `bluebubbles`) with Packer, feeding
    inputs as `PKR_VAR_*` exports sourced from the yclaw keychain, then kickstarts
    their launchd agents to boot them.
-7. **Build the hermes image.** It fetches the real agent-vault MITM CA from
-   `http://metal:14321/v1/mitm/ca.pem` (retrying until metal is up), writes it
-   into a gitignored `.build/` copy of the repo, builds the image from there
-   (the tracked tree stays clean), and disk-replaces it into the `hermes` tart VM.
-   With metal up, it also mints a per-host agent-vault proxy token
-   (`agent rotate hermes --token-only` over `tailscale ssh`) and stages it into the
-   `hermes` node-config share; `hermes` builds `HTTPS_PROXY` from it on first boot, so
-   the credential-injection plane comes up working — brokered calls no longer 407.
-8. **Boot hermes** by kickstarting `com.yclaw.tart-hermes`.
-9. **Onboard.** Once `hermes` answers over `tailscale ssh`, the wizard launches the
-   interactive `hermes-onboard` (as the `hermes` user): it seeds your profile
-   (`USER.md`), the agent persona (`SOUL.md`), and the Honcho peer identity — the
-   user-specific context the declarative build can't supply. It only writes files that
-   are absent, so re-running is safe:
+7. **Stage the hermes container secrets.** With metal up, it mints a per-host
+   agent-vault proxy token (`agent rotate hermes --token-only` over `tailscale ssh`)
+   and stages it into the hermes container config, and fetches the agent-vault MITM CA
+   from `http://metal:14321/v1/mitm/ca.pem` (retrying until metal answers). The
+   entrypoint builds `HTTPS_PROXY` from the token when the container starts.
+
+When the autonomous steps finish, the wizard prints the human gates — including the
+gated hermes container bring-up in the next section — and stops cleanly.
+
+## Bring up the hermes container
+
+hermes runs as an Apple `container`, not a `tart` VM, and `apple/container` has no
+boot-autostart or restart verb, so bring-up is a deliberate, root-assisted step the
+unattended wizard does not run. Do it once, in order:
+
+1. **Build and load the image.** Build the OCI image from the same
+   `nixosConfigurations.hermes` the settings live in, then load it into `container`:
 
    ```sh
-   tailscale ssh admin@hermes -- sudo -u hermes -H hermes-onboard
+   ./scripts/build-container-image.sh hermes-container-image hermes-agent:latest
    ```
 
-When the autonomous steps finish, the wizard prints the human gates and stops
-cleanly.
+2. **Author the supervisor and egress firewall.** `host-container` stages the
+   container's secrets, builds the `hermes-docker-proxy`, and writes the
+   `com.yclaw.container-hermes` supervisor and the `com.yclaw.container-pf-refresh`
+   egress-`pf` daemon without loading them:
+
+   ```sh
+   ./scripts/setup.sh host-container
+   ```
+
+3. **Load the supervisor and egress firewall.** The previous step prints these two
+   lines; run them to start the supervisor and the egress `pf` daemon:
+
+   ```sh
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.yclaw.container-hermes.plist
+   sudo launchctl bootstrap system /Library/LaunchDaemons/com.yclaw.container-pf-refresh.plist
+   ```
+
+   The supervisor creates the `hermes` container on its first tick, then keeps it alive
+   — it ticks every 60 s and recreates the container whenever it is absent.
+
+4. **Seed the agent identity.** The image ships no `hermes-onboard` step; the agent
+   reads its identity from the bind-mounted state dir. Write your profile (`USER.md`) and
+   the agent persona (`SOUL.md`) into `~/.yclaw/state/hermes/.hermes/` on the host — the
+   container sees them at `/var/lib/hermes/.hermes/` — then confirm the gate:
+
+   ```sh
+   uv run yclaw onboard --gate hermes-identity
+   ```
 
 ## Clear the human gates
 
@@ -122,10 +153,11 @@ inside a zellij session:
 just onboard
 ```
 
-It surfaces the Tailscale SSH re-auth URL, seeds the hermes identity, runs the two
-cli-proxy logins in their own panes, connects Google OAuth, and walks the Apple-ID
-bring-up — then runs `just validate` and `just smoke`. The manual equivalents below
-are the reference for what each gate does.
+It surfaces the Tailscale SSH re-auth URL, runs the two cli-proxy logins in their own
+panes, connects Google OAuth, and walks the Apple-ID bring-up — then runs
+`just validate` and `just smoke`. The manual equivalents below are the reference for
+what each gate does. The hermes agent identity is seeded separately, during the
+container bring-up above.
 
 1. **Apple-ID iMessage sign-in (2FA) on `bluebubbles`** — the one irreducibly-human
    step. The image already ships BlueBubbles.app (from a pinned, sha256-verified GitHub
@@ -192,8 +224,9 @@ Once the gates are clear, confirm the stack and close out the operator follow-up
 ## State layout
 
 All host-resident persistent state lives under `~/.yclaw/state`, mounted into the
-guests over virtiofs. The guests write through to the host, so the state survives
-destroying and rebuilding a VM.
+guests over virtiofs and bind-mounted into the hermes container. Writes pass through
+to the host, so the state survives destroying and rebuilding a VM or recreating the
+container.
 
 | Path | Holds | Replaceable? |
 |------|-------|--------------|
@@ -202,7 +235,8 @@ destroying and rebuilding a VM.
 | `agent-vault/` | credential-broker DB: owner account, static keys, the Google OAuth refresh token, minted agent tokens | **No** — re-provisioning re-mints tokens hermes would need re-injected |
 | `cli-proxy-api/auth/` | Codex/Gemini OAuth sessions | Yes — re-run the `--login` flows |
 | `mlx-audio/` | the host STT venv (`host-venv/`) | Yes — rebuilt by `setup.sh host-serving` |
-| `hermes/` | hermes agent state (honcho memory, sessions), externalized from the VM's `/var/lib/hermes` | **No** — agent memory and sessions survive only via this share |
+| `hermes/` | hermes agent state (honcho memory, sessions), bind-mounted into the container at `/var/lib/hermes` | **No** — agent memory and sessions survive only via this bind mount |
+| `hermes-ts-state/` | the hermes container's tailnet identity, bind-mounted at `/var/lib/tailscale` | **No** — losing it forces a re-mint and re-auth of the `hermes` node |
 
 The **irreplaceable** set is small: everything under `hosts/` (every per-host key
 and bundle) and `agent-vault/`.
@@ -310,12 +344,13 @@ human input. One path per node:
   `com.yclaw.tart-*` launchd runners.
 - **metal** — runs `metal-redeploy` in the guest (`darwin-rebuild switch`); the relay
   daemons restart and node identity survives.
-- **hermes** — in-guest `nixos-rebuild switch` against `/var/lib/yclaw-repo#hermes`
-  (the read-only repo share); node identity and `/var/lib/hermes` survive. Gated by a
-  `nixos-rebuild dry-activate`: a code deploy leaves the `var-lib-hermes`
-  virtiofs mounts untouched, but a change that would (re)mount a virtiofs tag mid-session hits
-  Apple's tag re-enumeration limit (`virtio-fs: tag not found`), so the gate auto-routes those
-  to the disk-replace fallback instead.
+- **hermes** — a container reload. `./scripts/redeploy.sh hermes` force-removes the
+  `hermes` container (`container rm -f hermes`) and the `com.yclaw.container-hermes`
+  supervisor recreates it from the current `hermes-agent:latest` image on its next tick;
+  the bind-mounted state and tailnet identity survive, so node identity and agent memory
+  persist. Config lives in the image, so to ship a change rebuild and reload the image
+  first (`./scripts/build-container-image.sh hermes-container-image hermes-agent:latest`),
+  then redeploy.
 - **bluebubbles** — `scripts/bluebubbles-setup.sh reconfigure` in the guest; re-seeds
   `config.db` (a brief BlueBubbles restart) and never touches the iMessage session on the
   VM disk.
@@ -350,10 +385,10 @@ the virtiofs automount, and the sops decrypt all happen at boot, not at
    - every `org.nixos.*` daemon is running: `launchctl print system/org.nixos.rapid-mlx`
      (and the rest of the labels in `machines.json`) — on metal, `rapid-mlx` and `mlx-audio`
      are now socat relays to the host, not model servers;
-   - the relay reaches the host end to end:
-     `tailscale ssh root@hermes -- curl -fsS http://metal:8000/v1/models` returns the model list,
-     served by the host's `rapid-mlx` activator — nothing loads in-guest, and the first request
-     after an idle unload warms the model on the host, so allow a generous timeout;
+   - the relay reaches the host end to end: `uv run yclaw doctor hermes --live` runs a
+     cross-container fetch of `http://metal:8000/v1/models` and reports it served by the
+     host's `rapid-mlx` activator — nothing loads in-guest, and the first request after an
+     idle unload warms the model on the host, so allow a generous timeout;
    - the provision oneshot's last exit was 0;
    - agent-vault answers: `curl -fs http://127.0.0.1:14321/health` (from the
      guest) — or `uv run yclaw status metal` from the host, which probes every

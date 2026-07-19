@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The hermes container supervisor and its egress firewall. `apple/container` has no
+  boot-autostart or restart verb, so a resident `com.yclaw.container-hermes` LaunchAgent
+  ticks `/usr/local/lib/yclaw/container-hermes.sh` every 60 s under `KeepAlive`,
+  re-execing and recreating the `hermes` container whenever it is absent — the lifecycle
+  fix that keeps the agent always-on. The `com.yclaw.container-pf-refresh` LaunchDaemon
+  holds the container's egress `pf` rules, and the container entrypoint (`setpriv`-drops
+  root to uid 1000 + supplementary group 0, then renders `config.yaml` and the environment
+  from the baked `services.hermes-agent.settings`) replaces the old `hermes-agent.service`
+  systemd unit. From-scratch bring-up is a gated manual step — build and load the
+  `hermes-agent:latest` image, run `./scripts/setup.sh host-container`, then load the
+  supervisor — not part of the unattended `just bootstrap`.
 - `com.yclaw.metal-nightly-bounce` — a host LaunchAgent (`scripts/setup.sh`, listed in
   `machines.json`, torn down by `scripts/destroy.sh`) that stops the metal VM at 05:00
   daily. macOS guests have no memory balloon, so the VM service's host RSS ratchets to
@@ -84,13 +95,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every generated password (agent-vault master, per-VM admin, BlueBubbles server),
   siloed from your login keychain and auto-unlocked via one
   `yclaw-keychain-password` entry.
-- End-of-bootstrap onboarding. Once `hermes` is reachable, `just bootstrap`
-  auto-launches an interactive `hermes-onboard` over `tailscale ssh` that seeds the
-  user-specific context the declarative build can't supply: your profile (`USER.md`),
-  the agent persona (`SOUL.md`), and the Honcho peer identity. It runs as the `hermes`
-  user, only writes files that are absent (so the agent's own later edits are never
-  overwritten), and is re-runnable: `tailscale ssh admin@hermes -- sudo -u hermes -H
-  hermes-onboard`.
+- End-of-bootstrap agent onboarding seeds the user-specific context the declarative
+  build can't supply — your profile (`USER.md`) and the agent persona (`SOUL.md`). With
+  hermes now a container, this is a gated manual step, not an auto-launched
+  `hermes-onboard` over `tailscale ssh`: write the files into the bind-mounted state dir
+  (`~/.yclaw/state/hermes/.hermes/`, which the container reads at `/var/lib/hermes/.hermes/`)
+  and confirm with `uv run yclaw onboard --gate hermes-identity`. Only absent files are
+  written, so the agent's own later edits are never overwritten.
 - The `just bootstrap` recipe. The documented entrypoint (`scripts/bootstrap.sh`) had
   no matching recipe, so `just bootstrap` failed with "unknown recipe"; it now runs the
   wizard.
@@ -102,8 +113,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the tailnet over the Tailscale API. The next `just bootstrap` regenerates the rest.
 
 ### Changed
+- hermes moved from a `tart` NixOS VM (Virtualization.framework, 4 vCPU / 4 GiB) to an
+  Apple `container` OCI container named `hermes` on the macOS host. The agent runs
+  **unprivileged**: uid 1000 with supplementary group 0, which the entrypoint reaches by
+  `setpriv`-dropping from root. Group 0 is load-bearing — the virtiofs idmap maps the
+  host-gid-1000 proxy socket to guest gid 0, so carrying group 0 through the drop is what
+  keeps that socket reachable. Agent state is **bind-mounted**, not virtiofs:
+  `~/.yclaw/state/hermes` → `/var/lib/hermes` (honcho memory, sessions) and
+  `~/.yclaw/state/hermes-ts-state` → `/var/lib/tailscale` (tailnet identity), with the
+  restic file-level backup unchanged. The config source is unchanged in spirit —
+  `nixos/hermes.nix`'s `services.hermes-agent.settings` still feeds the image (the
+  `hermes-container-image` flake output imports `nixosConfigurations.hermes`) and the
+  entrypoint renders `config.yaml` plus the environment from it; hermes.nix drops only its
+  tart-only wiring (the `hermes-agent.service` systemd unit and the `/var/lib/hermes` +
+  `/var/lib/yclaw-repo` virtiofs `fileSystems`), guest-eval-verified for zero settings
+  drift. The model plane is unchanged: the container still calls `metal:8000` (rapid-mlx),
+  `metal:8317` (cliproxy), and `metal:8765` (STT), egresses external traffic through
+  `HTTPS_PROXY=…@metal:14322`, and the code-exec sandbox chain (`hermes-docker-proxy` →
+  socktainer → nested Apple containers, with the agent mounting only the proxy socket) is
+  untouched.
+- The hermes deploy surface is repointed off `tart`/`nixos-rebuild` onto the container.
+  `redeploy.sh hermes` is now a container reload (`container rm -f` plus a supervisor
+  recreate), not an in-guest `nixos-rebuild switch`; `remint-hermes-authkey.sh` re-encrypts
+  the per-host sops bundle, wipes `hermes-ts-state`, and restarts the container instead of
+  disk-replacing a VM; and the `yclaw` CLI (`status`/`doctor`/`logs`/`ssh`/`restart`/`wait`/
+  `onboard`) drives hermes through `container exec` and host-side checks (the last-ok marker,
+  `container logs`) rather than `tailscale ssh` + systemd + `sudo`.
 - The model plane moved from the metal guest to the host. `yasyf-home` now serves
-  rapid-mlx behind an **idle-unload activator** (`scripts/host/model-activator.py`,
+  rapid-mlx behind an **idle-unload activator** (`athome serve activator`,
   tailnet-IP `:8000` — health and `/v1/models` answer locally without waking the
   model; the ~20 GB child is reaped after 30 idle minutes) and the granite-speech
   STT on `:8765` (~86 tok/s on-host vs 17.9 in-guest). metal's `rapid-mlx` and
@@ -309,6 +346,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is absent, instead of emitting an empty string a consumer would happily interpolate.
 
 ### Removed
+- The `tart`-hosted hermes VM and its deploy path. The `com.yclaw.tart-hermes` runner is
+  gone from `setup.sh`, `destroy.sh`, and `bootstrap.sh`; the in-guest `nixos-rebuild`
+  redeploy flow for hermes gives way to the container reload; and `deploy-vm.sh` — the
+  hermes disk-replace builder — is retired to a stub, since hermes now ships as an OCI
+  image rather than a VM disk.
 - The in-guest model install on metal: the rapid-mlx and mlx-audio venvs (deleted
   at activation, the same idiom as the omlx retirement), the `python@3.14` brew,
   the python-framework application-firewall entries, and the `hfhub`/`mlxaudio`
