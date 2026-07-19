@@ -107,6 +107,7 @@ class Keychain:
     agent_vault_master: str
     ts_oauth_client_id: str
     ts_oauth_client_secret: str
+    corten_hardware_key: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +190,7 @@ def _parse_host_paths(d: dict[str, Any]) -> HostPaths:
             agent_vault_master=kc["agent_vault_master"],
             ts_oauth_client_id=kc["ts_oauth_client_id"],
             ts_oauth_client_secret=kc["ts_oauth_client_secret"],
+            corten_hardware_key=kc["corten_hardware_key"],
         ),
     )
 

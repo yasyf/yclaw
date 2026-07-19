@@ -1,5 +1,6 @@
 import subprocess
 
+import pytest
 from click.testing import CliRunner
 
 from yclaw import keychain, secret
@@ -55,7 +56,7 @@ def test_secret_sops_decrypts_with_host_key(monkeypatch, tmp_path):
     host_dir.mkdir(parents=True)
     key = host_dir / "key.txt"
     bundle = host_dir / "secrets.sops.yaml"
-    key.write_text("AGE-SECRET-KEY-1\n")
+    key.write_text("stub-age-key\n")
     bundle.write_text("enc: data\n")
     monkeypatch.setattr(secret.Path, "home", lambda: tmp_path)
     seen = {}
@@ -83,3 +84,40 @@ def test_secret_help():
     result = CliRunner().invoke(main, ["secret", "--help"])
     assert result.exit_code == 0
     assert "Read keychain secrets" in result.output
+
+
+@pytest.mark.parametrize(("present", "exit_code"), [(True, 0), (False, 1)], ids=["present", "absent"])
+def test_secret_has_exit_code_reflects_presence(monkeypatch, present, exit_code):
+    seen = {}
+
+    def fake_has(service):
+        seen["service"] = service
+        return present
+
+    monkeypatch.setattr(keychain, "has", fake_has)
+    result = CliRunner().invoke(main, ["secret", "has", "cliproxy-api-key"])
+    assert result.exit_code == exit_code
+    assert seen == {"service": "yclaw-cliproxy-api-key"}
+
+
+def test_secret_set_reads_value_from_stdin(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(keychain, "write", lambda service, value: seen.update(service=service, value=value))
+    result = CliRunner().invoke(main, ["secret", "set", "cliproxy-api-key", "--value", "-"], input="hunter2\n")
+    assert result.exit_code == 0
+    assert seen == {"service": "yclaw-cliproxy-api-key", "value": "hunter2"}
+
+
+def test_secret_set_writes_literal_value(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(keychain, "write", lambda service, value: seen.update(service=service, value=value))
+    result = CliRunner().invoke(main, ["secret", "set", "agent-vault-master", "--value", "vvv"])
+    assert result.exit_code == 0
+    assert seen == {"service": "yclaw-agent-vault-master", "value": "vvv"}
+
+
+def test_secret_set_rejects_empty_value(monkeypatch):
+    monkeypatch.setattr(keychain, "write", lambda *a: pytest.fail("write must not be called for an empty value"))
+    result = CliRunner().invoke(main, ["secret", "set", "agent-vault-master", "--value", "-"], input="\n")
+    assert result.exit_code == 2
+    assert "empty secret value" in result.output

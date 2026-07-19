@@ -260,7 +260,8 @@
       "login_unlock": "yclaw-keychain-password",
       "agent_vault_master": "yclaw-agent-vault-master",
       "ts_oauth_client_id": "yclaw-ts-oauth-client-id",
-      "ts_oauth_client_secret": "yclaw-ts-oauth-client-secret"
+      "ts_oauth_client_secret": "yclaw-ts-oauth-client-secret",
+      "corten_hardware_key": "yclaw-corten-hardware-key"
     }
   },
   "debloat": {

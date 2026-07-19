@@ -79,3 +79,40 @@ def test_missing_keychain_file_raises(tmp_path, monkeypatch):
     with pytest.raises(KeychainError, match="not found"):
         keychain.read("yclaw-metal-admin-pass")
     assert called is False
+
+
+def test_ensure_seeds_login_password_before_creating_the_keychain(tmp_path, monkeypatch):
+    path = tmp_path / "yclaw.keychain-db"  # absent → ensure() proceeds
+    monkeypatch.setattr(keychain, "KEYCHAIN_PATH", path)
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(keychain.subprocess, "run", fake_run)
+    keychain.ensure()
+
+    subs = [c[1] for c in calls]
+    assert subs[0] == "add-generic-password"  # the login-keychain write happens FIRST
+    assert "yclaw-keychain-password" in calls[0]
+    assert str(path) not in calls[0]  # ...to the login keychain, not the dedicated one
+    assert subs.index("add-generic-password") < subs.index("create-keychain")
+
+
+def test_ensure_login_write_failure_aborts_before_create(tmp_path, monkeypatch):
+    path = tmp_path / "yclaw.keychain-db"
+    monkeypatch.setattr(keychain, "KEYCHAIN_PATH", path)
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        rc = 1 if argv[1] == "add-generic-password" else 0  # background session: login write rejected
+        return subprocess.CompletedProcess(argv, rc, stdout="", stderr="")
+
+    monkeypatch.setattr(keychain.subprocess, "run", fake_run)
+    with pytest.raises(KeychainError, match="Terminal.app"):
+        keychain.ensure()
+
+    assert "create-keychain" not in [c[1] for c in calls]  # never created
+    assert not path.exists()

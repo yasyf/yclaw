@@ -1,7 +1,9 @@
-"""``yclaw secret`` — read fleet secrets from the dedicated keychain and decrypt per-host sops bundles.
+"""``yclaw secret`` — read, write, and reconcile fleet secrets in the dedicated keychain.
 
 ``secret read`` writes the value to stdout and nothing else — no logging, no stderr — so it is safe to
 capture in a shell. ``secret sops`` decrypts a host's bundle with that host's staged age key.
+``secret reconcile`` (see ``reconcile.py``) converges the keychain and per-host sops bundles onto the
+secrets manifest.
 """
 
 import dataclasses
@@ -14,6 +16,7 @@ import click
 from . import keychain, output
 from .keychain import KeychainError
 from .manifest import Manifest, load_manifest
+from .reconcile import durables, reconcile
 
 
 def _aliases(manifest: Manifest) -> dict[str, str]:
@@ -25,7 +28,17 @@ def _aliases(manifest: Manifest) -> dict[str, str]:
     for machine in manifest.machines.values():
         if machine.admin_pass_keychain is not None:
             aliases[f"{machine.name}-admin-pass"] = machine.admin_pass_keychain
+    for durable in durables(manifest):
+        aliases[durable.alias] = durable.service
     return aliases
+
+
+def _resolve(alias: str) -> str:
+    aliases = _aliases(load_manifest())
+    try:
+        return aliases[alias]
+    except KeyError:
+        raise click.BadParameter(f"unknown alias {alias!r}; try `yclaw secret list`", param_hint="ALIAS") from None
 
 
 @click.group("secret")
@@ -44,13 +57,37 @@ def list_() -> None:
 @click.argument("alias")
 def read(alias: str) -> None:
     """Print the value of the secret named ALIAS to stdout."""
-    aliases = _aliases(load_manifest())
-    try:
-        service = aliases[alias]
-    except KeyError:
-        raise click.BadParameter(f"unknown alias {alias!r}; try `yclaw secret list`", param_hint="ALIAS") from None
+    service = _resolve(alias)
     try:
         click.echo(keychain.read(service))
+    except KeychainError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@secret.command("has")
+@click.argument("alias")
+def has_(alias: str) -> None:
+    """Exit 0 if the secret named ALIAS exists in the keychain, 1 if not."""
+    service = _resolve(alias)
+    try:
+        present = keychain.has(service)
+    except KeychainError as exc:
+        raise click.ClickException(str(exc)) from exc
+    raise SystemExit(output.EXIT_CLEAN if present else output.EXIT_FAIL)
+
+
+@secret.command("set")
+@click.argument("alias")
+@click.option("--value", required=True, help="The secret value; '-' reads it from stdin.")
+def set_(alias: str, value: str) -> None:
+    """Write the secret named ALIAS into the dedicated keychain."""
+    service = _resolve(alias)
+    if value == "-":
+        value = click.get_text_stream("stdin").read().rstrip("\n")
+    if not value:
+        raise click.BadParameter("empty secret value", param_hint="--value")
+    try:
+        keychain.write(service, value)
     except KeychainError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -67,3 +104,6 @@ def sops(host: str) -> None:
         raise click.ClickException(f"no sops bundle for {host!r} at {bundle} — run `just bootstrap` first")
     env = {**os.environ, "SOPS_AGE_KEY_FILE": str(key)}
     raise SystemExit(subprocess.run(["sops", "-d", str(bundle)], env=env).returncode)
+
+
+secret.add_command(reconcile)
