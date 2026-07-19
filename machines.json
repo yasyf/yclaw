@@ -74,18 +74,16 @@
       }
     },
     "hermes": {
-      "os": "nixos",
-      "managed_by": "nixos",
-      "tart_vm": "hermes",
+      "os": "linux",
+      "managed_by": "container",
+      "tart_vm": null,
+      "container": "hermes",
       "tag": "tag:hermes",
-      "ssh": { "transport": "tailscale", "user": "root" },
+      "ssh": null,
       "admin_pass_keychain": null,
-      "shares": ["sops", "hermesstate", "repo"],
+      "shares": null,
       "services": {
-        "hermes-agent": { "systemd": "hermes-agent.service" },
-        "hermes-docker-proxy": { "systemd": "hermes-docker-proxy.service" },
-        "docker": { "systemd": "docker.service" },
-        "tailscaled": { "systemd": "tailscaled.service" }
+        "hermes-agent": { "container_proc": "hermes gateway run" }
       }
     },
     "bluebubbles": {
@@ -130,13 +128,6 @@
           "logs": [
             "~/Library/Logs/Tart/metal.log",
             "~/Library/Logs/Tart/metal.error.log"
-          ]
-        },
-        "tart-hermes": {
-          "launchd": { "domain": "gui", "label": "com.yclaw.tart-hermes" },
-          "logs": [
-            "~/Library/Logs/Tart/hermes.log",
-            "~/Library/Logs/Tart/hermes.error.log"
           ]
         },
         "tart-bluebubbles": {

@@ -1,16 +1,18 @@
 """``yclaw doctor`` — ``status`` plus host-vantage checks that a single node cannot self-report.
 
 The extra checks mirror ``scripts/validate-hardening.sh``: the pf gate (host → metal service ports),
-metal's share set against the manifest, hermes's own ``hermes doctor``, and a hermes → metal cross-VM
-reachability curl. ``--live`` adds the agent-vault credential-plane checks; the parts that need a human
-or a quota-consuming call from hermes are reported ``manual``. Exit is ``1`` if any hard check fails.
+metal's share set against the manifest, the hermes container's agent-process + supervisor-marker
+health, and a hermes → metal cross-container reachability probe (``python3 urllib`` from inside the
+container — the image ships no ``curl``). ``--live`` adds the agent-vault credential-plane checks; the
+parts that need a human or a quota-consuming call from hermes are reported ``manual``. Exit is ``1`` if
+any hard check fails.
 """
 
 import re
 
 import click
 
-from . import output, probes, remote, status
+from . import container, output, probes, remote, status
 from .dispatch import resolve_machine, run
 from .manifest import Machine, load_manifest
 from .output import status_label
@@ -19,6 +21,10 @@ from .probes import ProbeResult, Status
 PROXY_RE = re.compile(r"^HTTPS_PROXY=http://av_agt_[^:]+:hermes@metal:14322")
 CHECK_HEADERS = ["CHECK", "STATE", "DETAIL"]
 SHARES_ROOT = "/Volumes/My Shared Files"
+# root:root 600, ACL-readable by the agent uid — read as the container's default exec user (root).
+HERMES_ENV_PATH = "/var/lib/hermes/.hermes/.env"
+# The image ships python3 but no curl; urllib raises (nonzero exit) on any non-2xx or transport error.
+CROSS_PROBE = 'python3 -c \'import urllib.request; urllib.request.urlopen("http://metal:8000/v1/models",timeout=8)\''
 
 
 def _metal_ports(metal: Machine) -> list[int]:
@@ -56,25 +62,33 @@ async def _share_diff(metal: Machine) -> ProbeResult:
     return ProbeResult("metal shares vs manifest", Status.PASS, f"{len(expected)} shares match the manifest")
 
 
-async def _hermes_doctor(hermes: Machine) -> ProbeResult:
-    result = await remote.run(hermes, "hermes doctor", timeout=60)
-    tail = next((line for line in reversed(result.stdout.splitlines()) if line.strip()), f"exit {result.returncode}")
-    passed = result.returncode == 0
-    return ProbeResult("hermes doctor", Status.PASS if passed else Status.FAIL, tail)
+async def _hermes_doctor(hermes: Machine) -> list[ProbeResult]:
+    # No `hermes doctor` binary in the image: agent-process liveness + the host supervisor marker.
+    service = hermes.services["hermes-agent"]
+    proc = await probes.container_proc_state(hermes, service, timeout=status.PROBE_TIMEOUT)
+    marker = await probes.container_marker_fresh(
+        hermes,
+        path=probes.container_marker_path(hermes),
+        max_age_s=probes.CONTAINER_MARKER_MAX_AGE_S,
+        timeout=status.PROBE_TIMEOUT,
+    )
+    return [
+        ProbeResult("hermes agent (container)", proc.status, proc.detail),
+        ProbeResult("hermes supervisor marker", marker.status, marker.detail),
+    ]
 
 
 async def _cross_vm_curl(hermes: Machine) -> ProbeResult:
-    result = await remote.run(hermes, "curl -sf --max-time 8 http://metal:8000/v1/models", timeout=15)
+    result = await container.exec_run(hermes.container, CROSS_PROBE, timeout=15)
     passed = result.returncode == 0
     return ProbeResult(
-        "hermes→metal:8000 (rapid-mlx)", Status.PASS if passed else Status.FAIL, f"curl exit {result.returncode}"
+        "hermes→metal:8000 (rapid-mlx)", Status.PASS if passed else Status.FAIL, f"urllib exit {result.returncode}"
     )
 
 
 async def _proxy_config(hermes: Machine) -> ProbeResult:
-    cmd = 'sudo -u hermes -H sh -c \'grep "^HTTPS_PROXY=" "$HOME/.hermes/.env"\''
-    result = await remote.run(hermes, cmd, timeout=15)
-    if PROXY_RE.match(result.stdout.strip()):
+    result = await container.exec_run(hermes.container, f"cat {HERMES_ENV_PATH}", timeout=15)
+    if any(PROXY_RE.match(line) for line in result.stdout.splitlines()):
         return ProbeResult("agent-vault HTTPS_PROXY", Status.PASS, "routes through av_agt_…@metal:14322")
     return ProbeResult("agent-vault HTTPS_PROXY", Status.FAIL, "not the agent-vault proxy (av_agt_…@metal:14322)")
 
@@ -88,8 +102,10 @@ async def _checks(machines: list[Machine], tailnet: dict[str, ProbeResult], live
         checks.extend(await _pf_gate(by_name["metal"]))
         if "metal" in up:
             checks.append(await _share_diff(by_name["metal"]))
+    # Container liveness is tailnet_node + a running container: the guest's own tailscaled is what puts
+    # it on the tailnet, so `up` (never ssh) gates the host-local `container exec` health checks.
     if "hermes" in by_name and "hermes" in up:
-        checks.append(await _hermes_doctor(by_name["hermes"]))
+        checks.extend(await _hermes_doctor(by_name["hermes"]))
         checks.append(await _cross_vm_curl(by_name["hermes"]))
 
     if not live:

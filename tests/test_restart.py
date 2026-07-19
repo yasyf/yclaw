@@ -3,7 +3,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from yclaw import probes, remote, restart
+from yclaw import container, probes, remote, restart
 from yclaw.cli import main
 from yclaw.probes import ProbeResult, Status
 from yclaw.remote import RemoteResult
@@ -29,18 +29,57 @@ def test_restart_launchd_kickstart(monkeypatch):
     assert "healthy" in result.output
 
 
-def test_restart_systemd(monkeypatch):
+def test_restart_container_force_recreates_then_waits_for_supervisor(monkeypatch):
+    # apple/container has no `restart`: the kick is `container rm -f` (host-local), then poll the
+    # /proc scan until the com.yclaw.container-hermes supervisor brings the guest back.
+    monkeypatch.setattr(restart, "CONTAINER_RECREATE_POLL", 0.001)
     seen = []
 
     async def fake_run(machine, command, *, timeout=30, capture=True):
         seen.append(command)
         return RemoteResult(0, "", "")
 
+    proc_states = iter([Status.FAIL, Status.PASS])  # gone right after rm, then recreated
+
+    async def fake_proc(machine, service, *, timeout=30):
+        return ProbeResult(service.name, next(proc_states), "process alive")
+
     monkeypatch.setattr(remote, "run", fake_run)
+    monkeypatch.setattr(probes, "container_proc_state", fake_proc)
     result = CliRunner().invoke(main, ["restart", "hermes", "hermes-agent"])
     assert result.exit_code == 0
-    assert seen == ["systemctl restart hermes-agent.service"]
-    assert "restarted hermes-agent on hermes" in result.output
+    assert seen == [f"{container.CONTAINER_BIN} rm -f hermes"]
+    assert "removed hermes" in result.output
+    assert "recreated hermes-agent on hermes" in result.output
+
+
+def test_restart_container_rm_failure_fails_loudly(monkeypatch):
+    async def fake_run(machine, command, *, timeout=30, capture=True):
+        return RemoteResult(1, "", "no such container\n")
+
+    monkeypatch.setattr(remote, "run", fake_run)
+    result = CliRunner().invoke(main, ["restart", "hermes", "hermes-agent"])
+    assert result.exit_code == 1
+    assert "container rm -f hermes failed" in result.stderr
+
+
+def test_restart_container_never_recreates_fails_at_ceiling(monkeypatch):
+    monkeypatch.setattr(restart, "CONTAINER_RECREATE_POLL", 0.0)
+    monkeypatch.setattr(restart, "CONTAINER_RECREATE_TIMEOUT", 3.0)
+    clock = iter([0.0, 1.0, 2.0, 3.0])
+    monkeypatch.setattr(restart.anyio, "current_time", lambda: next(clock))
+
+    async def fake_run(machine, command, *, timeout=30, capture=True):
+        return RemoteResult(0, "", "")
+
+    async def fake_proc(machine, service, *, timeout=30):
+        return ProbeResult(service.name, Status.FAIL, "no process matching 'hermes gateway run'")
+
+    monkeypatch.setattr(remote, "run", fake_run)
+    monkeypatch.setattr(probes, "container_proc_state", fake_proc)
+    result = CliRunner().invoke(main, ["restart", "hermes", "hermes-agent"])
+    assert result.exit_code == 1
+    assert "not back after 3s" in result.stderr
 
 
 def test_restart_kickstart_not_loaded_points_to_bounce(monkeypatch):

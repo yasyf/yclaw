@@ -134,6 +134,10 @@ def _render_summary(results: list[tuple[gates.Gate, gates.GateResult]]) -> None:
             ui.ok(f"{gate.title}: {result.detail}")
         elif result.status is gates.GateStatus.SKIPPED:
             ui.warn(f"{gate.title}: {result.detail or 'skipped'}")
+        elif result.status is gates.GateStatus.MANUAL:
+            ui.warn(f"{gate.title} (manual): {result.detail}")
+            if result.retry_command:
+                ui.note(f"    re-check: {result.retry_command}")
         else:
             ui.fail(f"{gate.title}: {result.detail}")
             if result.retry_command:

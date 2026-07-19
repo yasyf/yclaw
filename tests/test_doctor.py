@@ -1,8 +1,9 @@
 import pytest
 from click.testing import CliRunner
 
-from yclaw import doctor, probes, remote
+from yclaw import container, doctor, probes, remote
 from yclaw.cli import main
+from yclaw.container import ContainerResult
 from yclaw.probes import ProbeResult, Status
 from yclaw.remote import RemoteResult
 
@@ -33,12 +34,22 @@ def _install_common_probes(monkeypatch, up_names):
     async def fake_tcp(host, port, *, timeout=5):
         return ProbeResult(f"{host}:{port}", Status.PASS, "open")
 
+    async def fake_proc(machine, service, *, timeout=30):
+        state = Status.PASS if machine.name in up_names else Status.FAIL
+        return ProbeResult(service.name, state, "proc")
+
+    async def fake_marker(machine, *, path, max_age_s, timeout=30):
+        state = Status.PASS if machine.name in up_names else Status.FAIL
+        return ProbeResult(f"{machine.name} supervisor", state, "marker")
+
     monkeypatch.setattr(probes, "tailnet_node", fake_tailnet)
     monkeypatch.setattr(probes, "launchd_state", fake_pass)
     monkeypatch.setattr(probes, "systemd_state", fake_pass)
     monkeypatch.setattr(probes, "service_health", fake_pass)
     monkeypatch.setattr(probes, "share_mounted", fake_share)
     monkeypatch.setattr(probes, "tcp_open", fake_tcp)
+    monkeypatch.setattr(probes, "container_proc_state", fake_proc)
+    monkeypatch.setattr(probes, "container_marker_fresh", fake_marker)
 
 
 def test_doctor_metal_runs_pf_gate_and_share_diff(monkeypatch):
@@ -123,25 +134,24 @@ def test_doctor_live_hermes_down_marks_manual(monkeypatch):
     assert "MANUAL=4" in result.output
 
 
-def test_doctor_live_hermes_up_checks_proxy_without_leaking_token(monkeypatch):
+def test_doctor_live_hermes_up_checks_container_proxy_without_leaking_token(monkeypatch):
     _install_common_probes(monkeypatch, {"hermes"})
 
-    async def fake_run(machine, command, *, timeout=30, capture=True):
-        if command == "hermes doctor":
-            return RemoteResult(0, "all checks passed\n", "")
-        if command.startswith("curl -sf"):
-            return RemoteResult(0, "", "")
-        if "HTTPS_PROXY" in command:
-            return RemoteResult(0, "HTTPS_PROXY=http://av_agt_SECRET123:hermes@metal:14322\n", "")
+    async def fake_exec(name, command, *, timeout=30, uid=None):
+        assert name == "hermes"  # container name, never an ssh host
+        if "urllib.request" in command:  # cross-container reachability probe (no curl in the image)
+            return ContainerResult(0, "", "")
+        if command == "cat /var/lib/hermes/.hermes/.env":
+            return ContainerResult(0, "FOO=1\nHTTPS_PROXY=http://av_agt_SECRET123:hermes@metal:14322\nBAR=2\n", "")
         raise AssertionError(command)
 
-    monkeypatch.setattr(remote, "run", fake_run)
+    monkeypatch.setattr(container, "exec_run", fake_exec)
     result = CliRunner().invoke(main, ["doctor", "hermes", "--live"])
     assert result.exit_code == 0
     assert "agent-vault HTTPS_PROXY" in result.output
     assert "routes through av_agt_…@metal:14322" in result.output
-    assert "SECRET123" not in result.output
-    assert "hermes doctor" in result.output
+    assert "SECRET123" not in result.output  # only the matched-not-matched verdict prints, never the line
+    assert "hermes agent (container)" in result.output  # _hermes_doctor's proc-liveness check
     assert "hermes→metal:8000 (rapid-mlx)" in result.output
 
 

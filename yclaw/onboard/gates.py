@@ -19,7 +19,7 @@ from pathlib import Path
 import anyio
 import click
 
-from .. import keychain, probes, remote
+from .. import container, keychain, probes, remote
 from ..manifest import Machine, Manifest
 from . import cliproxy, google_oauth, guest, ui
 
@@ -37,24 +37,17 @@ GEMINI_SETTLE_CEILING = 15.0  # after the attached picker, the token lands with 
 GEMINI_SETTLE_POLL = 3.0
 BB_POLL = 5.0  # BlueBubbles helper poll is UNBOUNDED (human-paced; ctrl-c skips the gate)
 OAUTH_CEILING = 600.0
-HERMES_ONBOARD_TIMEOUT = 300.0  # hermes-onboard makes Honcho network calls; the 30s default is too tight
 
 # The upstream marker that means Google One auto-discovery failed and a project must be picked
 # by hand — triggers the attached-terminal phase-2 hand-off. Authored from cli-proxy-api source.
 GEMINI_FATAL_MARKER = "project selection required"
 
-# hermes identity: the sentinel probe re-derives cfg.stateDir/workingDirectory from the installed
-# hermes-onboard script (writeShellApplication bakes them in), so nothing is hardcoded here. Fed
-# over stdin to `bash -s` to dodge the tailscale-ssh remote-arg word-split. USER_OK/SOUL_OK are the
-# only signal — remote exit codes are garbage over the Tailscale intercept.
-HERMES_PROBE_CMD = "sudo -u hermes -H bash -s"
-HERMES_ONBOARD_CMD = "sudo -u hermes -H hermes-onboard"
+# The image has no hermes-onboard: the gate only inspects USER.md/SOUL.md in the bind-mounted state.
+HERMES_HOME = "/var/lib/hermes/.hermes"
 HERMES_IDENTITY_PROBE = (
-    b's="$(command -v hermes-onboard)" || exit 0\n'
-    b'eval "$(grep -E \'^[[:space:]]*(export HOME=|export HERMES_HOME=|workspace=|memdir=|usermd=|soulmd=)\' "$s")"\n'
-    b'[ -s "$usermd" ] && echo USER_OK\n'
-    b'[ -s "$soulmd" ] && echo SOUL_OK\n'
-    b"exit 0\n"
+    f'[ -s "{HERMES_HOME}/USER.md" ] && echo USER_OK; '
+    f'[ -s "{HERMES_HOME}/SOUL.md" ] && echo SOUL_OK; '
+    "exit 0"
 )
 
 # node.env (host-side, written by bootstrap.sh) carries the non-secret iMessage allowlist.
@@ -88,6 +81,7 @@ class GateStatus(enum.Enum):
     DONE = enum.auto()
     SKIPPED = enum.auto()
     FAILED = enum.auto()
+    MANUAL = enum.auto()  # a human must act (no automation exists); not a failure, never retried
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,7 +174,7 @@ async def _clear_check(machine: Machine, *, ceiling: float, poll_interval: float
 
 
 def _hermes_identity_state(hermes: Machine) -> str:
-    return anyio.run(lambda: remote.run(hermes, HERMES_PROBE_CMD, input=HERMES_IDENTITY_PROBE)).stdout
+    return anyio.run(lambda: container.exec_run(hermes.container, HERMES_IDENTITY_PROBE)).stdout
 
 
 def _login_command(bin_path: str, login_flag: str) -> str:
@@ -293,7 +287,7 @@ def _guard(key: str, body: Callable[[], GateResult]) -> Callable[[], GateResult]
     def guarded() -> GateResult:
         try:
             return body()
-        except (remote.RemoteError, cliproxy.CliproxyError, keychain.KeychainError) as exc:
+        except (remote.RemoteError, container.ContainerError, cliproxy.CliproxyError, keychain.KeychainError) as exc:
             return GateResult(GateStatus.FAILED, detail=str(exc), retry_command=RETRY_TEMPLATE.format(key))
 
     return guarded
@@ -321,34 +315,17 @@ def build_gates(manifest: Manifest) -> tuple[Gate, ...]:
         return GateResult(GateStatus.DONE, detail=f"all fleet nodes reachable ({', '.join(m.name for m in fleet)})")
 
     def hermes_identity_body() -> GateResult:
+        # No hermes-onboard in the image and no agent-driven seeder: an unseeded profile is a manual
+        # hand-off, not an automatable gate. Identity persists in the bind-mounted container state.
         state = _hermes_identity_state(hermes)
         user_ok = "USER_OK" in state
         soul_ok = "SOUL_OK" in state
         if user_ok and soul_ok:
-            return GateResult(GateStatus.DONE, detail="hermes already onboarded (USER.md + SOUL.md present)")
-        ui.hdr("Gate — hermes identity")
-        ui.note("Seeds the profile (USER.md) and persona (SOUL.md) hermes-onboard can't infer.")
-        feed = ""
-        if user_ok:
-            ui.ok("USER.md already present — keeping it.")
-        else:
-            name = click.prompt("  Your name", default="", show_default=False)
-            about = click.prompt("  A sentence or two about you", default="", show_default=False)
-            feed += f"{name}\n{about}\n"
-        if soul_ok:
-            ui.ok("SOUL.md already present — keeping it.")
-        else:
-            persona = click.prompt(
-                "  Agent persona in one line (blank = sensible default)", default="", show_default=False
-            )
-            feed += f"{persona}\n"
-        anyio.run(lambda: remote.run(hermes, HERMES_ONBOARD_CMD, input=feed.encode(), timeout=HERMES_ONBOARD_TIMEOUT))
-        state = _hermes_identity_state(hermes)
-        if "USER_OK" in state and "SOUL_OK" in state:
-            return GateResult(GateStatus.DONE, detail="hermes identity written (USER.md + SOUL.md)")
+            return GateResult(GateStatus.DONE, detail="hermes identity present (USER.md + SOUL.md in container state)")
+        missing = [name for name, ok in (("USER.md", user_ok), ("SOUL.md", soul_ok)) if not ok]
         return GateResult(
-            GateStatus.FAILED,
-            detail="hermes onboarding did not leave both USER.md and SOUL.md",
+            GateStatus.MANUAL,
+            detail=f"seed {' + '.join(missing)} into the container state dir {HERMES_HOME} on the host, then re-run",
             retry_command=RETRY_TEMPLATE.format("hermes-identity"),
         )
 

@@ -1,14 +1,15 @@
 """``yclaw restart`` and ``yclaw bounce`` — kick a service, then wait for it to report healthy.
 
-``restart`` is the in-place kick: ``launchctl kickstart -k`` on darwin, ``systemctl restart`` on hermes.
-When a launchd label is not loaded, kickstart cannot help — it exits non-zero and the user is pointed
-at ``bounce``, which fully unloads (``bootout``) and reloads (``bootstrap``) the plist from disk.
+``restart`` is the in-place kick: ``launchctl kickstart -k`` on darwin, and for the hermes container a
+force-recreate (``container rm -f`` — apple/container has no ``restart`` verb) that the host supervisor
+turns back into a running guest. When a launchd label is not loaded, kickstart cannot help — it exits
+non-zero and the user is pointed at ``bounce``, which fully unloads and reloads the plist from disk.
 """
 
 import anyio
 import click
 
-from . import output, probes, remote
+from . import container, output, probes, remote
 from .dispatch import resolve_machine, resolve_service, run
 from .manifest import Machine, Service, load_manifest
 from .probes import Status
@@ -16,6 +17,9 @@ from .probes import Status
 # Must cover rapid-mlx's model load: ~101 s measured cold-start to LISTEN on metal.
 HEALTH_TIMEOUT = 150.0
 HEALTH_INTERVAL = 2.0
+# rm -f drops the guest; the com.yclaw.container-<name> supervisor recreates it within a tick.
+CONTAINER_RECREATE_TIMEOUT = 90.0
+CONTAINER_RECREATE_POLL = 3.0
 
 
 async def _health_wait(machine: Machine, service: Service) -> None:
@@ -40,7 +44,34 @@ def _fail(message: str, result: remote.RemoteResult) -> None:
     raise SystemExit(output.EXIT_FAIL)
 
 
+async def _restart_container(machine: Machine, service: Service) -> None:
+    rm = await remote.run(machine, f"{container.CONTAINER_BIN} rm -f {machine.container}")
+    if rm.returncode != 0:
+        _fail(f"container rm -f {machine.container} failed (exit {rm.returncode})", rm)
+    click.echo(output.ok(f"removed {machine.container}; waiting for the supervisor to recreate it"))
+    start = anyio.current_time()
+    while True:
+        try:
+            state = await probes.container_proc_state(machine, service, timeout=CONTAINER_RECREATE_POLL)
+        except container.ContainerTimeout:
+            state = None
+        if state is not None and state.status is Status.PASS:
+            click.echo(output.ok(f"recreated {service.name} on {machine.name}  {state.detail}"))
+            await _health_wait(machine, service)
+            return
+        if anyio.current_time() - start >= CONTAINER_RECREATE_TIMEOUT:
+            detail = state.detail if state is not None else "container exec timed out"
+            click.echo(
+                output.fail(f"{machine.container} not back after {CONTAINER_RECREATE_TIMEOUT:g}s  {detail}"), err=True
+            )
+            raise SystemExit(output.EXIT_FAIL)
+        await anyio.sleep(CONTAINER_RECREATE_POLL)
+
+
 async def _restart(machine: Machine, service: Service) -> None:
+    if service.container_proc is not None:
+        await _restart_container(machine, service)
+        return
     if service.launchd is not None:
         target = service.launchd.target
         result = await remote.run(machine, f"launchctl kickstart -k {target}")

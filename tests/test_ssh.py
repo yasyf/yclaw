@@ -3,8 +3,9 @@ import subprocess
 import anyio
 from click.testing import CliRunner
 
-from yclaw import remote
+from yclaw import container, remote, ssh
 from yclaw.cli import main
+from yclaw.container import ContainerResult
 from yclaw.remote import RemoteResult
 
 
@@ -83,9 +84,58 @@ def test_ssh_no_cmd_runs_interactive(monkeypatch):
         raise SystemExit(0)
 
     monkeypatch.setattr(remote, "interactive", fake_interactive)
-    result = CliRunner().invoke(main, ["ssh", "--user", "ops", "hermes"])
+    result = CliRunner().invoke(main, ["ssh", "--user", "ops", "metal"])
     assert result.exit_code == 0
-    assert called == {"name": "hermes", "user": "ops"}
+    assert called == {"name": "metal", "user": "ops"}
+
+
+def test_ssh_container_node_no_cmd_execs_into_container(monkeypatch):
+    # A container node has no ssh: `yclaw ssh hermes` execs `container exec -it hermes sh`, never
+    # tailscale ssh and never the host-node UsageError (ssh is None but container is set).
+    recorded = {}
+
+    def fake_execvp(file, args):
+        recorded["file"] = file
+        recorded["args"] = args
+        raise SystemExit(0)
+
+    monkeypatch.setattr(ssh.os, "execvp", fake_execvp)
+    result = CliRunner().invoke(main, ["ssh", "hermes"])
+    assert result.exit_code == 0
+    assert recorded["file"] == container.CONTAINER_BIN
+    assert recorded["args"] == [container.CONTAINER_BIN, "exec", "-it", "hermes", "sh"]
+
+
+def test_ssh_container_node_one_shot_execs_and_exits_with_rc(monkeypatch):
+    seen = {}
+
+    async def fake_exec(name, command, *, timeout=30, uid=None):
+        seen["name"] = name
+        seen["command"] = command
+        seen["timeout"] = timeout
+        return ContainerResult(3, "out\n", "err\n")
+
+    monkeypatch.setattr(container, "exec_run", fake_exec)
+    result = CliRunner().invoke(main, ["ssh", "hermes", "launchctl", "print", "x"])
+    assert result.exit_code == 3
+    assert seen["name"] == "hermes"
+    assert seen["command"] == "launchctl print x"  # multi-arg is shlex-joined into one string
+    assert seen["timeout"] == 30
+    assert "out\n" in result.output
+    assert "err\n" in result.stderr
+
+
+def test_ssh_container_node_timeout_zero_disables_timeout(monkeypatch):
+    captured = {}
+
+    async def fake_exec(name, command, *, timeout=30, uid=None):
+        captured["timeout"] = timeout
+        return ContainerResult(0, "", "")
+
+    monkeypatch.setattr(container, "exec_run", fake_exec)
+    result = CliRunner().invoke(main, ["ssh", "--timeout", "0", "hermes", "whoami"])
+    assert result.exit_code == 0
+    assert captured["timeout"] is None
 
 
 def test_ssh_timeout_zero_disables_timeout(monkeypatch):

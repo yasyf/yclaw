@@ -59,7 +59,9 @@ def _service_probe(machine: Machine, service: Service, interval: float) -> Calla
         return lambda: probes.launchd_state(machine, service, timeout=_ssh_probe_timeout(interval))
     if service.systemd is not None:
         return lambda: probes.systemd_state(machine, service, timeout=_ssh_probe_timeout(interval))
-    raise click.UsageError(f"service {service.name!r} on {machine.name} has no launchd/systemd unit to wait on")
+    if service.container_proc is not None:
+        return lambda: probes.container_proc_state(machine, service, timeout=_ssh_probe_timeout(interval))
+    raise click.UsageError(f"service {service.name!r} on {machine.name} has no launchd/systemd/container unit")
 
 
 @click.group("wait")

@@ -1,8 +1,10 @@
+import anyio
 import pytest
 from click.testing import CliRunner
 
-from yclaw import probes, remote
+from yclaw import probes, remote, wait
 from yclaw.cli import main
+from yclaw.manifest import _parse_service
 from yclaw.probes import ProbeResult, Status
 from yclaw.remote import RemoteResult
 
@@ -61,7 +63,7 @@ def test_wait_ssh_probe_timeout_decoupled_from_interval(monkeypatch, interval, e
         return RemoteResult(0, "", "")
 
     monkeypatch.setattr(remote, "run", fake_run)
-    result = CliRunner().invoke(main, ["wait", "ssh", "hermes", "--interval", interval])
+    result = CliRunner().invoke(main, ["wait", "ssh", "metal", "--interval", interval])
     assert result.exit_code == 0
     assert seen == {"command": "true", "timeout": expected_timeout}
 
@@ -91,11 +93,11 @@ def test_wait_ssh_host_is_usage_error():
 def test_wait_ssh_success(monkeypatch):
     async def fake_run(machine, command, *, timeout=30, capture=True):
         assert command == "true"
-        assert machine.name == "hermes"
+        assert machine.name == "metal"
         return RemoteResult(0, "", "")
 
     monkeypatch.setattr(remote, "run", fake_run)
-    result = CliRunner().invoke(main, ["wait", "ssh", "hermes"])
+    result = CliRunner().invoke(main, ["wait", "ssh", "metal"])
     assert result.exit_code == 0
 
 
@@ -125,17 +127,44 @@ def test_wait_service_polls_launchd_state(monkeypatch):
     assert seen == {"service": "rapid-mlx"}
 
 
-def test_wait_service_polls_systemd_state(monkeypatch):
+def test_wait_service_polls_container_proc(monkeypatch):
     seen = {}
 
-    async def fake_systemd(machine, service, *, timeout=30):
+    async def fake_proc(machine, service, *, timeout=30):
+        seen["machine"] = machine.name
         seen["service"] = service.name
-        return ProbeResult(service.name, Status.PASS, "active=active")
+        return ProbeResult(service.name, Status.PASS, "process alive")
 
-    monkeypatch.setattr(probes, "systemd_state", fake_systemd)
+    monkeypatch.setattr(probes, "container_proc_state", fake_proc)
     result = CliRunner().invoke(main, ["wait", "service", "hermes", "hermes-agent"])
     assert result.exit_code == 0
-    assert seen == {"service": "hermes-agent"}
+    assert seen == {"machine": "hermes", "service": "hermes-agent"}
+
+
+@pytest.mark.parametrize(
+    "probe_name",
+    ["systemd_state", "container_proc_state"],
+    ids=["systemd", "container"],
+)
+def test_wait_service_probe_selects_by_unit_kind(manifest, monkeypatch, probe_name):
+    # _service_probe picks the probe by unit kind; the systemd branch is no longer manifest-reachable
+    # (no node runs systemd), so exercise the selector directly with a synthesized unit.
+    if probe_name == "systemd_state":
+        service_def = {"systemd": "x.service"}
+    else:
+        service_def = {"container_proc": "hermes gateway run"}
+    called = {}
+
+    async def fake(machine, service, *, timeout=30):
+        called["probe"] = probe_name
+        called["service"] = service.name
+        return ProbeResult(service.name, Status.PASS, "up")
+
+    monkeypatch.setattr(probes, probe_name, fake)
+    svc = _parse_service("hermes-agent", service_def)
+    result = anyio.run(wait._service_probe(manifest.machines["metal"], svc, interval=2.0))
+    assert result.status is Status.PASS
+    assert called == {"probe": probe_name, "service": "hermes-agent"}
 
 
 def test_wait_service_without_unit_is_usage_error():

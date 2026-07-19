@@ -153,6 +153,27 @@ def test_full_run_any_failed_exits_fail_and_shows_retry(stub_env, monkeypatch):
     assert "uv run yclaw onboard --gate gemini" in result.output
 
 
+def test_manual_gate_does_not_fail_the_run_and_shows_recheck(stub_env, monkeypatch):
+    monkeypatch.setattr(
+        gates,
+        "build_gates",
+        _fixed_gates(
+            ("codex", "Codex login", gates.GateStatus.DONE, "logged in", ""),
+            (
+                "hermes-identity",
+                "hermes identity",
+                gates.GateStatus.MANUAL,
+                "seed USER.md into the container state dir",
+                "uv run yclaw onboard --gate hermes-identity",
+            ),
+        ),
+    )
+    result = CliRunner().invoke(main, ["onboard"])
+    assert result.exit_code == 0  # a MANUAL gate needs a human but is not a run failure
+    assert "hermes identity (manual): seed USER.md into the container state dir" in result.output
+    assert "re-check: uv run yclaw onboard --gate hermes-identity" in result.output
+
+
 def test_skipped_gate_does_not_fail_the_run(stub_env, monkeypatch):
     monkeypatch.setattr(
         gates,

@@ -22,8 +22,8 @@ async def test_run_builds_single_string_command(manifest, monkeypatch):
         return _completed(argv, 0, b"hi\n", b"")
 
     monkeypatch.setattr(anyio, "run_process", fake)
-    result = await remote.run(manifest.machines["hermes"], "echo a && echo b")
-    assert seen == [["tailscale", "ssh", "root@hermes", "--", "echo a && echo b"]]
+    result = await remote.run(manifest.machines["metal"], "echo a && echo b")
+    assert seen == [["tailscale", "ssh", "root@metal", "--", "echo a && echo b"]]
     assert result == RemoteResult(0, "hi\n", "")
 
 
@@ -141,9 +141,9 @@ def test_interactive_uses_execvp(manifest, monkeypatch):
 
     monkeypatch.setattr(remote.os, "execvp", fake_execvp)
     with pytest.raises(SystemExit):
-        remote.interactive(manifest.machines["hermes"])
+        remote.interactive(manifest.machines["metal"])
     assert recorded["file"] == "tailscale"
-    assert recorded["args"] == ["tailscale", "ssh", "root@hermes"]
+    assert recorded["args"] == ["tailscale", "ssh", "root@metal"]
 
 
 async def test_pre_tailnet_run_argv_and_redaction(manifest, monkeypatch):

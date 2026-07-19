@@ -6,6 +6,7 @@ import pytest
 
 from yclaw import keychain, probes
 from yclaw.container import ContainerResult
+from yclaw.manifest import _parse_service
 from yclaw.probes import ProbeResult, Status
 from yclaw.remote import RemoteResult
 
@@ -68,8 +69,9 @@ async def test_systemd_state(manifest, monkeypatch, show_output, expected_status
         return RemoteResult(0, show_output, "")
 
     monkeypatch.setattr(probes.remote, "run", fake_run)
-    hermes = manifest.machines["hermes"]
-    result = await probes.systemd_state(hermes, hermes.services["hermes-agent"])
+    # systemd_state is transport-generic; no fleet node runs systemd now, so synthesize the unit.
+    service = _parse_service("hermes-agent", {"systemd": "hermes-agent.service"})
+    result = await probes.systemd_state(manifest.machines["metal"], service)
     assert result == ProbeResult("hermes-agent", expected_status, expected_detail)
 
 

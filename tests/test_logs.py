@@ -4,7 +4,7 @@ import subprocess
 import anyio
 from click.testing import CliRunner
 
-from yclaw import remote
+from yclaw import container, remote
 from yclaw.cli import main
 
 RAPID_MLX_LOGS = (
@@ -77,30 +77,33 @@ def test_logs_host_tail_expands_tilde_and_execs_local_shell(monkeypatch):
     assert "~" not in seen[0][-1]
 
 
-def test_logs_hermes_journalctl(monkeypatch):
+def test_logs_hermes_container_logs(monkeypatch):
     seen = []
 
     async def fake(argv, **kwargs):
         seen.append(argv)
-        return _completed(argv, 0, b"journal\n", b"")
+        return _completed(argv, 0, b"log line\n", b"")
 
     monkeypatch.setattr(anyio, "run_process", fake)
     result = CliRunner().invoke(main, ["logs", "hermes", "hermes-agent"])
     assert result.exit_code == 0
-    assert seen[0][-1] == "journalctl -u hermes-agent.service -n 50"
+    # The container node has no ssh: `container logs` runs host-locally via /bin/sh (no per-svc -n split).
+    assert seen[0] == ["/bin/sh", "-c", f"{container.CONTAINER_BIN} logs hermes"]
+    assert "log line\n" in result.output
 
 
-def test_logs_hermes_journalctl_follow(monkeypatch):
+def test_logs_hermes_container_logs_follow(monkeypatch):
     called = {}
 
     def fake_stream(machine, command):
+        called["name"] = machine.name
         called["command"] = command
         raise SystemExit(0)
 
     monkeypatch.setattr(remote, "stream", fake_stream)
     result = CliRunner().invoke(main, ["logs", "hermes", "hermes-agent", "-f"])
     assert result.exit_code == 0
-    assert called["command"] == "journalctl -u hermes-agent.service -n 50 -f"
+    assert called == {"name": "hermes", "command": f"{container.CONTAINER_BIN} logs -f hermes"}
 
 
 def test_logs_bluebubbles_is_usage_error():
@@ -117,10 +120,11 @@ def test_logs_no_service_lists_services():
     assert "metal-boot-setup" in result.output
 
 
-def test_logs_no_service_lists_hermes_units():
+def test_logs_no_service_lists_hermes_container():
     result = CliRunner().invoke(main, ["logs", "hermes"])
     assert result.exit_code == 0
-    assert "journalctl -u hermes-agent.service" in result.output
+    assert "hermes-agent" in result.output
+    assert f"{container.CONTAINER_BIN} logs hermes" in result.output
 
 
 def test_logs_help():

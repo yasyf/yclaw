@@ -1,7 +1,8 @@
 """``yclaw logs`` — tail a service's logs on a fleet node.
 
 darwin nodes stream their launchd stdout/stderr log files through ``tail`` (whose native ``==>``
-headers separate the two files); hermes streams its systemd journal through ``journalctl``.
+headers separate the two files). The hermes container has one main process (the agent), so a
+per-service split is meaningless — ``container logs`` (run host-locally, no ``-n``) is the whole tail.
 BlueBubbles keeps its logs inside the app, so there is nothing to tail over ssh.
 """
 
@@ -10,7 +11,7 @@ import shlex
 
 import click
 
-from . import output, remote
+from . import container, output, remote
 from .dispatch import resolve_machine, resolve_service, run
 from .manifest import Machine, Service, load_manifest
 
@@ -18,6 +19,8 @@ from .manifest import Machine, Service, load_manifest
 def _log_command(machine: Machine, service: Service, lines: int, follow: bool) -> str:
     if machine.name == "bluebubbles":
         raise click.UsageError("bluebubbles logs are app-internal; use the VNC console")
+    if machine.container is not None:
+        return f"{container.CONTAINER_BIN} logs {'-f ' if follow else ''}{machine.container}"
     if service.systemd is not None:
         return f"journalctl -u {service.systemd} -n {lines}{' -f' if follow else ''}"
     if service.logs:
@@ -32,7 +35,9 @@ def _log_command(machine: Machine, service: Service, lines: int, follow: bool) -
 def _list_services(machine: Machine) -> None:
     rows = []
     for svc in machine.services.values():
-        if svc.systemd is not None:
+        if machine.container is not None:
+            where = f"{container.CONTAINER_BIN} logs {machine.container}"
+        elif svc.systemd is not None:
             where = f"journalctl -u {svc.systemd}"
         elif svc.logs:
             where = " ".join(svc.logs)

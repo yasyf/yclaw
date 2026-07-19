@@ -34,11 +34,21 @@ def _install_metal_probes(monkeypatch, *, hermes_up=False, bluebubbles_up=False)
     async def fake_share(machine, share, *, timeout=30):
         return ProbeResult(share, Status.PASS, f"sh-{share}")
 
+    async def fake_proc(machine, service, *, timeout=30):
+        state = Status.PASS if machine.name in up_names else Status.FAIL
+        return ProbeResult(service.name, state, f"proc-{service.name}")
+
+    async def fake_marker(machine, *, path, max_age_s, timeout=30):
+        state = Status.PASS if machine.name in up_names else Status.FAIL
+        return ProbeResult(f"{machine.name} supervisor", state, f"mk-{machine.name}")
+
     monkeypatch.setattr(probes, "tailnet_node", fake_tailnet)
     monkeypatch.setattr(probes, "launchd_state", fake_launchd)
     monkeypatch.setattr(probes, "systemd_state", fake_systemd)
     monkeypatch.setattr(probes, "service_health", fake_health)
     monkeypatch.setattr(probes, "share_mounted", fake_share)
+    monkeypatch.setattr(probes, "container_proc_state", fake_proc)
+    monkeypatch.setattr(probes, "container_marker_fresh", fake_marker)
 
 
 def test_status_metal_renders_exact_table(monkeypatch):
@@ -108,11 +118,16 @@ def test_status_all_machines_down_nodes_render_as_down(monkeypatch):
 
     hermes_rows = [line for line in lines if line.split()[:1] == ["hermes"]]
     bluebubbles_rows = [line for line in lines if line.split()[:1] == ["bluebubbles"]]
-    assert len(hermes_rows) == 1
+    # bluebubbles is ssh-reached: its per-service probes are skipped when the node is down (1 row).
     assert len(bluebubbles_rows) == 1
-    assert "down" in hermes_rows[0]
-    assert "registered but offline" in hermes_rows[0]
     assert "down" in bluebubbles_rows[0]
+    # hermes is a container node: its probes are host-local `container exec`, so the agent-proc and
+    # supervisor-marker rows still render even though the tailnet node is down.
+    node_row = next(r for r in hermes_rows if "(node)" in r)
+    assert "down" in node_row
+    assert "registered but offline" in node_row
+    assert any("hermes-agent" in r for r in hermes_rows)
+    assert any("supervisor" in r for r in hermes_rows)
     assert any(line.startswith("metal") and "(node)" in line and "up" in line for line in lines)
     assert result.exit_code == 1  # hermes + bluebubbles down
 

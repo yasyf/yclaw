@@ -14,9 +14,15 @@ from yclaw.manifest import (
 )
 
 
-def test_hermes_ssh_user_is_root(manifest):
-    assert manifest.machines["hermes"].ssh.user == "root"
-    assert manifest.machines["hermes"].ssh.transport == "tailscale"
+def test_hermes_is_container_node(manifest):
+    hermes = manifest.machines["hermes"]
+    assert hermes.os == "linux"
+    assert hermes.managed_by == "container"
+    assert hermes.container == "hermes"
+    assert hermes.ssh is None
+    assert hermes.tart_vm is None
+    assert hermes.shares is None
+    assert hermes.admin_pass_keychain is None
 
 
 def test_rapid_mlx_launchd_label(manifest):
@@ -48,9 +54,10 @@ def test_mlx_audio_tcp_health(manifest):
     assert manifest.machines["metal"].services["mlx-audio"].health == TcpHealth(host="metal", port=8765)
 
 
-def test_hermes_systemd_service_has_no_launchd(manifest):
+def test_hermes_agent_is_container_proc(manifest):
     svc = manifest.machines["hermes"].services["hermes-agent"]
-    assert svc.systemd == "hermes-agent.service"
+    assert svc.container_proc == "hermes gateway run"
+    assert svc.systemd is None
     assert svc.launchd is None
     assert svc.health is None
 

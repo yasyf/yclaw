@@ -2,7 +2,8 @@ import anyio
 import click
 import pytest
 
-from yclaw import keychain, probes, remote
+from yclaw import container, keychain, probes, remote
+from yclaw.container import ContainerResult
 from yclaw.onboard import cliproxy, gates, google_oauth, guest, ui
 from yclaw.onboard.gates import GateStatus, build_gates
 from yclaw.onboard.google_oauth import OAuthResult, VaultAuthError
@@ -49,7 +50,8 @@ def test_tailscale_all_reachable_is_done(manifest, monkeypatch):
     monkeypatch.setattr(remote, "run", fake_run)
     result = _gate(manifest, "tailscale").body()
     assert result.status is GateStatus.DONE
-    assert probed == ["metal", "hermes", "bluebubbles"]
+    # hermes is a container node (no ssh) — the Tailscale-SSH gate only covers the ssh-reached fleet.
+    assert probed == ["metal", "bluebubbles"]
 
 
 def test_tailscale_check_wall_opens_url_then_advances_on_approval(manifest, monkeypatch):
@@ -92,14 +94,14 @@ def test_tailscale_check_wall_ceiling_fails_with_retry_command(manifest, monkeyp
 
 def test_tailscale_timeout_node_is_reported_unreachable(manifest, monkeypatch):
     async def fake_run(machine, command, *, timeout=30, capture=True, input=None):
-        if machine.name == "hermes":
+        if machine.name == "bluebubbles":
             raise RemoteTimeout("true", 30.0)
         return RemoteResult(0, "", "")
 
     monkeypatch.setattr(remote, "run", fake_run)
     result = _gate(manifest, "tailscale").body()
     assert result.status is GateStatus.FAILED
-    assert "hermes" in result.detail
+    assert "bluebubbles" in result.detail
 
 
 def test_clear_check_fast_transport_failure_is_unreachable(manifest, monkeypatch):
@@ -141,70 +143,57 @@ def test_clear_check_retry_loop_ignores_transport_flake_then_approves(manifest, 
 # --- gate: hermes-identity ------------------------------------------------------------------------
 
 
-def test_hermes_already_onboarded_short_circuits_without_prompt(manifest, monkeypatch):
+def test_hermes_identity_both_present_is_done_probing_container_not_ssh(manifest, monkeypatch):
+    # No hermes-onboard and no prompting: the gate is a pure `container exec` check of the state dir.
     monkeypatch.setattr(click, "prompt", _boom)
-    calls: list[tuple] = []
+    monkeypatch.setattr(remote, "run", _boom)  # the node has no ssh transport — never reached
+    seen = {}
 
-    async def fake_run(machine, command, *, timeout=30, capture=True, input=None):
-        calls.append((command, input))
-        return RemoteResult(0, "USER_OK\nSOUL_OK\n", "")
+    async def fake_exec(name, command, *, timeout=30, uid=None):
+        seen["name"] = name
+        seen["command"] = command
+        return ContainerResult(0, "USER_OK\nSOUL_OK\n", "")
 
-    monkeypatch.setattr(remote, "run", fake_run)
+    monkeypatch.setattr(container, "exec_run", fake_exec)
     result = _gate(manifest, "hermes-identity").body()
     assert result.status is GateStatus.DONE
-    assert calls == [(gates.HERMES_PROBE_CMD, gates.HERMES_IDENTITY_PROBE)]
+    assert seen["name"] == "hermes"
+    assert seen["command"] == gates.HERMES_IDENTITY_PROBE
+    assert "USER.md" in seen["command"]
+    assert "SOUL.md" in seen["command"]
 
 
-def test_hermes_prompts_then_feeds_answers_over_stdin(manifest, monkeypatch):
-    answers = iter(["Rebecca", "loves cats", "a helpful agent"])
-    monkeypatch.setattr(click, "prompt", lambda *a, **k: next(answers))
-    probe_states = iter(["", "USER_OK\nSOUL_OK\n"])
-    seen: list[tuple] = []
+@pytest.mark.parametrize(
+    ("probe_out", "missing"),
+    [
+        ("SOUL_OK\n", "USER.md"),
+        ("USER_OK\n", "SOUL.md"),
+        ("", "USER.md + SOUL.md"),
+    ],
+    ids=["user-absent", "soul-absent", "both-absent"],
+)
+def test_hermes_identity_unseeded_is_manual(manifest, monkeypatch, probe_out, missing):
+    monkeypatch.setattr(click, "prompt", _boom)
 
-    async def fake_run(machine, command, *, timeout=30, capture=True, input=None):
-        seen.append((command, input))
-        if command == gates.HERMES_ONBOARD_CMD:
-            return RemoteResult(0, "", "")
-        return RemoteResult(0, next(probe_states), "")
+    async def fake_exec(name, command, *, timeout=30, uid=None):
+        return ContainerResult(0, probe_out, "")
 
-    monkeypatch.setattr(remote, "run", fake_run)
+    monkeypatch.setattr(container, "exec_run", fake_exec)
     result = _gate(manifest, "hermes-identity").body()
-    assert result.status is GateStatus.DONE
-    onboard_calls = [entry for entry in seen if entry[0] == gates.HERMES_ONBOARD_CMD]
-    assert onboard_calls == [(gates.HERMES_ONBOARD_CMD, b"Rebecca\nloves cats\na helpful agent\n")]
-
-
-def test_hermes_incomplete_write_fails_with_retry_command(manifest, monkeypatch):
-    monkeypatch.setattr(click, "prompt", lambda *a, **k: "x")
-
-    async def fake_run(machine, command, *, timeout=30, capture=True, input=None):
-        if command == gates.HERMES_ONBOARD_CMD:
-            return RemoteResult(0, "", "")
-        return RemoteResult(0, "", "")  # sentinels never appear
-
-    monkeypatch.setattr(remote, "run", fake_run)
-    result = _gate(manifest, "hermes-identity").body()
-    assert result.status is GateStatus.FAILED
+    assert result.status is GateStatus.MANUAL
+    assert missing in result.detail
+    assert gates.HERMES_HOME in result.detail
     assert result.retry_command == "uv run yclaw onboard --gate hermes-identity"
 
 
-def test_hermes_onboard_run_uses_generous_timeout(manifest, monkeypatch):
-    answers = iter(["Rebecca", "loves cats", "a helpful agent"])
-    monkeypatch.setattr(click, "prompt", lambda *a, **k: next(answers))
-    probe_states = iter(["", "USER_OK\nSOUL_OK\n"])
-    timeouts: dict[str, float | None] = {}
+def test_hermes_identity_container_error_becomes_failed(manifest, monkeypatch):
+    async def boom_exec(name, command, *, timeout=30, uid=None):
+        raise container.ContainerTimeout(name, command, 30.0)
 
-    async def fake_run(machine, command, *, timeout=30, capture=True, input=None):
-        timeouts[command] = timeout
-        if command == gates.HERMES_ONBOARD_CMD:
-            return RemoteResult(0, "", "")
-        return RemoteResult(0, next(probe_states), "")
-
-    monkeypatch.setattr(remote, "run", fake_run)
+    monkeypatch.setattr(container, "exec_run", boom_exec)
     result = _gate(manifest, "hermes-identity").body()
-    assert result.status is GateStatus.DONE
-    assert timeouts[gates.HERMES_ONBOARD_CMD] == gates.HERMES_ONBOARD_TIMEOUT
-    assert timeouts[gates.HERMES_PROBE_CMD] == 30
+    assert result.status is GateStatus.FAILED
+    assert result.retry_command == "uv run yclaw onboard --gate hermes-identity"
 
 
 # --- gate: codex ----------------------------------------------------------------------------------
