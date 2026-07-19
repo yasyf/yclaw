@@ -2,7 +2,7 @@
 # De-Nix'd host bring-up: the runtime role that darwin/host.nix used to play, as a plain
 # idempotent shell script. The host runs NO Nix — just Homebrew `tart` + `gum`, the existing
 # Tailscale daemon, the `~/.yclaw/state` virtiofs source, three launchd VM runners, and the host AI
-# serving stack (the rapid-mlx activator + mlx-audio STT, §5 below).
+# serving stack (the rapid-mlx activator + stt, §5 below).
 #
 # Re-runnable: brew installs are no-ops when present, mkdir -p is idempotent, and each
 # LaunchAgent is rewritten then re-bootstrapped (bootout-before-bootstrap) so a changed plist
@@ -135,7 +135,7 @@ setup_host_serving() {
   fi
 
   # The three host.nix-era LaunchAgents (mlx-qwen/parakeet-stt/cliproxyapi) are retired — the host runs
-  # rapid-mlx + mlx-audio via the com.yclaw.* agents below, and cliproxy lives inside metal. Boot out any
+  # rapid-mlx + stt via the com.yclaw.* agents below, and cliproxy lives inside metal. Boot out any
   # that are still loaded and delete their plists (and the .disabled/.bak siblings a prior manual disable
   # left) so a fresh login cannot RunAtLoad a stale server onto :8080/:8765. Idempotent.
   for label in org.nixos.mlx-qwen org.nixos.parakeet-stt org.nixos.cliproxyapi; do
@@ -223,7 +223,7 @@ setup_host_serving() {
 # --- 6. Host pf lockdown (optional, root, NOT in the full run) -----------------
 
 # Install the host's fleet-lockdown pf anchor + its refresh LaunchDaemon: ONLY metal may reach
-# the host's model ports (rapid-mlx :8000, mlx-audio STT :8765) and no fleet VM reaches anything
+# the host's model ports (rapid-mlx :8000, stt :8765) and no fleet VM reaches anything
 # else on the host — over the tailnet or via the vmnet side-door (Darwin's weak-host delivery
 # answers a bridge-ingress packet for ANY host address: the gateway 192.168.64.1, the LAN IP,
 # even the tailnet IP over a forced VM route — all past the tailnet ACL) —

@@ -1,7 +1,7 @@
 #!/bin/bash
 # scripts/host/host-pf.sh — one refresh tick of the host's fleet-lockdown pf anchor: resolve the
 # three fleet VMs' current tailnet IPs (v4 + v6) plus the Tart vmnet bridge, then re-key the
-# anchor so ONLY metal reaches the host's model ports (rapid-mlx + mlx-audio STT), no fleet VM
+# anchor so ONLY metal reaches the host's model ports (rapid-mlx + stt), no fleet VM
 # reaches anything else on the host over the tailnet, and the vmnet side-door is shut: Darwin's
 # weak-host model answers a bridge-ingress packet addressed to ANY host address — the bridge
 # gateway 192.168.64.1, the LAN IP, even the tailnet IP over a forced VM route — past both the
@@ -27,7 +27,7 @@
 #
 # A TEMPLATE, not run from the repo: `setup.sh host-pf` bakes @@TAILSCALE@@ (a root-owned CLI
 # copy under /usr/local/lib/yclaw — a root daemon must never exec user-writable bits) and
-# @@PF_PORTS@@ (the manifest's host rapid-mlx/mlx-audio ports) and installs it beside wait.sh +
+# @@PF_PORTS@@ (the manifest's host rapid-mlx/stt ports) and installs it beside wait.sh +
 # pf.sh under /usr/local/lib/yclaw, where the com.yclaw.host-pf-refresh LaunchDaemon (root, in
 # /Library/LaunchDaemons: a RunAtLoad + KeepAlive sleep-loop — StartInterval silently stops
 # firing on Tahoe) re-runs it every 300s once a short-backoff loop lands the first boot tick.
