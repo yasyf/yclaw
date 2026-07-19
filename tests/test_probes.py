@@ -309,8 +309,8 @@ async def test_service_health_tcp_dispatches(manifest, monkeypatch):
 
     monkeypatch.setattr(probes, "tcp_open", fake_tcp)
     metal = manifest.machines["metal"]
-    result = await probes.service_health(metal, metal.services["mlx-audio"])
-    assert seen == {"host": "metal", "port": 8765}
+    result = await probes.service_health(metal, metal.services["cliproxy"])
+    assert seen == {"host": "metal", "port": 8317}
     assert result.status is Status.PASS
 
 

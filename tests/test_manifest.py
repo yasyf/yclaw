@@ -52,8 +52,12 @@ def test_rapid_mlx_http_health(manifest):
     assert manifest.machines["metal"].services["rapid-mlx"].health == HttpHealth(url="http://metal:8000/v1/models")
 
 
-def test_mlx_audio_tcp_health(manifest):
-    assert manifest.machines["metal"].services["mlx-audio"].health == TcpHealth(host="metal", port=8765)
+def test_metal_stt_relay_http_health(manifest):
+    assert manifest.machines["metal"].services["mlx-audio"].health == HttpHealth(url="http://metal:8765/v1/models")
+
+
+def test_host_stt_http_health(manifest):
+    assert manifest.machines["host"].services["stt"].health == HttpHealth(url="http://yasyf-home:8765/v1/models")
 
 
 def test_hermes_agent_is_container_proc(manifest):
