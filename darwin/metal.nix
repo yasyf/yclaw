@@ -6,7 +6,7 @@
 # ALL credentials and serves four services over the tailnet (the two model ports are thin socat
 # relays to the host model plane on yasyf-home — hermes keeps calling metal:8000/8765 unchanged):
 #   rapid-mlx   :8000   relay -> the host athome activator (idle-unload Qwen)
-#   mlx-audio   :8765   relay -> the host STT (ibm-granite/granite-speech-4.1-2b)
+#   mlx-audio   :8765   relay -> the host STT (Parakeet TDT 0.6b v2, English-only)
 #   cliproxy    :8317   CLIProxyAPI, Codex/Gemini OAuth -> static key
 #   agent-vault :14321  credential broker API  + :14322 transparent MITM proxy
 #
@@ -172,8 +172,8 @@ let
       "TCP:$HOSTIP:8000,nodelay,connect-timeout=10"
   '';
 
-  # This daemon relays 8765 to the host, same shape as the rapid-mlx wrapper above (Phase 6 retired
-  # the in-guest STT fallback that darwin/stt-server.py ran; the host now serves STT).
+  # This daemon relays 8765 to the host, same shape as the rapid-mlx wrapper above. The host now
+  # serves STT (Parakeet via the athome activator); the retired in-guest fallback is gone.
   sttWrapper = pkgs.writeShellScript "metal-mlx-audio" ''
     set -euo pipefail
     ${mkDaemonPreamble { }}

@@ -407,7 +407,7 @@ in
       # Optional Hermes-side Honcho overrides; most config lives in ~/.honcho/config.json.
       honcho = { };
 
-      # ── STT: Parakeet on the host via an OpenAI-compatible shim ──
+      # ── STT: Parakeet on the host via an OpenAI-compatible shim (English-only) ──
       stt = {
         enabled = true;
         provider = "openai";

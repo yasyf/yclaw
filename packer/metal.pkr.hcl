@@ -1,5 +1,5 @@
 # Packer template: the macOS "metal" guest (cirruslabs/tart) — the locked-down, SIP-on
-# credential + AI services VM (rapid-mlx, mlx-audio STT, CLIProxyAPI, agent-vault). Holds no
+# credential + AI services VM (rapid-mlx, STT (Parakeet), CLIProxyAPI, agent-vault). Holds no
 # iMessage/BlueBubbles. Clones the cirruslabs SIP-ON vanilla Tahoe base, installs Nix, and
 # PRE-BUILDS `darwinConfigurations.metal` (darwin/metal.nix) into the image's store.
 #

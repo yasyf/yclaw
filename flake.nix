@@ -130,7 +130,7 @@
 
       # --- Apple-Silicon host (nix-darwin) ---------------------------------------
       # The metal macOS guest VM. Applies IN-GUEST with `darwin-rebuild switch --flake .#metal`.
-      # The SIP-on, max-locked credential/AI vault node — runs ONLY rapid-mlx, mlx-audio STT,
+      # The SIP-on, max-locked credential/AI vault node — runs ONLY rapid-mlx, STT (Parakeet),
       # CLIProxyAPI, and agent-vault; sops-nix provides the credential decryption. It runs NO
       # iMessage: that lives on the separate bluebubbles VM, its own SIP-off tailnet node.
       # See darwin/metal.nix.
