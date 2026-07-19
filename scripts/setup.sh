@@ -114,14 +114,14 @@ PLIST
   log "Loaded LaunchAgent $label."
 }
 
-# --- 5. Host model serving stack (rapid-mlx activator + mlx-audio STT) --------
+# --- 5. Host model serving stack (rapid-mlx activator + stt) ------------------
 
 # This host stack is now the fleet's ONLY model plane — metal just relays 8000/8765 to it.
 setup_host_serving() {
-  # Model ids — read from the single source of truth (nixos/models.nix), like bootstrap.sh does.
+  # Model ids — read from the single source of truth (nixos/models.nix), like bootstrap.sh does. The
+  # STT variant is athome's [serve.stt] default, so only the Qwen id is baked into a wrapper here.
   QWEN_ID="$(sed -n 's/.*qwen = "\([^"]*\)".*/\1/p' "$REPO_ROOT/nixos/models.nix")"
-  STT_ID="$(sed -n 's/.*stt = "\([^"]*\)".*/\1/p' "$REPO_ROOT/nixos/models.nix")"
-  [[ -n "$QWEN_ID" && -n "$STT_ID" ]] || die "could not read qwen/stt ids from nixos/models.nix"
+  [[ -n "$QWEN_ID" ]] || die "could not read qwen id from nixos/models.nix"
 
   # 5f. de-Nix cleanup: the retired host cli-proxy-api config (cliproxy lives in metal now). It is
   # root-owned under /etc, so it needs privilege setup.sh does not hold as the login user — remove it if
@@ -145,6 +145,13 @@ setup_host_serving() {
           "$HOME/Library/LaunchAgents/$label.plist.bak-prelat"
   done
 
+  # Retire the bespoke mlx-audio STT before the stt activator loads: both bind :8765, so a live old
+  # server EADDRINUSEs the activator into a KeepAlive crash loop. Granite HF weights stay cached.
+  launchctl bootout "gui/$(id -u)/com.yclaw.mlx-audio" 2>/dev/null || true
+  rm -f "$LAUNCH_AGENTS_DIR/com.yclaw.mlx-audio.plist"
+  rm -rf "$STATE_DIR/mlx-audio"
+  rm -f "$BIN_DIR/mlx-audio-wrapper.sh" "$BIN_DIR/stt-server.py"
+
   # 5a. rapid-mlx venv (python@3.14 keg, matching metal.nix) + the activator's runtime deps. Build only
   # when absent — mirrors metal.nix's `-x .../bin/rapid-mlx` idempotency check. Every package is pinned
   # to the exact version the verified venv resolved, so a rebuild reproduces the audited install.
@@ -157,38 +164,36 @@ setup_host_serving() {
     "$RAPID_VENV/bin/python" -m pip install 'rapid-mlx==0.10.9' 'experiment-at-home[activator]==0.9.2' 'starlette==1.3.1' 'uvicorn==0.51.0' 'httpx==0.28.1' 'aiosqlite==0.22.1' 'loguru==0.7.3' 'pydantic==2.13.4' 'pydantic-core==2.46.4' 'pydantic-settings==2.14.2' 'annotated-types==0.7.0' 'typing-inspection==0.4.2' 'typing-extensions==4.16.0' 'python-dotenv==1.2.2' 'anyio==4.14.2' 'click==8.4.2' 'sniffio==1.3.1' 'idna==3.18' 'certifi==2026.6.17' 'httpcore==1.0.9' 'h11==0.16.0'
   fi
 
-  # 5b. mlx-audio venv, mirroring metal.nix's sttWrapper package set (built from /usr/bin/python3, the
-  # CommandLineTools python; setuptools kept <81 for pkg_resources compat, pinned at the resolved
-  # version). Every package is pinned to the exact version the verified venv resolved.
-  STT_VENV="$STATE_DIR/mlx-audio/host-venv"
-  if [[ ! -x "$STT_VENV/bin/python" ]]; then
-    log "Building mlx-audio venv at $STT_VENV ..."
+  # 5b. stt venv (python@3.14 keg, like the rapid-mlx venv) + athome's transcribe.cpp engine. Build
+  # only when absent; transcribe-cpp/-native are exact-pinned (pre-1.0 ABI).
+  STT_VENV="$STATE_DIR/stt/venv"
+  if [[ ! -x "$STT_VENV/bin/athome" ]]; then
+    log "Building stt venv at $STT_VENV ..."
     mkdir -p "$(dirname "$STT_VENV")"
-    /usr/bin/python3 -m venv "$STT_VENV"
+    /opt/homebrew/opt/python@3.14/bin/python3.14 -m venv "$STT_VENV"
     "$STT_VENV/bin/python" -m pip install --upgrade pip
-    "$STT_VENV/bin/python" -m pip install 'mlx-audio==0.2.9' 'uvicorn==0.39.0' 'fastapi==0.128.8' 'python-multipart==0.0.20' 'setuptools==58.0.4'
+    # Provisional transitive pins; re-freeze against the published 0.10.0 resolution at first build.
+    "$STT_VENV/bin/python" -m pip install 'experiment-at-home[stt,activator]==0.10.0' 'transcribe-cpp==0.1.3' 'transcribe-cpp-native==0.1.3' 'starlette==1.3.1' 'uvicorn==0.51.0' 'python-multipart==0.0.20' 'httpx==0.28.1' 'aiosqlite==0.22.1' 'loguru==0.7.3' 'pydantic==2.13.4' 'pydantic-core==2.46.4' 'pydantic-settings==2.14.2' 'annotated-types==0.7.0' 'typing-inspection==0.4.2' 'typing-extensions==4.16.0' 'python-dotenv==1.2.2' 'anyio==4.14.2' 'click==8.4.2' 'sniffio==1.3.1' 'idna==3.18' 'certifi==2026.6.17' 'httpcore==1.0.9' 'h11==0.16.0'
   fi
 
-  # 5c. Models into the shared HF hub cache. The STT model is downloaded here (idempotent — hf skips
-  # present files); the Qwen weights are the human `hf download` gate bootstrap.sh runs, so warn (never
-  # fail) if they are absent — a host-only setup.sh run then surfaces the gap without blocking.
-  log "Downloading STT model $STT_ID into $HF_HUB_DIR (idempotent) ..."
-  hf download "$STT_ID"
+  # 5c. Weights into the shared HF hub cache. athome pre-fetches the STT variant (idempotent); the
+  # Qwen weights are bootstrap.sh's human `hf download` gate, so warn (never fail) if absent below.
+  log "Downloading STT weights via athome into $HF_HUB_DIR (idempotent) ..."
+  HF_HUB_CACHE="$HF_HUB_DIR" "$STT_VENV/bin/athome" stt download
   qwen_cache_dir="$HF_HUB_DIR/models--$(printf '%s' "$QWEN_ID" | sed 's#/#--#g')"
   if [[ ! -d "$qwen_cache_dir" ]]; then
     warn "Qwen model absent at $qwen_cache_dir — rapid-mlx cannot serve until you run: hf download $QWEN_ID"
   fi
 
-  # 5d. Install the serving-stack files into ~/.yclaw/bin. stt-server.py + wait.sh copied verbatim;
-  # the two wrappers go through sed to bake the model ids.
+  # 5d. Install the serving-stack files into ~/.yclaw/bin. wait.sh + stt-wrapper.sh copied verbatim;
+  # rapid-mlx-wrapper.sh goes through sed to bake the Qwen id (stt bakes no model).
   log "Installing serving-stack files into $BIN_DIR ..."
   mkdir -p "$BIN_DIR" "$MODEL_LOGS_DIR"
   rm -f "$BIN_DIR/model-activator.py"  # clear any stale copy a prior install left here
-  cp "$REPO_ROOT/darwin/stt-server.py" "$BIN_DIR/stt-server.py"
   cp "$REPO_ROOT/scripts/lib/wait.sh" "$BIN_DIR/wait.sh"
+  cp "$REPO_ROOT/scripts/host/stt-wrapper.sh" "$BIN_DIR/stt-wrapper.sh"
   sed "s|@@QWEN_MODEL@@|$QWEN_ID|g" "$REPO_ROOT/scripts/host/rapid-mlx-wrapper.sh" > "$BIN_DIR/rapid-mlx-wrapper.sh"
-  sed "s|@@STT_MODEL@@|$STT_ID|g" "$REPO_ROOT/scripts/host/mlx-audio-wrapper.sh" > "$BIN_DIR/mlx-audio-wrapper.sh"
-  chmod +x "$BIN_DIR/rapid-mlx-wrapper.sh" "$BIN_DIR/mlx-audio-wrapper.sh"
+  chmod +x "$BIN_DIR/rapid-mlx-wrapper.sh" "$BIN_DIR/stt-wrapper.sh"
 
   # 5g. Application-firewall allowlist for the two venv pythons — ONLY when the app firewall is on. The
   # firewall silently drops inbound to unlisted binaries, so the tailnet cannot reach the serving ports
@@ -207,14 +212,12 @@ setup_host_serving() {
     log "App firewall is off — skipping the serving-stack allowlist."
   fi
 
-  # 5e. LaunchAgents. rapid-mlx gets ExitTimeOut=180 so launchd's SIGTERM->SIGKILL window covers the
-  # activator's graceful child stop (SIGTERM + up to 120s wait; graceful shutdown saves the prefix cache
-  # and dodges the 20GB wired-Metal teardown pathology). Both run ProcessType=Interactive (no App-Nap
-  # throttling) with HF_HUB_CACHE from the plist env; rapid-mlx also carries ATHOME_SERVE_ACTIVATOR_IDLE_S.
+  # 5e. LaunchAgents. Both run the activator: ExitTimeOut=180 covers launchd's graceful child-stop
+  # window, ProcessType=Interactive dodges App-Nap, HF_HUB_CACHE + IDLE_S ride in from the plist env.
   write_model_agent com.yclaw.rapid-mlx "$BIN_DIR/rapid-mlx-wrapper.sh" rapid-mlx 180 \
     "ATHOME_SERVE_ACTIVATOR_IDLE_S=1800" "HF_HUB_CACHE=$HF_HUB_DIR"
-  write_model_agent com.yclaw.mlx-audio "$BIN_DIR/mlx-audio-wrapper.sh" mlx-audio "" \
-    "HF_HUB_CACHE=$HF_HUB_DIR"
+  write_model_agent com.yclaw.stt "$BIN_DIR/stt-wrapper.sh" stt 180 \
+    "ATHOME_SERVE_ACTIVATOR_IDLE_S=1800" "HF_HUB_CACHE=$HF_HUB_DIR"
 }
 
 # --- 6. Host pf lockdown (optional, root, NOT in the full run) -----------------
@@ -527,7 +530,7 @@ setup_host_vault() {
 case "${1:-}" in
   host-serving)
     setup_host_serving
-    log "Host serving stack com.yclaw.{rapid-mlx,mlx-audio} loaded."
+    log "Host serving stack com.yclaw.{rapid-mlx,stt} loaded."
     exit 0
     ;;
   host-pf)
@@ -703,4 +706,4 @@ fi
 
 setup_host_serving
 
-log "Host setup complete. VM runners com.yclaw.tart-{metal,bluebubbles} + serving stack com.yclaw.{rapid-mlx,mlx-audio} loaded."
+log "Host setup complete. VM runners com.yclaw.tart-{metal,bluebubbles} + serving stack com.yclaw.{rapid-mlx,stt} loaded."
