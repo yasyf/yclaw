@@ -112,4 +112,17 @@ backup:
     command -v restic >/dev/null || brew install restic
     restic -r "$YCLAW_RESTIC_REPO" snapshots >/dev/null 2>&1 || restic -r "$YCLAW_RESTIC_REPO" init
     restic -r "$YCLAW_RESTIC_REPO" backup "$HOME/.yclaw/state" \
-      --exclude "$HOME/.yclaw/state/mlx-audio"
+      --exclude "$HOME/.yclaw/state/stt"
+
+# Live STT smoke: TTS a phrase, POST it to the host STT via metal's relay, assert the transcript.
+# NOT in `smoke` — it wakes the lazy activator (loads Parakeet) and needs the fleet up.
+stt-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    audio=/tmp/stt-check.m4a
+    say -o "$audio" "the quick brown fox jumps over the lazy dog"
+    resp="$(curl -fsS -X POST http://metal:8765/v1/audio/transcriptions \
+      -F "file=@$audio" -F "model=whisper-1")"
+    echo "$resp"
+    grep -qi fox <<<"$resp" || { echo "stt-check FAILED: 'fox' not in transcript" >&2; exit 1; }
+    echo "stt-check OK"
