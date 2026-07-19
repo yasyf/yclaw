@@ -65,10 +65,14 @@ printf -v image_tag_q '%q' "$IMAGE_TAG"
 printf -v artifact_name_q '%q' "$ARTIFACT_NAME"
 
 log "Building $FLAKE_ATTR and converting it to OCI inside $BUILDER_VM ..."
-# The GH token rides a leading stdin line the remote reads, never the remote command argv (which is
-# ps-readable); printf is a bash builtin, so it doesn't surface in a local process list either.
+# The GH token and optional GENERICITY_BLOCKLIST ride leading stdin lines the remote reads in
+# order, never the ps-readable remote argv; printf is a builtin, so no local process list either.
+case "${GENERICITY_BLOCKLIST:-}" in
+  *$'\n'*) die "GENERICITY_BLOCKLIST must be a single line (it rides one stdin line to the builder)" ;;
+esac
 {
   printf '%s\n' "${GITHUB_TOKEN:-}"
+  printf '%s\n' "${GENERICITY_BLOCKLIST:-}"
   cat <<'GUEST'
 set -euo pipefail
 flake_attr="$1"
@@ -118,13 +122,55 @@ rm -f "$docker_archive" "$oci_archive"
 nix --extra-experimental-features "nix-command flakes" \
   build ".#packages.aarch64-linux.$flake_attr" --out-link "$result_link" --print-build-logs
 "$result_link" > "$docker_archive"
+
+# --- genericity guard (ported from the retired .github/workflows/build-images.yml) ---
+# Abort the build if an author-specific secret leaked into the built image. Two scans with a
+# deliberate pattern split: closure store-path NAMES are short labels carrying no key bodies, so
+# scan 1 uses the broad pattern with no false-positive risk; scan 2 greps the raw BYTES of the
+# uncompressed docker-archive (the oci-archive may gzip its layers — a plaintext grep there would
+# silently miss), where AGE requires its full 58-char body so the hermes-agent redaction ruleset's
+# own regex SOURCE text doesn't self-trip, AKIA[0-9A-Z]{16} is dropped (16 uppercase alnums recur
+# by chance in any large binary and nothing here uses AWS), and BEGIN...PRIVATE KEY is dropped (the
+# closure bakes hundreds of test-vector PEM keys a line grep can't tell from a real leak). The
+# allowlist strips exact all-x doc placeholders; a real token is never whole-line-equal to them.
+# GENERICITY_BLOCKLIST (optional; the operator's own host facts as an ERE alternation, threaded
+# from the host over stdin like the GH token) appends to both patterns.
+allowlist=.github/genericity-allowlist.txt
+[ -f "$allowlist" ] || { echo "::error::genericity guard: $allowlist missing — refusing to skip the scan" >&2; exit 1; }
+name_pattern='tskey-(auth|api)-[A-Za-z0-9]|sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9]{20}|AKIA[0-9A-Z]{16}|AGE-SECRET-KEY-1|BEGIN [A-Z ]*PRIVATE KEY'
+img_pattern='tskey-(auth|api)-[A-Za-z0-9]|sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9]{20}|AGE-SECRET-KEY-1[0-9A-Z]{58}'
+if [ -n "${YCLAW_GENERICITY_BLOCKLIST:-}" ]; then
+  grep -qE "$YCLAW_GENERICITY_BLOCKLIST" /dev/null || [ $? -eq 1 ] \
+    || { echo "::error::genericity guard: GENERICITY_BLOCKLIST is not a valid ERE — refusing to scan without it" >&2; exit 1; }
+  name_pattern="$name_pattern|$YCLAW_GENERICITY_BLOCKLIST"
+  img_pattern="$img_pattern|$YCLAW_GENERICITY_BLOCKLIST"
+fi
+closure_paths="$(nix --extra-experimental-features "nix-command flakes" path-info -r "$result_link")"
+closure_hits="$(printf '%s\n' "$closure_paths" | grep -E "$name_pattern" || true)"
+[ -z "$closure_hits" ] || {
+  echo "::error::genericity guard: author-specific string in a closure store-path name:" >&2
+  echo "$closure_hits" >&2
+  exit 1
+}
+image_bytes="$(LC_ALL=C grep -aoE "$img_pattern" "$docker_archive")" || [ $? -eq 1 ] \
+  || { echo "::error::genericity guard: image-bytes scan errored (grep exit >1) — refusing to pass" >&2; exit 1; }
+image_hits="$(printf '%s' "$image_bytes" | sort -u | grep -vFxf "$allowlist")" || [ $? -eq 1 ] \
+  || { echo "::error::genericity guard: allowlist filter errored (grep exit >1) — refusing to pass" >&2; exit 1; }
+[ -z "$image_hits" ] || {
+  echo "::error::genericity guard: secret-shaped bytes baked into the image:" >&2
+  echo "$image_hits" >&2
+  exit 1
+}
+echo "genericity guard: clean (closure names + raw image bytes)"
+# --- end genericity guard ---
+
 nix --extra-experimental-features "nix-command flakes" \
   shell nixpkgs#skopeo -c skopeo --insecure-policy copy \
   "docker-archive:$docker_archive" "oci-archive:$oci_archive:$image_tag"
 cp "$oci_archive" "/mnt/shares/repo/result-container-images/$artifact_name"
 rm -f "$docker_archive" "$oci_archive"
 GUEST
-} | ssh_guest "IFS= read -r YCLAW_GH_TOKEN; export YCLAW_GH_TOKEN; bash -s -- $flake_attr_q $image_tag_q $artifact_name_q"
+} | ssh_guest "IFS= read -r YCLAW_GH_TOKEN; IFS= read -r YCLAW_GENERICITY_BLOCKLIST; export YCLAW_GH_TOKEN YCLAW_GENERICITY_BLOCKLIST; bash -s -- $flake_attr_q $image_tag_q $artifact_name_q"
 
 [[ -s "$OCI_ARCHIVE" ]] || die "build finished but $OCI_ARCHIVE is missing or empty"
 log "Loading $IMAGE_TAG from $OCI_ARCHIVE ..."

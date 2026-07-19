@@ -39,20 +39,6 @@
     fsType = "vfat";
   };
 
-  # First-boot Nix store-DB registration. repart bakes NO store database (make-disk-image did),
-  # so load it once from the /nix-path-registration image.nix writes into the root partition —
-  # without it the first in-guest `nixos-rebuild switch` has no registered paths to build against.
-  # Guarded on the file, which never exists on an already-provisioned system: a no-op after boot 1.
-  boot.postBootCommands = ''
-    if [ -f /nix-path-registration ]; then
-      set -euo pipefail
-      ${config.nix.package.out}/bin/nix-store --load-db < /nix-path-registration
-      touch /etc/NIXOS
-      ${config.nix.package.out}/bin/nix-env -p /nix/var/nix/profiles/system --set /run/current-system
-      rm -f /nix-path-registration
-    fi
-  '';
-
   # --- Networking --------------------------------------------------------------
   # Bridged networking gives each VM its own LAN IP (tart --net-bridged). DHCP for
   # the LAN address; Tailscale provides MagicDNS for the per-node names.

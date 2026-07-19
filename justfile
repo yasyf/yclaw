@@ -24,15 +24,12 @@ onboard:
 setup:
     ./scripts/setup.sh
 
-# Build the hermes NixOS image (systemd-repart) WITHOUT host Nix, in a throwaway linux/arm64 tart
-# builder VM (scripts/build-hermes-image.sh). This is the de-Nix'd builder; CI runs the same nix
-# build remotely. Output: ./result-hermes/nixos.img.
-build-hermes-image:
-    ./scripts/build-hermes-image.sh
+# Build + load a container image (hermes or vault) in a throwaway linux/arm64 builder VM.
+build-container-image attr tag:
+    ./scripts/build-container-image.sh {{attr}} {{tag}}
 
-# Apply one node. hermes→rebuild image + tart disk-replace.
-# The de-Nix'd host writes its VM runners as `com.yclaw.tart-<node>` (scripts/setup.sh);
-# deploy-vm.sh uses the same com.yclaw.tart-* labels.
+# Apply one node. hermes→rebuild the container image (scripts/build-container-image.sh) then reload
+# the running container (scripts/redeploy.sh hermes).
 deploy node:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -42,7 +39,8 @@ deploy node:
         exit 1
         ;;
       hermes)
-        ./scripts/deploy-vm.sh "{{node}}"
+        ./scripts/build-container-image.sh hermes-container-image hermes-agent:latest
+        ./scripts/redeploy.sh hermes
         ;;
       *)
         echo "unknown node: {{node}} (expected hermes)" >&2
@@ -51,9 +49,9 @@ deploy node:
     esac
 
 # In-place, state-preserving redeploy with ZERO human input: metal darwin-rebuild switch
-# (metal-redeploy), hermes nixos-rebuild switch (dry-activate-gated — aborts to the disk-replace
-# fallback if a stateful virtiofs mount would stop/restart), bb config reconfigure. The disk-replace
-# path (`just deploy hermes` → scripts/deploy-vm.sh) is the fallback for reboot-class changes.
+# (metal-redeploy), hermes container reload (com.yclaw.container-hermes recreates it from the loaded
+# image), bb config reconfigure. The heavier `just deploy hermes` path rebuilds the container image
+# and reloads the container — there is no disk-replace path anymore.
 redeploy node="all":
     ./scripts/redeploy.sh {{node}}
 

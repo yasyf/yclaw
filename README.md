@@ -2,7 +2,6 @@
 
 **Root the agent's VM. The keys were never there.** hermes-agent answers your iMessage from a sandboxed Linux VM; a locked-down macOS guest injects every credential on the wire, outside the sandbox.
 
-[![build-images](https://github.com/yasyf/yclaw/actions/workflows/build-images.yml/badge.svg)](https://github.com/yasyf/yclaw/actions/workflows/build-images.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ## Get started

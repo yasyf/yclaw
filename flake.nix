@@ -106,8 +106,8 @@
         nixpkgs.config.allowUnfree = true;
       };
 
-      # One module list per VM, reused for BOTH the toplevel nixosConfiguration (for
-      # `nixos-rebuild`) AND the systemd-repart image (for `tart`), so the two never drift.
+      # The hermes NixOS module list, consumed by the toplevel nixosConfiguration (for
+      # `nixos-rebuild` + `nix flake check`) and — via its evaluated config — the container image.
       hermesModules = [
         overlayModuleLinux
         hermes-agent.nixosModules.default
@@ -115,16 +115,6 @@
         ./nixos/common.nix
         ./nixos/hermes.nix
       ];
-
-      # Build the disk image via systemd-repart (nixos/image.nix) rather than a KVM VM, so CI's
-      # KVM-less aarch64 runners can build it. The image reuses the exact hermesModules toplevel.
-      mkImage =
-        modules:
-        (nixpkgs.lib.nixosSystem {
-          system = linuxSystem;
-          specialArgs = { inherit inputs; };
-          modules = modules ++ [ ./nixos/image.nix ];
-        }).config.system.build.image;
     in
     {
       overlays.default = overlayLinux;
@@ -161,7 +151,6 @@
         # cross-compile; the vault image consumes the same pkgsLinux derivation.
         cli-proxy-api = pkgsLinux.cli-proxy-api;
         hermes-docker-proxy = pkgsLinux.hermes-docker-proxy;
-        hermes-image = mkImage hermesModules;
 
         # Container-native hermes-agent OCI image (Architecture B). Derives the agent,
         # settings, and static env from the same evaluated config the VM uses (no drift).
@@ -172,9 +161,6 @@
         # Container-native vault node (metal's creds role): agent-vault + cliproxy + the two
         # model relays under one entrypoint supervisor. Self-contained — no NixOS config.
         vault-container-image = import ./pkgs/vault-image/image.nix { pkgs = pkgsLinux; };
-        # Local-only: same image with a known root password for scratch-VM boot validation.
-        # Never built or published by CI — it must not reach a released asset.
-        hermes-image-scratch = mkImage (hermesModules ++ [ ./nixos/scratch-login.nix ]);
       };
 
       packages.${darwinSystem} = {

@@ -274,9 +274,8 @@ log "Staged agent-vault proxy token (mode 600) into $NODE_CONFIG_DIR."
 # hermes is container-native: no tart VM, no hermes-onboard — bring-up is a manual, root-assisted step.
 log "hermes is container-native — no tart VM to create, no hermes-onboard to run."
 log "Finish the container bring-up manually (root-assisted; not part of the unattended run):"
-log "  1. Build + load the hermes-agent:latest image: nix build .#packages.aarch64-linux.hermes-container-image,"
-log "     skopeo copy docker-archive:… oci-archive:…:hermes-agent:latest, then 'container image load'"
-log "     (recipe: pkgs/hermes-agent-image/image.nix)."
+log "  1. Build + load the hermes-agent:latest image (build + skopeo + 'container image load', one script):"
+log "     ./scripts/build-container-image.sh hermes-container-image hermes-agent:latest"
 log "  2. ./scripts/setup.sh host-container   # stages secrets, builds proxy, authors supervisor + egress pf (GATED)"
 log "  3. Load the supervisor + egress pf per the two launchctl lines setup.sh prints."
 
