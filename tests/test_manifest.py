@@ -114,7 +114,7 @@ def test_nuke_wipes_vault_state(manifest):
         "vault",
         "vault-ts-state",
         "bluebubbles",
-        "mlx-audio",
+        "stt",
     )
 
 

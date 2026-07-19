@@ -262,7 +262,7 @@ setup_host_pf() {
   { [ -n "$ts_bin" ] && [ -x "$ts_bin" ]; } || die "tailscale CLI not found (sudo resets PATH) — run: sudo TAILSCALE=\"\$(command -v tailscale)\" bash scripts/setup.sh host-pf"
 
   local lib_dir="/usr/local/lib/yclaw" ports wg_port
-  ports="{ $(manifest_get '.machines.host.services["rapid-mlx"].port'), $(manifest_get '.machines.host.services["mlx-audio"].port') }"
+  ports="{ $(manifest_get '.machines.host.services["rapid-mlx"].port'), $(manifest_get '.machines.host.services["stt"].port') }"
   wg_port="$(manifest_get '.machines.host.wireguard_port')"
 
   install -d -m 755 "$lib_dir"
