@@ -152,6 +152,16 @@ setup_host_serving() {
   rm -rf "$STATE_DIR/mlx-audio"
   rm -f "$BIN_DIR/mlx-audio-wrapper.sh" "$BIN_DIR/stt-server.py"
 
+  # The bootout is async and both stacks bind :8765 — wait (bounded ~10s) for the old listener to
+  # free before write_model_agent lands the activator, else it EADDRINUSE-crash-loops on a re-run.
+  for _ in $(seq 1 20); do
+    lsof -nP -iTCP:8765 -sTCP:LISTEN >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  if lsof -nP -iTCP:8765 -sTCP:LISTEN >/dev/null 2>&1; then
+    die "port 8765 still held after com.yclaw.mlx-audio bootout — refusing to load the stt activator into an EADDRINUSE crash loop"
+  fi
+
   # 5a. rapid-mlx venv (python@3.14 keg, matching metal.nix) + the activator's runtime deps. Build only
   # when absent — mirrors metal.nix's `-x .../bin/rapid-mlx` idempotency check. Every package is pinned
   # to the exact version the verified venv resolved, so a rebuild reproduces the audited install.
@@ -179,6 +189,9 @@ setup_host_serving() {
   # Qwen weights are bootstrap.sh's human `hf download` gate, so warn (never fail) if absent below.
   log "Downloading STT weights via athome into $HF_HUB_DIR (idempotent) ..."
   HF_HUB_CACHE="$HF_HUB_DIR" "$STT_VENV/bin/athome" stt download
+  # Pre-fetch the static-ffmpeg binary now so the launchd child never does a first-request network
+  # fetch on the no-brew host (pcm decode shells out to ffmpeg).
+  "$STT_VENV/bin/python" -c 'import static_ffmpeg; static_ffmpeg.add_paths()'
   qwen_cache_dir="$HF_HUB_DIR/models--$(printf '%s' "$QWEN_ID" | sed 's#/#--#g')"
   if [[ ! -d "$qwen_cache_dir" ]]; then
     warn "Qwen model absent at $qwen_cache_dir — rapid-mlx cannot serve until you run: hf download $QWEN_ID"
