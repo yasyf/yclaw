@@ -17,7 +17,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO/scripts/lib/secrets.sh"
-node_config_dir="$HOME/.config/yclaw/vm-secrets"
+CONTAINER_BIN="/opt/homebrew/bin/container"
 
 [ -f "$YCLAW_KEYCHAIN" ] || _secrets_fail "no yclaw keychain at $YCLAW_KEYCHAIN — run \`just bootstrap\` first."
 
@@ -50,12 +50,11 @@ SOPS_AGE_KEY_FILE="$age_key" sops --decrypt --config /dev/null --input-type yaml
   "$YCLAW_STATE/hosts/hermes/secrets.sops.yaml" | grep -qF "$TS_AUTHKEY_HERMES" \
   || _secrets_fail "re-encrypted hermes bundle does not decrypt to the fresh authkey."
 
-# Refresh the tart-hermes `sops` share source so the next first-boot seedNodeConfig installs the new key.
-install -m 600 "$YCLAW_STATE/hosts/hermes/secrets.sops.yaml" "$node_config_dir/secrets.sops.yaml"
+# Wipe the container's persisted /var/lib/tailscale so it rejoins FRESH with the new authkey (an
+# intact node key would reconnect and ignore it).
+rm -f "$YCLAW_STATE/hermes-ts-state"/* 2>/dev/null || true
 
-# Wipe any /var/lib/tailscale pre-seed: the disk-replace gives the new image empty tailscale state, so
-# it joins FRESH via the authkey (deploy-vm.sh deletes the old device) rather than reconnect with a
-# stale node key.
-rm -f "$YCLAW_STATE/hermes-tailscale"/* 2>/dev/null || true
+# Restart the container so it re-decrypts the new authkey; com.yclaw.container-hermes recreates it.
+"$CONTAINER_BIN" rm -f hermes >/dev/null 2>&1 || true
 
-echo "remint-hermes-authkey: fresh authkey minted, hermes bundle + vm-secrets share refreshed, pre-seed wiped."
+echo "remint-hermes-authkey: fresh authkey minted, hermes bundle re-encrypted, tailscale state wiped, container restart triggered."

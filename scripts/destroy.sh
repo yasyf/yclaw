@@ -10,7 +10,7 @@ cd "$REPO_ROOT"
 
 # scripts/setup.sh writes the runners as `com.yclaw.tart-<node>` (NOT the old nix-darwin
 # `org.nixos.*` labels). Boot them out so KeepAlive can't relaunch the VM mid-teardown.
-for node in metal hermes bluebubbles; do
+for node in metal bluebubbles; do
   launchctl bootout "gui/$(id -u)/com.yclaw.tart-${node}" 2>/dev/null || true
   rm -f "$HOME/Library/LaunchAgents/com.yclaw.tart-${node}.plist"
 done

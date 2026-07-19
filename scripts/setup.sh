@@ -533,10 +533,8 @@ mkdir -p "$LOGS_DIR" "$LAUNCH_AGENTS_DIR"
 # metal LaunchAgent can mount the `hfhub` share even before any model has been downloaded.
 mkdir -p "$HF_HUB_DIR"
 
-# hermes node-config share source: the dir the tart-hermes runner mounts (--dir=sops:...:ro) so
-# common.nix's seedNodeConfig can read key.txt + secrets.sops.yaml (+ node.env, agent-vault-ca.pem)
-# on first boot. `just bootstrap` populates it; create it here so the runner can mount it even
-# before a full bootstrap has written its contents.
+# hermes node-config staging source: `just bootstrap` populates it; setup_host_container reads
+# node.env + agent-vault-token from here to stage the hermes container.
 NODE_CONFIG_DIR="$HOME_DIR/$(manifest_get '.host_paths.node_config_dir_rel')"
 mkdir -p "$NODE_CONFIG_DIR"
 chmod 700 "$NODE_CONFIG_DIR"
@@ -571,29 +569,6 @@ write_agent bluebubbles \
   run bluebubbles \
   --no-graphics \
   --suspendable
-
-# hermes is a Linux guest: --no-graphics, and the serial console MUST be drained or a headless
-# boot hangs once the virtio console ring fills. The `sops` share (ro) seeds the age key +
-# secrets for first-boot node-config seeding; the `hermesstate` share (rw) externalizes the
-# agent's persistent state (/var/lib/hermes — honcho memory, sessions) onto ~/.yclaw/state so it
-# survives a VM rebuild and is covered by `just backup`. The `repo` share (ro) mounts this checkout
-# read-only so the in-VM nixos-rebuild can rebuild itself (`nixos-rebuild switch --flake
-# /var/lib/yclaw-repo#hermes`). (/var/lib/tailscale is NOT externalized — a mount there collides with
-# tailscaled's StateDirectory; hermes is a PERSISTENT tailnet node whose on-disk key survives a reboot
-# anyway, and only a disk-replace re-mints. See nixos/hermes.nix.)
-#
-# Unlike metal (a macOS guest, which auto-mounts the `name:path` form at /Volumes/My Shared
-# Files/<name>), a Linux guest mounts each share by its EXPLICIT virtiofs tag — so these MUST use
-# the `path:[ro,]tag=<tag>` form. The `name:path` form would leave them on tart's default
-# `com.apple.virtio-fs.automount` tag, and common.nix's seedNodeConfig (tag `sops`) + nixos/hermes.nix's
-# fstab (tags `hermesstate`/`repo`) would find no such device and the matching mount would fail.
-write_agent hermes \
-  run hermes \
-  --no-graphics \
-  --serial-path=/dev/null \
-  "--dir=$NODE_CONFIG_DIR:ro,tag=sops" \
-  "--dir=$STATE_DIR/hermes:tag=hermesstate" \
-  "--dir=$HOME_DIR/Code/yclaw:ro,tag=repo"
 
 # --- 3b. Nightly metal bounce -------------------------------------------------
 
@@ -659,4 +634,4 @@ fi
 
 setup_host_serving
 
-log "Host setup complete. VM runners com.yclaw.tart-{metal,bluebubbles,hermes} + serving stack com.yclaw.{rapid-mlx,mlx-audio} loaded."
+log "Host setup complete. VM runners com.yclaw.tart-{metal,bluebubbles} + serving stack com.yclaw.{rapid-mlx,mlx-audio} loaded."

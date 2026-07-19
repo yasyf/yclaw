@@ -24,15 +24,16 @@ cd "$REPO_ROOT"
 source "$REPO_ROOT/scripts/lib/common.sh"
 # shellcheck source=scripts/lib/manifest.sh
 source "$REPO_ROOT/scripts/lib/manifest.sh"
+# shellcheck source=scripts/lib/wait.sh
+source "$REPO_ROOT/scripts/lib/wait.sh"
 # shellcheck source=scripts/lib/ssh.sh
 source "$REPO_ROOT/scripts/lib/ssh.sh"
 
 # bootstrap.sh's hermes node-config share source; node.env holds the non-secret BLUEBUBBLES_ALLOWED_USERS.
 NODE_CONFIG_DIR="$HOME/$(manifest_get '.host_paths.node_config_dir_rel')"
-# tailscale ssh joins remote args and re-parses them in the remote login shell, whose PATH is minimal —
-# so a custom NixOS command needs its absolute store path (mirrors bootstrap.sh's metal-mint-hermes-token).
-HERMES_FLAKE="/var/lib/yclaw-repo#hermes"
-HERMES_NIXOS_REBUILD="/run/current-system/sw/bin/nixos-rebuild"
+# hermes runs as an Apple `container` named `hermes`, supervised by com.yclaw.container-hermes.
+HERMES_CONTAINER="/opt/homebrew/bin/container"
+HERMES_CONTAINER_NAME="hermes"
 
 redeploy_host() {
   log "Redeploying host (./scripts/setup.sh) ..."
@@ -46,38 +47,20 @@ redeploy_metal() {
   ts_run root@metal /run/current-system/sw/bin/metal-redeploy
 }
 
+# A running container == a running agent: the entrypoint exec's the agent as the container's main
+# process, so a crash stops the container.
+_hermes_container_running() {
+  "$HERMES_CONTAINER" list --format json 2>/dev/null | grep -q "\"id\":\"$HERMES_CONTAINER_NAME\""
+}
+
 redeploy_hermes() {
-  local dry rc hits
-  log "Redeploying hermes (dry-activate gate → nixos-rebuild switch) ..."
-  # nix's libgit2 rejects the repo flake on the RO virtiofs share (host-owned, not root) unless root
-  # marks /var/lib/yclaw-repo a git safe.directory — needed by BOTH dry-activate and switch below.
-  # hermes's /root is ephemeral (wiped on a disk-replace fallback) and the guest has no git CLI, so
-  # (re)assert it each run by writing root's global gitconfig directly, idempotently.
-  ts_run root@hermes 'grep -qsF /var/lib/yclaw-repo /root/.gitconfig || printf "[safe]\n\tdirectory = /var/lib/yclaw-repo\n" >> /root/.gitconfig'
-  # The flake ref carries a `#` — single-quote it INSIDE the one remote-command string so the remote
-  # login shell does not read `#hermes` as a comment (the tailscale ssh re-parse gotcha, bootstrap.sh).
-  # dry-activate previews the unit actions without touching the system; capture stdout+stderr the same
-  # set +e / rc / set -e way bootstrap.sh's genericity guard captures rg.
-  set +e
-  dry="$(ts_run root@hermes "$HERMES_NIXOS_REBUILD dry-activate --flake '$HERMES_FLAKE'" 2>&1)"
-  rc=$?
-  set -e
-  if [ "$rc" -ne 0 ]; then
-    printf '%s\n' "$dry" >&2
-    die "hermes dry-activate failed (rc=$rc) — not switching."
-  fi
-  # ABORT to the disk-replace fallback if either STATEFUL mount would be started/stopped/restarted —
-  # ANY active touch unmounts-or-(re)mounts a virtiofs tag mid-session, which Apple's virtiofs cannot
-  # survive. The `would (start|stop|restart) ` anchor skips dry-activate's "would NOT …" negative lines;
-  # a healthy code deploy leaves the mounts unchanged, so they appear in none of these lists.
-  hits="$(printf '%s\n' "$dry" \
-    | grep -E 'would (start|stop|restart) ' \
-    | grep -E 'var-lib-hermes\.mount' || true)"
-  if [ -n "$hits" ]; then
-    printf '%s\n' "$hits" >&2
-    die "hermes switch would stop/restart a stateful virtiofs mount (above) — a reboot-class change. Use the disk-replace fallback: ./scripts/deploy-vm.sh hermes"
-  fi
-  ts_run root@hermes "$HERMES_NIXOS_REBUILD switch --flake '$HERMES_FLAKE'"
+  log "Redeploying hermes (Apple container reload via com.yclaw.container-hermes) ..."
+  # Remove the container; the supervisor tick recreates it (~60s) from the loaded image and re-runs
+  # the entrypoint. `|| true`: an already-absent container must not abort the wait below.
+  "$HERMES_CONTAINER" rm -f "$HERMES_CONTAINER_NAME" >/dev/null 2>&1 || true
+  wait_for "hermes container '$HERMES_CONTAINER_NAME' recreated and running" 60 5 _hermes_container_running \
+    || die "hermes container did not return to running — is com.yclaw.container-hermes loaded? (setup.sh host-container, then load its plist)"
+  log "hermes container '$HERMES_CONTAINER_NAME' is running."
 }
 
 redeploy_bluebubbles() {

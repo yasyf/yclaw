@@ -302,15 +302,6 @@ cp -c "$HERMES_IMG" "$HOME/.tart/vms/hermes/disk.img"
 chmod u+w "$HOME/.tart/vms/hermes/disk.img"
 tart set hermes --disk-size 64   # grow the record so NixOS autoResize extends the FS
 
-# --- 8. (re)load the launchd agents ------------------------------------------
-
-# hermes was booted out before its disk-replace; load it now that its disk is in place
-# (RunAtLoad + KeepAlive starts it).
-log "Loading launchd agent com.yclaw.tart-hermes ..."
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.yclaw.tart-hermes.plist" 2>/dev/null \
-  || log "  (could not load com.yclaw.tart-hermes — ./scripts/setup.sh rewrites it on next run)"
-launchctl kickstart -k "gui/$(id -u)/com.yclaw.tart-hermes" 2>/dev/null || true
-
 # --- 8b. hermes onboarding (identity + Honcho peer) --------------------------
 
 # Seed the identity yclaw's declarative provisioning can't: USER.md (profile) + SOUL.md
