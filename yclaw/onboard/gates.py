@@ -325,7 +325,10 @@ def build_gates(manifest: Manifest) -> tuple[Gate, ...]:
         missing = [name for name, ok in (("USER.md", user_ok), ("SOUL.md", soul_ok)) if not ok]
         return GateResult(
             GateStatus.MANUAL,
-            detail=f"seed {' + '.join(missing)} into the container state dir {HERMES_HOME} on the host, then re-run",
+            detail=(
+                f"seed {' + '.join(missing)} into the host state dir ~/.yclaw/state/hermes/.hermes/ "
+                f"(bind-mounted to {HERMES_HOME} in the container, reachable via `container exec hermes`), then re-run"
+            ),
             retry_command=RETRY_TEMPLATE.format("hermes-identity"),
         )
 

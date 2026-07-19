@@ -17,6 +17,16 @@ done
 launchctl bootout "gui/$(id -u)/com.yclaw.metal-nightly-bounce" 2>/dev/null || true
 rm -f "$HOME/Library/LaunchAgents/com.yclaw.metal-nightly-bounce.plist"
 
+# hermes is a container now, not a tart VM: boot out its supervisor + egress-pf daemon so neither
+# recreates the container mid-teardown, then force-remove it.
+launchctl bootout "gui/$(id -u)/com.yclaw.container-hermes" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/com.yclaw.container-hermes.plist"
+# The egress-pf daemon is a system LaunchDaemon (root); best-effort sudo prompts interactively, like
+# bluebubbles-setup.sh's privileged launchd steps.
+sudo launchctl bootout "system/com.yclaw.container-pf-refresh" 2>/dev/null || true
+sudo rm -f /Library/LaunchDaemons/com.yclaw.container-pf-refresh.plist 2>/dev/null || true
+/opt/homebrew/bin/container rm -f hermes 2>/dev/null || true
+
 # `vault` was retired into metal but its disk persists; delete it too.
 for vm in metal hermes bluebubbles vault; do
   tart stop "$vm" 2>/dev/null || true
