@@ -1,0 +1,22 @@
+# Claude Code
+.claude/jj-config.toml
+
+# Nix
+result
+result-*
+.direnv/
+
+# VM images / build artifacts (never commit a built image)
+*.qcow2
+*.raw
+*.img
+*.ipsw
+.build/
+result-hermes/
+.packer.d/
+packer_cache/
+
+# Runtime secret material (only PLACEHOLDERS.md + secrets.sops.yaml.example are tracked)
+secrets/*.decrypted
+secrets/runtime/
+secrets/secrets.sops.yaml
