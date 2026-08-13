@@ -149,8 +149,8 @@ cmd_harden() {
 # need sudo and the `system/` domain; the signed-in user's LaunchAgents live in `gui/<uid>/`. Every
 # call is best-effort (`|| true`): a label absent on this build is a harmless no-op. The label lists
 # arrive from the guest_pipe prelude (YCLAW_DEBLOAT_SYSTEM / YCLAW_DEBLOAT_GUI), rendered from
-# machines.json .debloat.bluebubbles — a deliberate SUBSET of metal's (same cirruslabs macos-tahoe
-# base), never merged with it. That subset is deliberately NARROW: it touches
+# machines.json .debloat.bluebubbles — tuned separately from metal's (same cirruslabs macos-tahoe
+# base), never merged with it. The list is deliberately NARROW: it touches
 # NOTHING in the Apple-ID / push / iMessage / iCloud / Private-API path — apsd, imagent,
 # identityservicesd, akd, AppleAccountd, cloudd, bird, contextstored, IMDPersistenceAgent, soagent,
 # Messages, BlueBubbles all stay up. KEPT too: ReportCrash + spindump (local crash diagnostics) —
